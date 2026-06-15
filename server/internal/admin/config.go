@@ -66,6 +66,9 @@ type Config struct {
 	LarkWebhookURL           string
 	LarkAppID                string
 	LarkAppToken             string
+	WeChatEnabled            bool
+	WeChatBotToken           string
+	WeChatBaseURL            string
 	RedisURL                 string
 	RedisKeyPrefix           string
 	MemoryTTL                time.Duration
@@ -131,6 +134,9 @@ func LoadConfig() Config {
 		LarkWebhookURL:           env("LARK_BOT_WEBHOOK_URL", ""),
 		LarkAppID:                env("LARK_APP_ID", ""),
 		LarkAppToken:             env("LARK_APP_TOKEN", ""),
+		WeChatEnabled:            envBool("WECHAT_ENABLED", false),
+		WeChatBotToken:           env("WECHAT_BOT_TOKEN", ""),
+		WeChatBaseURL:            env("WECHAT_BASE_URL", wechatDefaultBaseURL),
 		RedisURL:                 env("XIAOLI_REDIS_URL", ""),
 		RedisKeyPrefix:           env("XIAOLI_REDIS_KEY_PREFIX", "xiaoli:cp:"),
 		MemoryTTL:                time.Duration(envInt("XIAOLI_MEMORY_TTL_HOURS", 24)) * time.Hour,

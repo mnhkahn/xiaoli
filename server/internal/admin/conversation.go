@@ -12,6 +12,7 @@ type ConversationChannel string
 const (
 	ChannelDeviceVoice ConversationChannel = "device_voice"
 	ChannelLarkText    ConversationChannel = "lark_text"
+	ChannelWechatText  ConversationChannel = "wechat_text"
 )
 
 type ConversationTurn struct {
@@ -44,6 +45,16 @@ func (LarkTextFactory) Build(chatID string, senderID string, text string) Conver
 	return ConversationTurn{
 		Channel:        ChannelLarkText,
 		ConversationID: "lark:" + chatID + ":" + senderID,
+		Text:           text,
+	}
+}
+
+type WechatTextFactory struct{}
+
+func (WechatTextFactory) Build(contextToken string, fromUserID string, text string) ConversationTurn {
+	return ConversationTurn{
+		Channel:        ChannelWechatText,
+		ConversationID: "wechat:" + contextToken + ":" + fromUserID,
 		Text:           text,
 	}
 }

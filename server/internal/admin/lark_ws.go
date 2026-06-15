@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
@@ -53,7 +54,9 @@ func (s *AdminServer) startLarkWSClient(ctx context.Context) {
 			}
 			callback.Event = eventBytes
 
-			return s.handleLarkTextMessage(ctx, callback)
+			handleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			return s.handleLarkTextMessage(handleCtx, callback)
 		})
 
 	cli := larkws.NewClient(s.cfg.LarkAppID, s.cfg.LarkAppToken,

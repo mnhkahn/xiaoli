@@ -42,6 +42,9 @@ func (s *AdminServer) StartBackground(ctx context.Context) {
 			strings.TrimSpace(s.cfg.LarkAppID) != "",
 			strings.TrimSpace(s.cfg.LarkAppToken) != "")
 	}
+	if s.cfg.WeChatEnabled {
+		go s.startWechatPolling(ctx)
+	}
 	if s.cfg.StudyMonitorEnabled {
 		go s.runStudyMonitorScheduler(ctx)
 	}
