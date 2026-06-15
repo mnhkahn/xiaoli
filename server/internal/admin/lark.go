@@ -68,19 +68,24 @@ func (s *AdminServer) handleLarkEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 2*1024*1024))
 	if err != nil {
+		log.Printf("[lark] event request read failed: %v", err)
 		http.Error(w, "read event failed", http.StatusBadRequest)
 		return
 	}
 	var callback larkCallback
 	if err := json.Unmarshal(raw, &callback); err != nil {
+		log.Printf("[lark] event request invalid json bytes=%d: %v", len(raw), err)
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
+	eventType := callback.eventType()
+	log.Printf("[lark] event received type=%s event_id=%s app_id=%s tenant=%s schema=%s bytes=%d", eventType, callback.Header.EventID, callback.Header.AppID, callback.Header.TenantKey, callback.Schema, len(raw))
 	if callback.Header.AppID != "" && callback.Header.AppID != s.cfg.LarkAppID {
+		log.Printf("[lark] event rejected: app_id mismatch got=%s want=%s type=%s event_id=%s", callback.Header.AppID, s.cfg.LarkAppID, eventType, callback.Header.EventID)
 		http.Error(w, "app id mismatch", http.StatusForbidden)
 		return
 	}
-	switch callback.eventType() {
+	switch eventType {
 	case larkEventTypeURLVerification:
 		challenge := callback.Challenge
 		if challenge == "" && len(callback.Event) > 0 {
@@ -88,19 +93,22 @@ func (s *AdminServer) handleLarkEvents(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal(callback.Event, &event)
 			challenge = event.Challenge
 		}
+		log.Printf("[lark] url verification received event_id=%s challenge_present=%v", callback.Header.EventID, challenge != "")
 		writeJSON(w, http.StatusOK, map[string]string{"challenge": challenge})
 	case larkEventTypeMessageReceive:
 		if callback.Header.EventID != "" && s.larkEventSeen(callback.Header.EventID) {
+			log.Printf("[lark] event duplicate ignored type=%s event_id=%s", eventType, callback.Header.EventID)
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "duplicate": true})
 			return
 		}
 		if err := s.handleLarkTextMessage(r.Context(), callback); err != nil {
-			log.Printf("[lark] message handling failed: %v", err)
+			log.Printf("[lark] message handling failed event_id=%s: %v", callback.Header.EventID, err)
 			writeJSON(w, http.StatusOK, map[string]any{"ok": false})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	default:
+		log.Printf("[lark] event ignored type=%s event_id=%s", eventType, callback.Header.EventID)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ignored": true})
 	}
 }
@@ -117,17 +125,21 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 	if err := json.Unmarshal(callback.Event, &event); err != nil {
 		return fmt.Errorf("decode message event: %w", err)
 	}
+	senderID := event.senderID()
+	log.Printf("[lark] message received event_id=%s chat=%s message=%s sender_type=%s sender=%s message_type=%s content_bytes=%d", callback.Header.EventID, event.Message.ChatID, event.Message.MessageID, event.Sender.SenderType, senderID, event.Message.MessageType, len(event.Message.Content))
 	if event.Sender.SenderType == "bot" {
+		log.Printf("[lark] message ignored event_id=%s reason=bot_sender message=%s", callback.Header.EventID, event.Message.MessageID)
 		return nil
 	}
 	if event.Message.MessageType != "text" {
+		log.Printf("[lark] message ignored event_id=%s reason=non_text message=%s message_type=%s", callback.Header.EventID, event.Message.MessageID, event.Message.MessageType)
 		return nil
 	}
 	text := extractLarkText(event.Message.Content)
 	if text == "" {
+		log.Printf("[lark] message ignored event_id=%s reason=empty_text message=%s", callback.Header.EventID, event.Message.MessageID)
 		return nil
 	}
-	senderID := event.senderID()
 	if event.Message.ChatID == "" || senderID == "" || event.Message.MessageID == "" {
 		return fmt.Errorf("message event missing chat, sender, or message id")
 	}
@@ -138,7 +150,11 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 	if err != nil {
 		return err
 	}
-	return s.newLarkClient().ReplyText(ctx, event.Message.MessageID, reply.Text)
+	if err := s.newLarkClient().ReplyText(ctx, event.Message.MessageID, reply.Text); err != nil {
+		return err
+	}
+	log.Printf("[lark] message reply sent event_id=%s message=%s chat=%s", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID)
+	return nil
 }
 
 func (e larkMessageEvent) senderID() string {
