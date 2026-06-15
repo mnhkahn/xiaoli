@@ -36,9 +36,9 @@ type studyDecision struct {
 
 func (s *AdminServer) StartBackground(ctx context.Context) {
 	if s.cfg.LarkEnabled() {
-		go s.checkLarkInitialization(ctx)
+		go s.startLarkWSClient(ctx)
 	} else {
-		log.Printf("[lark] init skipped endpoint=/lark/events app_id_configured=%v token_configured=%v",
+		log.Printf("[lark] ws skipped app_id_configured=%v token_configured=%v",
 			strings.TrimSpace(s.cfg.LarkAppID) != "",
 			strings.TrimSpace(s.cfg.LarkAppToken) != "")
 	}
@@ -48,17 +48,6 @@ func (s *AdminServer) StartBackground(ctx context.Context) {
 	if s.cfg.MorningGreetingEnabled {
 		go s.runMorningGreetingScheduler(ctx)
 	}
-}
-
-func (s *AdminServer) checkLarkInitialization(ctx context.Context) {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	if _, err := s.newLarkClient().tenantAccessToken(ctx); err != nil {
-		log.Printf("[lark] init failed app_id=%s endpoint=/lark/events: %v", s.cfg.LarkAppID, err)
-		return
-	}
-	log.Printf("[lark] init ok app_id=%s endpoint=/lark/events", s.cfg.LarkAppID)
 }
 
 func (s *AdminServer) runStudyMonitorScheduler(ctx context.Context) {
