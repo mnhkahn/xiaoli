@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 
+	lark "github.com/larksuite/oapi-sdk-go/v3"
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -57,6 +58,7 @@ func (s *AdminServer) startLarkWSClient(ctx context.Context) {
 
 	cli := larkws.NewClient(s.cfg.LarkAppID, s.cfg.LarkAppToken,
 		larkws.WithEventHandler(eventHandler),
+		larkws.WithDomain(lark.LarkBaseUrl),
 		larkws.WithLogLevel(larkcore.LogLevelWarn),
 	)
 
