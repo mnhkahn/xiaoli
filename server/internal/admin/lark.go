@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"github.com/mnhkahn/gogogo/logger"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strings"
@@ -120,6 +121,12 @@ func (c larkCallback) eventType() string {
 	return c.Type
 }
 
+var larkProcessingEmojis = []string{"Typing", "OnIt", "THINKING", "OneSecond"}
+
+func pickLarkReaction() string {
+	return larkProcessingEmojis[rand.Intn(len(larkProcessingEmojis))]
+}
+
 func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCallback) error {
 	var event larkMessageEvent
 	if err := json.Unmarshal(callback.Event, &event); err != nil {
@@ -146,6 +153,21 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 	if s.conversation == nil {
 		return fmt.Errorf("conversation pipeline is not configured")
 	}
+
+	lc := s.newLarkClient()
+	emojiType := pickLarkReaction()
+	reactionID, err := lc.AddReaction(ctx, event.Message.MessageID, emojiType)
+	if err != nil {
+		logger.Infof("[lark] add reaction failed event_id=%s message=%s emoji=%s err=%v", callback.Header.EventID, event.Message.MessageID, emojiType, err)
+	}
+	if reactionID != "" {
+		defer func() {
+			if err := lc.RemoveReaction(ctx, event.Message.MessageID, reactionID); err != nil {
+				logger.Infof("[lark] remove reaction failed event_id=%s message=%s emoji=%s err=%v", callback.Header.EventID, event.Message.MessageID, emojiType, err)
+			}
+		}()
+	}
+
 	reply, err := s.conversation.Run(ctx, LarkTextFactory{}.Build(event.Message.ChatID, senderID, text))
 	if err != nil {
 		return err
@@ -246,6 +268,75 @@ func (c *LarkClient) ReplyText(ctx context.Context, messageID string, text strin
 	}
 	if code, _ := int64Value(payload["code"]); code != 0 {
 		return fmt.Errorf("lark reply failed: %v", payload)
+	}
+	return nil
+}
+
+func (c *LarkClient) AddReaction(ctx context.Context, messageID, emojiType string) (string, error) {
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	body, err := json.Marshal(map[string]any{
+		"reaction_type": map[string]string{"emoji_type": emojiType},
+	})
+	if err != nil {
+		return "", err
+	}
+	endpoint := "https://open.larksuite.com/open-apis/im/v1/messages/" + url.PathEscape(messageID) + "/reactions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+		return "", fmt.Errorf("lark add reaction failed: %d %s", resp.StatusCode, string(raw))
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return "", err
+	}
+	if code, _ := int64Value(payload["code"]); code != 0 {
+		return "", fmt.Errorf("lark add reaction failed: %v", payload)
+	}
+	data, _ := payload["data"].(map[string]any)
+	reactionID, _ := data["reaction_id"].(string)
+	return reactionID, nil
+}
+
+func (c *LarkClient) RemoveReaction(ctx context.Context, messageID, reactionID string) error {
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return err
+	}
+	endpoint := "https://open.larksuite.com/open-apis/im/v1/messages/" + url.PathEscape(messageID) + "/reactions/" + url.PathEscape(reactionID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+		return fmt.Errorf("lark remove reaction failed: %d %s", resp.StatusCode, string(raw))
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return err
+	}
+	if code, _ := int64Value(payload["code"]); code != 0 {
+		return fmt.Errorf("lark remove reaction failed: %v", payload)
 	}
 	return nil
 }
