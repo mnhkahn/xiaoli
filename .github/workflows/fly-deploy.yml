@@ -12,6 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: |
+          echo "Action: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
       - run: flyctl deploy --remote-only
         working-directory: server
         env:
