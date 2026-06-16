@@ -299,6 +299,8 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 		return
 	}
 
+	wechatSendTyping(ctx, c, msg.FromUserID, msg.ContextToken)
+
 	reply, err := s.conversation.Run(ctx, WechatTextFactory{}.Build(msg.ContextToken, msg.FromUserID, text))
 	if err != nil {
 		logger.Infof("[wechat] conversation error: %v", err)
@@ -307,7 +309,30 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 
 	if err := wechatSendText(ctx, c, msg.FromUserID, msg.ContextToken, reply.Text); err != nil {
 		logger.Infof("[wechat] send error: %v", err)
+	} else {
+		logger.Infof("[wechat] send ok to=%s text=%q", msg.FromUserID, reply.Text)
 	}
+}
+
+func wechatSendTyping(ctx context.Context, c *wechatClient, toUserID, contextToken string) error {
+	msg := &wechatMessage{
+		ToUserID:     toUserID,
+		MessageType:  wechatMsgBot,
+		MessageState: 1,
+		ContextToken: contextToken,
+		ItemList: []wechatMsgItem{
+			{Type: wechatItemText, TextItem: &wechatTextItem{Text: " "}},
+		},
+	}
+	req := &wechatSendMsgReq{
+		Msg:      msg,
+		BaseInfo: &wechatBaseInfo{ChannelVersion: "1.0.3"},
+	}
+	_, err := c.postJSON(ctx, "/ilink/bot/sendmessage", req)
+	if err != nil {
+		logger.Infof("[wechat] typing send error: %v", err)
+	}
+	return nil
 }
 
 func wechatSendText(ctx context.Context, c *wechatClient, toUserID, contextToken, text string) error {
