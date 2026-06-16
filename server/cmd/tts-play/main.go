@@ -34,7 +34,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"log"
+	"github.com/mnhkahn/gogogo/logger"
 	"net"
 	"net/http"
 	"os"
@@ -71,21 +71,25 @@ func main() {
 	conn, resp, err := websocket.DefaultDialer.Dial(*url, headers)
 	if err != nil {
 		if resp != nil {
-			log.Fatalf("dial %s: %v (status %d)", *url, err, resp.StatusCode)
+			logger.Errorf("dial %s: %v (status %d)", *url, err, resp.StatusCode)
+			os.Exit(1)
 		}
-		log.Fatalf("dial %s: %v", *url, err)
+		logger.Errorf("dial %s: %v", *url, err)
+		os.Exit(1)
 	}
 	defer conn.Close()
-	log.Printf("[tts-play] connected to %s as device %s", *url, *deviceID)
+	logger.Infof("[tts-play] connected to %s as device %s", *url, *deviceID)
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"hello"}`)); err != nil {
-		log.Fatalf("send hello: %v", err)
+		logger.Errorf("send hello: %v", err)
+		os.Exit(1)
 	}
-	log.Printf("[tts-play] hello sent; waiting for tts.start")
+	logger.Infof("[tts-play] hello sent; waiting for tts.start")
 
 	dec, err := opus.NewDecoder(clientSampleRate, clientChannels)
 	if err != nil {
-		log.Fatalf("opus decoder: %v", err)
+		logger.Errorf("opus decoder: %v", err)
+		os.Exit(1)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), *maxRun)
@@ -95,7 +99,7 @@ func main() {
 	go func() {
 		select {
 		case <-sigCh:
-			log.Printf("[tts-play] interrupted")
+			logger.Infof("[tts-play] interrupted")
 		case <-ctx.Done():
 		}
 		cancel()
@@ -118,54 +122,54 @@ func main() {
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				if ctx.Err() != nil {
-					log.Printf("[tts-play] max-run reached, exiting")
+					logger.Infof("[tts-play] max-run reached, exiting")
 					break
 				}
 				if ttsStopSeenAt.IsZero() {
 					continue
 				}
 				if time.Since(lastFrameAt) >= *timeout {
-					log.Printf("[tts-play] idle %.1fs after tts.stop, exiting",
+					logger.Infof("[tts-play] idle %.1fs after tts.stop, exiting",
 						time.Since(lastFrameAt).Seconds())
 					break
 				}
 				continue
 			}
 			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
-				log.Printf("[tts-play] server closed: %v", err)
+				logger.Infof("[tts-play] server closed: %v", err)
 				break
 			}
-			log.Printf("[tts-play] read error: %v", err)
+			logger.Infof("[tts-play] read error: %v", err)
 			break
 		}
 
 		switch mt {
 		case websocket.TextMessage:
-			log.Printf("[tts-play] << text: %s", string(data))
+			logger.Infof("[tts-play] << text: %s", string(data))
 			if bytes.Contains(data, []byte(`"tts"`)) && bytes.Contains(data, []byte(`"start"`)) {
 				ttsStartSeen = true
-				log.Printf("[tts-play] >>> tts.start seen; capturing binary frames")
+				logger.Infof("[tts-play] >>> tts.start seen; capturing binary frames")
 			}
 			if bytes.Contains(data, []byte(`"tts"`)) && bytes.Contains(data, []byte(`"stop"`)) {
 				ttsStopSeenAt = time.Now()
-				log.Printf("[tts-play] >>> tts.stop seen; will exit after %.1fs of silence",
+				logger.Infof("[tts-play] >>> tts.stop seen; will exit after %.1fs of silence",
 					timeout.Seconds())
 			}
 
 		case websocket.BinaryMessage:
 			if !ttsStartSeen {
-				log.Printf("[tts-play] WARNING: binary frame received before tts.start "+
+				logger.Infof("[tts-play] WARNING: binary frame received before tts.start "+
 					"(len=%d) — dropping", len(data))
 				continue
 			}
 			n, err := dec.Decode(data, pcmBuf)
 			if err != nil {
-				log.Printf("[tts-play] opus decode error on frame %d (bytes=%d): %v",
+				logger.Infof("[tts-play] opus decode error on frame %d (bytes=%d): %v",
 					frameIdx, len(data), err)
 				continue
 			}
 			if n != samplesPerFrame60ms {
-				log.Printf("[tts-play] WARNING: frame %d decoded to %d samples "+
+				logger.Infof("[tts-play] WARNING: frame %d decoded to %d samples "+
 					"(expected %d) — §3 / device contract violation",
 					frameIdx, n, samplesPerFrame60ms)
 			}
@@ -180,18 +184,19 @@ func main() {
 			}
 
 		case websocket.CloseMessage:
-			log.Printf("[tts-play] server sent close")
+			logger.Infof("[tts-play] server sent close")
 			break readLoop
 		}
 	}
 
 	dur := time.Duration(len(allPCM)) * time.Second / time.Duration(clientSampleRate)
-	log.Printf("[tts-play] captured %d frames, %d samples (%.3fs @ %dHz, ch=%d)",
+	logger.Infof("[tts-play] captured %d frames, %d samples (%.3fs @ %dHz, ch=%d)",
 		frameIdx, len(allPCM), dur.Seconds(), clientSampleRate, clientChannels)
 	if err := writeWAV(*out, allPCM, clientSampleRate, clientChannels); err != nil {
-		log.Fatalf("write WAV %s: %v", *out, err)
+		logger.Errorf("write WAV %s: %v", *out, err)
+		os.Exit(1)
 	}
-	log.Printf("[tts-play] wrote %s — afplay %s", *out, *out)
+	logger.Infof("[tts-play] wrote %s — afplay %s", *out, *out)
 }
 
 func writeWAV(path string, samples []int16, sampleRate, channels int) error {

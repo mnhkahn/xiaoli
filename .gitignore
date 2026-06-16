@@ -1,50 +1,45 @@
-.DS_Store
-__pycache__/
-*.py[cod]
-.env
-*.env
-!.env.example
 
-# Local toolchains and virtualenvs
+__pycache__/
+!.env.example
+.deepseek/
+.DS_Store
+.env
 .espressif/
 .venv/
-esp-idf/
-.deepseek/
-
-# Local firmware backups
-backups/
-
-# Local Superpowers work state
-server/.superpowers/
-
+*.aac
+*.aif
+*.aiff
+*.au
+*.caf
+*.env
+*.flac
+*.log
+*.m4a
+*.mp3
+*.oga
+*.ogg
+*.opus
+*.pid
+*.py[cod]
+*.wav
+*.webm
+# (gitignore only blocks new additions, never untracks existing files).
+# Audio files (recordings, TTS dumps, test fixtures, generated audio)
 # Firmware build artifacts & dependencies (rebuilt via idf.py build)
+# Local firmware backups
+# Local Superpowers work state
+# Local toolchains and virtualenvs
+# Logs, pid files, and stdout captures from background processes
+# Mac client config (contains SERVER_AUTH_KEY, never commit)
+# Tracked firmware assets under xiaozhi-esp32/main/assets/** stay tracked
+backups/
+esp-idf/
+nohup.out
+server/.superpowers/
+server/wechat-login
+xiaoli-mac/xiaoli-mac.json
 xiaozhi-esp32/build/
+xiaozhi-esp32/main/boards/bread-compact-wifi-s3cam/assets.bin
 xiaozhi-esp32/managed_components/
 xiaozhi-esp32/releases/
 xiaozhi-esp32/sdkconfig.old
-xiaozhi-esp32/main/boards/bread-compact-wifi-s3cam/assets.bin
-
-# Mac client config (contains SERVER_AUTH_KEY, never commit)
-xiaoli-mac/xiaoli-mac.json
-
-# Audio files (recordings, TTS dumps, test fixtures, generated audio)
-# Tracked firmware assets under xiaozhi-esp32/main/assets/** stay tracked
-# (gitignore only blocks new additions, never untracks existing files).
-*.wav
-*.opus
-*.ogg
-*.mp3
-*.m4a
-*.aac
-*.flac
-*.aiff
-*.aif
-*.webm
-*.caf
-*.au
-*.oga
-
-# Logs, pid files, and stdout captures from background processes
-*.log
-*.pid
-nohup.out

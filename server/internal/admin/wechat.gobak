@@ -220,7 +220,7 @@ func (c *wechatClient) get(ctx context.Context, path string) ([]byte, error) {
 func (s *AdminServer) startWechatPolling(ctx context.Context) {
 	token := s.cfg.WeChatBotToken
 	if token == "" {
-		logger.Infof("[wechat] WECHAT_BOT_TOKEN not set, skipping")
+		log.Printf("[wechat] WECHAT_BOT_TOKEN not set, skipping")
 		return
 	}
 
@@ -229,12 +229,12 @@ func (s *AdminServer) startWechatPolling(ctx context.Context) {
 	c.baseURL = s.cfg.WeChatBaseURL
 
 	buf := ""
-	logger.Infof("[wechat] polling started base_url=%s", c.baseURL)
+	log.Printf("[wechat] polling started base_url=%s", c.baseURL)
 
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Infof("[wechat] polling stopped")
+			log.Printf("[wechat] polling stopped")
 			return
 		default:
 		}
@@ -250,19 +250,19 @@ func (s *AdminServer) startWechatPolling(ctx context.Context) {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				continue
 			}
-			logger.Infof("[wechat] poll error: %v", err)
+			log.Printf("[wechat] poll error: %v", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
 		var resp wechatGetUpdatesResp
 		if err := json.Unmarshal(raw, &resp); err != nil {
-			logger.Infof("[wechat] poll decode error: %v", err)
+			log.Printf("[wechat] poll decode error: %v", err)
 			continue
 		}
 		if resp.Ret != 0 {
 			if resp.Ret == -14 {
-				logger.Infof("[wechat] session expired, need re-login")
+				log.Printf("[wechat] session expired, need re-login")
 				return
 			}
 			continue
@@ -287,26 +287,26 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 	if text == "" {
 		return
 	}
-	logger.Infof("[wechat] message from=%s text=%q", msg.FromUserID, text)
+	log.Printf("[wechat] message from=%s text=%q", msg.FromUserID, text)
 
 	if msg.ContextToken == "" || msg.FromUserID == "" || msg.ToUserID == "" {
-		logger.Infof("[wechat] message missing context_token/from/to, ignored")
+		log.Printf("[wechat] message missing context_token/from/to, ignored")
 		return
 	}
 
 	if s.conversation == nil {
-		logger.Infof("[wechat] conversation not configured")
+		log.Printf("[wechat] conversation not configured")
 		return
 	}
 
 	reply, err := s.conversation.Run(ctx, WechatTextFactory{}.Build(msg.ContextToken, msg.FromUserID, text))
 	if err != nil {
-		logger.Infof("[wechat] conversation error: %v", err)
+		log.Printf("[wechat] conversation error: %v", err)
 		reply = ConversationReply{Text: "抱歉，我暂时无法回答。"}
 	}
 
 	if err := wechatSendText(ctx, c, msg.FromUserID, msg.ContextToken, reply.Text); err != nil {
-		logger.Infof("[wechat] send error: %v", err)
+		log.Printf("[wechat] send error: %v", err)
 	}
 }
 
@@ -355,7 +355,7 @@ func wechatLogin(ctx context.Context, onQRCode func(content string)) error {
 		if onQRCode != nil && qrResp.QRCodeImgContent != "" {
 			onQRCode(qrResp.QRCodeImgContent)
 		} else if qrResp.QRCodeImgURL != "" {
-			logger.Infof("[wechat] scan QR to login: %s", qrResp.QRCodeImgURL)
+			log.Printf("[wechat] scan QR to login: %s", qrResp.QRCodeImgURL)
 		}
 
 		ticker := time.NewTicker(2 * time.Second)
@@ -368,7 +368,7 @@ func wechatLogin(ctx context.Context, onQRCode func(content string)) error {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-timeout:
-				logger.Infof("[wechat] QR expired, retrying (%d/3)", attempt+1)
+				log.Printf("[wechat] QR expired, retrying (%d/3)", attempt+1)
 				break loop
 			case <-ticker.C:
 				statusRaw, err := c.get(ctx, "/ilink/bot/get_qrcode_status?qrcode="+qrResp.QRCode)
@@ -381,13 +381,13 @@ func wechatLogin(ctx context.Context, onQRCode func(content string)) error {
 				}
 				switch status.Status {
 				case "confirmed":
-					logger.Infof("[wechat] login successful!")
+					log.Printf("[wechat] login successful!")
 					fmt.Printf("\nWECHAT_BOT_TOKEN=%s\nWECHAT_BASE_URL=%s\n", status.BotToken, status.BaseURL)
 					return nil
 				case "expired":
 					break loop
 				case "scaned":
-					logger.Infof("[wechat] QR scanned, waiting for confirmation")
+					log.Printf("[wechat] QR scanned, waiting for confirmation")
 				}
 			}
 		}

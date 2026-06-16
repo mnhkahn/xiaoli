@@ -113,7 +113,7 @@ func (p *ConversationPipeline) Run(ctx context.Context, turn ConversationTurn) (
 	}
 	answer, err := p.chat.Chat(ctx, turn)
 	if err != nil {
-		logger.Infof("conversation chat failed channel=%s conversation=%s device=%s: %v", turn.Channel, turn.ConversationID, turn.DeviceID, err)
+		log.Printf("conversation chat failed channel=%s conversation=%s device=%s: %v", turn.Channel, turn.ConversationID, turn.DeviceID, err)
 		return ConversationReply{Text: "我现在回答不了，语言模型调用失败。"}, nil
 	}
 	answer = strings.TrimSpace(answer)

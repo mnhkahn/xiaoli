@@ -231,7 +231,7 @@ func loadMCPConfigFile(path string) []string {
 	}
 	var cfg mcpServerConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		logger.Infof("mcp config: skip %s (parse error: %v)", path, err)
+		log.Printf("mcp config: skip %s (parse error: %v)", path, err)
 		return nil
 	}
 	var urls []string

@@ -24,7 +24,7 @@ func (s *AdminServer) startLarkWSClient(ctx context.Context) {
 				eventID = event.EventV2Base.Header.EventID
 			}
 			if eventID != "" && s.larkEventSeen(eventID) {
-				logger.Infof("[lark] ws event duplicate ignored event_id=%s", eventID)
+				log.Printf("[lark] ws event duplicate ignored event_id=%s", eventID)
 				return nil
 			}
 
@@ -65,9 +65,9 @@ func (s *AdminServer) startLarkWSClient(ctx context.Context) {
 		larkws.WithLogLevel(larkcore.LogLevelWarn),
 	)
 
-	logger.Infof("[lark] ws start app_id=%s", s.cfg.LarkAppID)
+	log.Printf("[lark] ws start app_id=%s", s.cfg.LarkAppID)
 	if err := cli.Start(ctx); err != nil {
-		logger.Infof("[lark] ws stopped: %v", err)
+		log.Printf("[lark] ws stopped: %v", err)
 	}
 }
 

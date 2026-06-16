@@ -250,17 +250,17 @@ func newRedisMemory(cfg Config) *redisMemory {
 	}
 	opts, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
-		logger.Infof("redis url parse failed: %v", err)
+		log.Printf("redis url parse failed: %v", err)
 		return nil
 	}
 	client := redis.NewClient(opts)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := client.Ping(ctx).Err(); err != nil {
-		logger.Infof("redis ping failed: %v", err)
+		log.Printf("redis ping failed: %v", err)
 		return nil
 	}
-	logger.Infof("redis memory connected, prefix=%s ttl=%s", cfg.RedisKeyPrefix, cfg.MemoryTTL)
+	log.Printf("redis memory connected, prefix=%s ttl=%s", cfg.RedisKeyPrefix, cfg.MemoryTTL)
 	return &redisMemory{client: client, prefix: cfg.RedisKeyPrefix, ttl: cfg.MemoryTTL}
 }
 
@@ -353,12 +353,12 @@ func (m *redisMemory) Load(ctx context.Context, deviceID string) []*schema.Messa
 		return nil
 	}
 	if err != nil {
-		logger.Infof("redis load memory for %s: %v", deviceID, err)
+		log.Printf("redis load memory for %s: %v", deviceID, err)
 		return nil
 	}
 	var msgs []*schema.Message
 	if err := json.Unmarshal(data, &msgs); err != nil {
-		logger.Infof("redis unmarshal memory for %s: %v", deviceID, err)
+		log.Printf("redis unmarshal memory for %s: %v", deviceID, err)
 		return nil
 	}
 	return msgs
@@ -374,11 +374,11 @@ func (m *redisMemory) Save(ctx context.Context, deviceID string, msgs []*schema.
 	}
 	data, err := json.Marshal(msgs)
 	if err != nil {
-		logger.Infof("redis marshal memory for %s: %v", deviceID, err)
+		log.Printf("redis marshal memory for %s: %v", deviceID, err)
 		return
 	}
 	if err := m.client.Set(ctx, m.prefix+deviceID, data, m.ttl).Err(); err != nil {
-		logger.Infof("redis save memory for %s: %v", deviceID, err)
+		log.Printf("redis save memory for %s: %v", deviceID, err)
 	}
 }
 
@@ -695,7 +695,7 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		MaxTokens:   &maxTokens,
 	})
 	if err != nil {
-		logger.Infof("eino chat model init failed: %v", err)
+		log.Printf("eino chat model init failed: %v", err)
 		return nil
 	}
 
@@ -711,20 +711,20 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		}
 		client, err := newExternalMCPClient(ctx, mcpURL)
 		if err != nil {
-			logger.Infof("ext MCP connect failed %s: %v", mcpURL, err)
+			log.Printf("ext MCP connect failed %s: %v", mcpURL, err)
 			continue
 		}
 		tools, err := client.listTools(ctx)
 		if err != nil {
-			logger.Infof("ext MCP list tools failed %s: %v", mcpURL, err)
+			log.Printf("ext MCP list tools failed %s: %v", mcpURL, err)
 			continue
 		}
 		extMCPs = append(extMCPs, client)
 		extToolSets = append(extToolSets, tools)
-		logger.Infof("ext MCP ready: %s tools=%d", mcpURL, len(tools))
+		log.Printf("ext MCP ready: %s tools=%d", mcpURL, len(tools))
 	}
 
-	logger.Infof("eino agent ready: model=%s base=%s redis=%v extMCPs=%d", cfg.GoLLMModel, baseURL, memory != nil, len(extMCPs))
+	log.Printf("eino agent ready: model=%s base=%s redis=%v extMCPs=%d", cfg.GoLLMModel, baseURL, memory != nil, len(extMCPs))
 	return &EinoAgent{chatModel: chatModel, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets}
 }
 
@@ -745,7 +745,7 @@ func (a *EinoAgent) ChatWithContext(ctx context.Context, conversationID string, 
 	if conversationID == "" {
 		conversationID = deviceID
 	}
-	logger.Infof("EinoAgent.Chat called: conversation=%s device=%s text=%q", conversationID, deviceID, userText)
+	log.Printf("EinoAgent.Chat called: conversation=%s device=%s text=%q", conversationID, deviceID, userText)
 
 	// Load conversation history
 	history := a.memory.Load(ctx, conversationID)
@@ -804,18 +804,18 @@ func (a *EinoAgent) ChatWithContext(ctx context.Context, conversationID string, 
 		}
 		eventCount++
 		if event.Err != nil {
-			logger.Infof("EinoAgent.Chat event error: %v", event.Err)
+			log.Printf("EinoAgent.Chat event error: %v", event.Err)
 			return "", fmt.Errorf("agent error: %w", event.Err)
 		}
-		logger.Infof("EinoAgent.Chat event[%d]: output=%v", eventCount, event.Output != nil)
+		log.Printf("EinoAgent.Chat event[%d]: output=%v", eventCount, event.Output != nil)
 		if event.Output != nil && event.Output.MessageOutput != nil &&
 			event.Output.MessageOutput.Message != nil &&
 			event.Output.MessageOutput.Role == schema.Assistant {
 			result = event.Output.MessageOutput.Message
-			logger.Infof("EinoAgent.Chat assistant: %q", result.Content)
+			log.Printf("EinoAgent.Chat assistant: %q", result.Content)
 		}
 	}
-	logger.Infof("EinoAgent.Chat done: events=%d hasResult=%v", eventCount, result != nil)
+	log.Printf("EinoAgent.Chat done: events=%d hasResult=%v", eventCount, result != nil)
 	if result == nil || result.Content == "" {
 		return "", fmt.Errorf("agent returned empty response")
 	}
@@ -870,7 +870,7 @@ func (a *EinoAgent) Generate(ctx context.Context, system, user string) (string, 
 			break
 		}
 		if event.Err != nil {
-			logger.Infof("EinoAgent.Generate event error: %v", event.Err)
+			log.Printf("EinoAgent.Generate event error: %v", event.Err)
 			return "", fmt.Errorf("agent error: %w", event.Err)
 		}
 		if event.Output != nil && event.Output.MessageOutput != nil &&

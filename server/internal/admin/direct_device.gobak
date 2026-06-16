@@ -131,7 +131,7 @@ func (h *DeviceHub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		session.touch()
 		switch opcode {
 		case wsOpcodeText:
-			logger.Infof("ws text from %s: %s", session.deviceID, string(payload))
+			log.Printf("ws text from %s: %s", session.deviceID, string(payload))
 			h.handleText(session, payload)
 		case wsOpcodeBinary:
 			h.handleAudio(session, payload)
@@ -255,7 +255,7 @@ func (h *DeviceHub) register(deviceID string, conn net.Conn, clientIP string) *d
 	}
 	h.sessions[deviceID] = session
 	h.mu.Unlock()
-	logger.Infof("device connected: %s from %s", deviceID, clientIP)
+	log.Printf("device connected: %s from %s", deviceID, clientIP)
 	go session.idleTimeoutWatcher()
 	return session
 }
@@ -266,7 +266,7 @@ func (h *DeviceHub) unregister(session *deviceSession) {
 		delete(h.sessions, session.deviceID)
 	}
 	h.mu.Unlock()
-	logger.Infof("device disconnected: %s", session.deviceID)
+	log.Printf("device disconnected: %s", session.deviceID)
 	session.close()
 }
 
@@ -365,7 +365,7 @@ func (h *DeviceHub) handleVisionFrameNotification(session *deviceSession, raw js
 func (h *DeviceHub) handleListenMessage(session *deviceSession, message map[string]json.RawMessage) {
 	var state string
 	_ = json.Unmarshal(message["state"], &state)
-	logger.Infof("listen %s from %s", state, session.deviceID)
+	log.Printf("listen %s from %s", state, session.deviceID)
 	switch state {
 	case "start":
 		var mode string
@@ -373,7 +373,7 @@ func (h *DeviceHub) handleListenMessage(session *deviceSession, message map[stri
 		session.startVoiceRecording(mode)
 	case "stop":
 		frames := session.stopVoiceRecording()
-		logger.Infof("listen stop from %s: %d frames", session.deviceID, len(frames))
+		log.Printf("listen stop from %s: %d frames", session.deviceID, len(frames))
 		if len(frames) > 0 {
 			go h.processVoiceTurn(session, frames)
 		}
@@ -392,7 +392,7 @@ func (h *DeviceHub) handleListenMessage(session *deviceSession, message map[stri
 func (h *DeviceHub) handleAudio(session *deviceSession, payload []byte) {
 	recv, voice, total := session.appendVoiceFrame(payload)
 	if recv > 0 && recv%100 == 0 {
-		logger.Infof("audio recv from %s: recv=%d voice=%d buffered=%d lastSize=%d", session.deviceID, recv, voice, total, len(payload))
+		log.Printf("audio recv from %s: recv=%d voice=%d buffered=%d lastSize=%d", session.deviceID, recv, voice, total, len(payload))
 	}
 }
 
@@ -410,22 +410,22 @@ func (h *DeviceHub) processVoiceTurn(session *deviceSession, frames [][]byte) {
 	}
 	ogg, err := buildOggOpus(frames, 16000, 1, 60)
 	if err != nil {
-		logger.Infof("voice turn ogg build failed for %s: %v", session.deviceID, err)
+		log.Printf("voice turn ogg build failed for %s: %v", session.deviceID, err)
 		_ = h.playAssistantText(ctx, session, "这次没有听清楚。")
 		return
 	}
-	logger.Infof("voice turn ogg built for %s: bytes=%d frames=%d", session.deviceID, len(ogg), len(frames))
+	log.Printf("voice turn ogg built for %s: bytes=%d frames=%d", session.deviceID, len(ogg), len(frames))
 	text, err := h.asr.Transcribe(ctx, ogg)
 	if err != nil || strings.TrimSpace(text) == "" {
-		logger.Infof("voice turn ASR failed for %s: err=%v text=%q", session.deviceID, err, text)
+		log.Printf("voice turn ASR failed for %s: err=%v text=%q", session.deviceID, err, text)
 		_ = h.playAssistantText(ctx, session, "这次没有听清楚。")
 		return
 	}
-	logger.Infof("voice turn ASR ok for %s: text=%q", session.deviceID, text)
+	log.Printf("voice turn ASR ok for %s: text=%q", session.deviceID, text)
 	_ = session.writeJSON(map[string]any{"type": "stt", "text": text})
 
 	answer := h.answerUserText(ctx, session, text)
-	logger.Infof("voice turn LLM answer for %s: %q", session.deviceID, answer)
+	log.Printf("voice turn LLM answer for %s: %q", session.deviceID, answer)
 	if strings.TrimSpace(answer) == "" {
 		answer = "我现在还没想好怎么回答。"
 	}
@@ -438,7 +438,7 @@ func (h *DeviceHub) answerUserText(ctx context.Context, session *deviceSession, 
 	}
 	reply, err := h.conversation.Run(ctx, DeviceVoiceFactory{}.Build(session, userText))
 	if err != nil {
-		logger.Infof("conversation failed for %s: %v", session.deviceID, err)
+		log.Printf("conversation failed for %s: %v", session.deviceID, err)
 		return "我现在回答不了，语言模型调用失败。"
 	}
 	return reply.Text
@@ -462,15 +462,15 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 	synthStarted := time.Now()
 	contentType, body, err := h.tts.Synthesize(ctx, text)
 	if err != nil {
-		logger.Infof("tts synth failed for %s: text=%q err=%v", session.deviceID, text, err)
+		log.Printf("tts synth failed for %s: text=%q err=%v", session.deviceID, text, err)
 		return err
 	}
 	synthElapsed := time.Since(synthStarted)
-	logger.Infof("tts synth ok for %s: text=%q contentType=%s bytes=%d synthMS=%d", session.deviceID, text, contentType, len(body), synthElapsed.Milliseconds())
+	log.Printf("tts synth ok for %s: text=%q contentType=%s bytes=%d synthMS=%d", session.deviceID, text, contentType, len(body), synthElapsed.Milliseconds())
 
 	packets, frameDuration := extractOpusPackets(body)
 	if len(packets) == 0 {
-		logger.Infof("tts no opus packets extracted for %s", session.deviceID)
+		log.Printf("tts no opus packets extracted for %s", session.deviceID)
 		return errors.New("no opus packets")
 	}
 	if frameDuration <= 0 || frameDuration > 100*time.Millisecond {
@@ -482,14 +482,14 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 	reencoded, targetFrameDuration, err := reencodeOpusFrames(packets, directDeviceAudioSampleRate, frameDuration, directDeviceAudioFrameDurationMS)
 	reencodeElapsed := time.Since(reencodeStarted)
 	if err != nil || len(reencoded) == 0 {
-		logger.Infof("tts reencode failed for %s: err=%v reencoded=%d reencodeMS=%d, falling back to raw packets", session.deviceID, err, len(reencoded), reencodeElapsed.Milliseconds())
+		log.Printf("tts reencode failed for %s: err=%v reencoded=%d reencodeMS=%d, falling back to raw packets", session.deviceID, err, len(reencoded), reencodeElapsed.Milliseconds())
 		reencoded = packets
 		targetFrameDuration = frameDuration
 	}
 
 	sourceAudioDuration := time.Duration(len(packets)) * frameDuration
 	targetAudioDuration := time.Duration(len(reencoded)) * targetFrameDuration
-	logger.Infof("tts stream start for %s: packets=%d reencoded=%d srcFrameDur=%s targetFrameDur=%s srcAudioDur=%s targetAudioDur=%s prebuffer=%d reencodeMS=%d", session.deviceID, len(packets), len(reencoded), frameDuration, targetFrameDuration, sourceAudioDuration, targetAudioDuration, assistantAudioPrebufferPacketNum, reencodeElapsed.Milliseconds())
+	log.Printf("tts stream start for %s: packets=%d reencoded=%d srcFrameDur=%s targetFrameDur=%s srcAudioDur=%s targetAudioDur=%s prebuffer=%d reencodeMS=%d", session.deviceID, len(packets), len(reencoded), frameDuration, targetFrameDuration, sourceAudioDuration, targetAudioDuration, assistantAudioPrebufferPacketNum, reencodeElapsed.Milliseconds())
 
 	streamStarted := time.Now()
 	var pacedStart time.Time
@@ -502,11 +502,11 @@ func (h *DeviceHub) playAssistantText(ctx context.Context, session *deviceSessio
 			}
 		}
 		if err := session.writeFrame(wsOpcodeBinary, pkt); err != nil {
-			logger.Infof("tts stream send failed for %s at packet %d/%d: %v", session.deviceID, i+1, len(reencoded), err)
+			log.Printf("tts stream send failed for %s at packet %d/%d: %v", session.deviceID, i+1, len(reencoded), err)
 			return err
 		}
 	}
-	logger.Infof("tts stream done for %s: sent=%d streamMS=%d totalMS=%d", session.deviceID, len(reencoded), time.Since(streamStarted).Milliseconds(), time.Since(started).Milliseconds())
+	log.Printf("tts stream done for %s: sent=%d streamMS=%d totalMS=%d", session.deviceID, len(reencoded), time.Since(streamStarted).Milliseconds(), time.Since(started).Milliseconds())
 	return nil
 }
 
@@ -578,7 +578,7 @@ func (h *DeviceHub) bootstrapMCP(session *deviceSession) {
 	session.tools = allTools
 	session.mcpReady = len(allTools) > 0
 	session.mu.Unlock()
-	logger.Infof("device MCP ready: %s tools=%d", session.deviceID, len(allTools))
+	log.Printf("device MCP ready: %s tools=%d", session.deviceID, len(allTools))
 }
 
 func (s *deviceSession) callMCP(ctx context.Context, method string, params map[string]any) (mcpCallResult, error) {
@@ -595,23 +595,23 @@ func (s *deviceSession) callMCP(ctx context.Context, method string, params map[s
 		},
 	}
 	if err := s.writeJSON(envelope); err != nil {
-		logger.Infof("mcp call write failed for %s id=%d method=%s: %v", s.deviceID, id, method, err)
+		log.Printf("mcp call write failed for %s id=%d method=%s: %v", s.deviceID, id, method, err)
 		return mcpCallResult{}, err
 	}
-	logger.Infof("mcp call sent to %s id=%d method=%s", s.deviceID, id, method)
+	log.Printf("mcp call sent to %s id=%d method=%s", s.deviceID, id, method)
 	s.voiceMu.Lock()
 	s.lastVoiceActivity = time.Now()
 	s.voiceMu.Unlock()
 	select {
 	case result, ok := <-ch:
 		if !ok {
-			logger.Infof("mcp call channel closed for %s id=%d method=%s", s.deviceID, id, method)
+			log.Printf("mcp call channel closed for %s id=%d method=%s", s.deviceID, id, method)
 			return mcpCallResult{}, errors.New("device connection closed")
 		}
-		logger.Infof("mcp call result for %s id=%d method=%s error=%q", s.deviceID, id, method, result.Error)
+		log.Printf("mcp call result for %s id=%d method=%s error=%q", s.deviceID, id, method, result.Error)
 		return result, nil
 	case <-ctx.Done():
-		logger.Infof("mcp call timeout for %s id=%d method=%s err=%v", s.deviceID, id, method, ctx.Err())
+		log.Printf("mcp call timeout for %s id=%d method=%s err=%v", s.deviceID, id, method, ctx.Err())
 		return mcpCallResult{}, ctx.Err()
 	}
 }
@@ -712,15 +712,15 @@ func (s *deviceSession) startVoiceRecording(mode string) {
 	if s.vad == nil {
 		v, err := NewSileroVAD()
 		if err != nil {
-			logger.Infof("silero vad init failed for %s: %v", s.deviceID, err)
+			log.Printf("silero vad init failed for %s: %v", s.deviceID, err)
 		} else {
 			s.vad = v
 		}
 	}
 	if s.vad != nil {
-		logger.Infof("listen start %s mode=%s vad=silero", s.deviceID, mode)
+		log.Printf("listen start %s mode=%s vad=silero", s.deviceID, mode)
 	} else {
-		logger.Infof("listen start %s mode=%s vad=FALLBACK (silero unavailable)", s.deviceID, mode)
+		log.Printf("listen start %s mode=%s vad=FALLBACK (silero unavailable)", s.deviceID, mode)
 	}
 	if mode == "auto" {
 		go s.autoStopWatcher()
@@ -749,7 +749,7 @@ func (s *deviceSession) appendVoiceFrame(payload []byte) (recv, voice, total int
 			s.audioVoiceCnt++
 		}
 		if ran && s.audioRecvCnt%25 == 0 {
-			logger.Infof("vad sample %s: prob=%.2f isVoice=%v voiceCnt=%d/%d", s.deviceID, prob, isVoice, s.audioVoiceCnt, s.audioRecvCnt)
+			log.Printf("vad sample %s: prob=%.2f isVoice=%v voiceCnt=%d/%d", s.deviceID, prob, isVoice, s.audioVoiceCnt, s.audioRecvCnt)
 		}
 	} else {
 		// Fallback: if VAD missing, accept all frames so we don't block.
@@ -779,7 +779,7 @@ func (s *deviceSession) idleTimeoutWatcher() {
 		s.voiceMu.Unlock()
 		idle := time.Since(lastVoice)
 		if idle > idleTimeout {
-			logger.Infof("idle timeout for %s: %.0fs without voice, closing connection", s.deviceID, idle.Seconds())
+			log.Printf("idle timeout for %s: %.0fs without voice, closing connection", s.deviceID, idle.Seconds())
 			s.close()
 			return
 		}
@@ -801,7 +801,7 @@ func (s *deviceSession) autoStopWatcher() {
 		}
 		if hasVoice && time.Since(lastVoice) > silenceTimeout {
 			frames := s.stopVoiceRecording()
-			logger.Infof("auto-stop from %s: %d frames (silence %.1fs)", s.deviceID, len(frames), time.Since(lastVoice).Seconds())
+			log.Printf("auto-stop from %s: %d frames (silence %.1fs)", s.deviceID, len(frames), time.Since(lastVoice).Seconds())
 			if len(frames) > 0 {
 				go s.hub.processVoiceTurn(s, frames)
 			}
@@ -810,12 +810,12 @@ func (s *deviceSession) autoStopWatcher() {
 		if time.Since(started) > maxDuration {
 			frames := s.stopVoiceRecording()
 			if hasVoice {
-				logger.Infof("auto-stop from %s: %d frames (max duration, has voice)", s.deviceID, len(frames))
+				log.Printf("auto-stop from %s: %d frames (max duration, has voice)", s.deviceID, len(frames))
 				if len(frames) > 0 {
 					go s.hub.processVoiceTurn(s, frames)
 				}
 			} else {
-				logger.Infof("auto-stop from %s: %d frames discarded (max duration, no voice)", s.deviceID, len(frames))
+				log.Printf("auto-stop from %s: %d frames discarded (max duration, no voice)", s.deviceID, len(frames))
 			}
 			return
 		}

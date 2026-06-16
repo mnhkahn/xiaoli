@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
-	"log"
+	"os"
 
 	"xiaoli/server/internal/admin"
+
+	"github.com/mnhkahn/gogogo/logger"
 )
 
 func main() {
 	ctx := context.Background()
 	err := admin.WechatLoginCLI(ctx)
 	if err != nil {
-		log.Fatalf("login failed: %v", err)
+		logger.Errorf("login failed: %v", err)
+		os.Exit(1)
 	}
 }

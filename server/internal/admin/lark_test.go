@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/mnhkahn/gogogo/logger"
 )
 
 func TestLoadConfigEnablesLarkOnlyFromAppIDAndToken(t *testing.T) {
@@ -181,13 +182,10 @@ func TestLarkTextEventLogsIngressWithoutMessageContent(t *testing.T) {
 	})}
 
 	var logs bytes.Buffer
-	oldOutput := log.Writer()
-	oldFlags := log.Flags()
-	log.SetOutput(&logs)
-	log.SetFlags(0)
+	oldLogger := logger.StdLogger
+	logger.StdLogger = logger.NewWriterLogger(&logs, 0, 2)
 	t.Cleanup(func() {
-		log.SetOutput(oldOutput)
-		log.SetFlags(oldFlags)
+		logger.StdLogger = oldLogger
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/lark/events", strings.NewReader(`{
@@ -221,9 +219,9 @@ func TestLarkTextEventLogsIngressWithoutMessageContent(t *testing.T) {
 	}
 	output := logs.String()
 	for _, want := range []string{
-		"[lark] event received type=im.message.receive_v1 event_id=evt_log app_id=cli_test tenant=tenant_1",
-		"[lark] message received event_id=evt_log chat=oc_chat message=om_log sender_type=user sender=ou_user message_type=text",
-		"[lark] message reply sent event_id=evt_log message=om_log chat=oc_chat",
+		"[I] [lark] event received type=im.message.receive_v1 event_id=evt_log app_id=cli_test tenant=tenant_1",
+		"[I] [lark] message received event_id=evt_log chat=oc_chat message=om_log sender_type=user sender=ou_user message_type=text",
+		"[I] [lark] message reply sent event_id=evt_log message=om_log chat=oc_chat",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("logs missing %q\nlogs:\n%s", want, output)
