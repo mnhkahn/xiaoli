@@ -40,14 +40,19 @@ WORKDIR /skill-src
 RUN set -eux; \
     mkdir -p /skills; \
     for skill in $XIAOLI_SKILLS; do \
-        npx -y skills add "$skill"; \
+        repo_url="https://github.com/${skill}.git"; \
+        clone_dir="/tmp/$(basename $skill)"; \
+        git clone --depth 1 "$repo_url" "$clone_dir"; \
+        find "$clone_dir" -name SKILL.md -print | while read -r skill_file; do \
+            skill_dir="$(dirname "$skill_file")"; \
+            skill_name="$(basename "$skill_dir")"; \
+            rm -rf "/skills/$skill_name"; \
+            cp -a "$skill_dir" "/skills/$skill_name"; \
+        done; \
+        rm -rf "$clone_dir"; \
     done; \
-    find ./.agents/skills -mindepth 2 -maxdepth 2 -name SKILL.md -print | while read -r skill_file; do \
-        skill_dir="$(dirname "$skill_file")"; \
-        rm -rf "/skills/$(basename "$skill_dir")"; \
-        cp -a "$skill_dir" "/skills/$(basename "$skill_dir")"; \
-    done; \
-    test "$(find /skills -name SKILL.md | wc -l)" -gt 0
+    count=$(find /skills -name SKILL.md | wc -l); \
+    echo "skills installed: $count"
 
 RUN set -eux; \
     mkdir -p /skill-bin; \
