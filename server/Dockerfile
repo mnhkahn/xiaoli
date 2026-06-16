@@ -31,7 +31,31 @@ RUN curl -fsSL -o /tmp/ort.tgz \
 
 FROM node:22-bookworm-slim AS skill-build
 
-RUN mkdir -p /skills
+ARG XIAOLI_SKILLS="mnhkahn/cyeam-cli"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl tar \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    mkdir -p /skills; \
+    for skill in $XIAOLI_SKILLS; do \
+        npx -y skills add "$skill"; \
+    done; \
+    find /root -path '*/skills/*/SKILL.md' -print | while read -r skill_file; do \
+        skill_dir="$(dirname "$skill_file")"; \
+        cp -a "$skill_dir" "/skills/$(basename "$skill_dir")"; \
+    done; \
+    test "$(find /skills -name SKILL.md | wc -l)" -gt 0
+
+RUN set -eux; \
+    mkdir -p /skill-bin; \
+    find /skills -path '*/bin/*' -type f -perm /111 -exec cp -a {} /skill-bin/ \; ; \
+    if [ ! -x /skill-bin/cyeam ] && [ -d /skills/cyeam-cli ]; then \
+        curl -fsSL -o /tmp/cyeam.tgz https://github.com/mnhkahn/cyeam-cli/releases/latest/download/cyeam_Linux_x86_64.tar.gz; \
+        tar -xzf /tmp/cyeam.tgz -C /skill-bin cyeam; \
+        rm /tmp/cyeam.tgz; \
+    fi; \
+    find /skill-bin -type f -exec chmod +x {} \;
 
 FROM debian:bookworm-slim
 
@@ -43,6 +67,7 @@ COPY --from=onnxrt /opt/onnxruntime/lib/libonnxruntime.so* /usr/local/lib/
 RUN ldconfig
 
 COPY --from=go-build /out/xiaoli-admin /usr/local/bin/xiaoli-admin
+COPY --from=skill-build /skill-bin/ /usr/local/bin/
 COPY --from=skill-build /skills /opt/xiaoli/skills
 
 WORKDIR /data

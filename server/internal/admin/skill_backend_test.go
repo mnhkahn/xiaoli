@@ -110,6 +110,9 @@ func TestLoadConfigSetsDefaultSkillConfig(t *testing.T) {
 	t.Setenv("XIAOLI_SKILL_ROOTS", "")
 	t.Setenv("XIAOLI_ENABLED_SKILLS", "")
 	t.Setenv("XIAOLI_SKILL_MAX_BYTES", "")
+	t.Setenv("XIAOLI_SKILL_EXEC_TIMEOUT_SECONDS", "")
+	t.Setenv("XIAOLI_SKILL_EXEC_MAX_OUTPUT_BYTES", "")
+	t.Setenv("XIAOLI_SKILL_EXEC_GLOBAL_BIN_DIRS", "")
 
 	cfg := LoadConfig()
 	if len(cfg.SkillRoots) != 1 || cfg.SkillRoots[0] != "/opt/xiaoli/skills" {
@@ -120,6 +123,15 @@ func TestLoadConfigSetsDefaultSkillConfig(t *testing.T) {
 	}
 	if cfg.SkillMaxBytes != defaultSkillMaxBytes {
 		t.Fatalf("SkillMaxBytes = %d, want %d", cfg.SkillMaxBytes, defaultSkillMaxBytes)
+	}
+	if cfg.SkillExecTimeout != defaultSkillExecTimeout {
+		t.Fatalf("SkillExecTimeout = %s, want %s", cfg.SkillExecTimeout, defaultSkillExecTimeout)
+	}
+	if cfg.SkillExecMaxOutputBytes != defaultSkillExecMaxOutputBytes {
+		t.Fatalf("SkillExecMaxOutputBytes = %d, want %d", cfg.SkillExecMaxOutputBytes, defaultSkillExecMaxOutputBytes)
+	}
+	if len(cfg.SkillExecGlobalBinDirs) != 1 || cfg.SkillExecGlobalBinDirs[0] != "/usr/local/bin" {
+		t.Fatalf("SkillExecGlobalBinDirs = %#v, want /usr/local/bin", cfg.SkillExecGlobalBinDirs)
 	}
 }
 

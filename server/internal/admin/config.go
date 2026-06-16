@@ -51,6 +51,9 @@ type Config struct {
 	SkillRoots               []string
 	EnabledSkills            []string
 	SkillMaxBytes            int64
+	SkillExecTimeout         time.Duration
+	SkillExecMaxOutputBytes  int64
+	SkillExecGlobalBinDirs   []string
 	StudyMonitorEnabled      bool
 	StudyMonitorTimezone     string
 	StudyMonitorStartHour    int
@@ -122,6 +125,9 @@ func LoadConfig() Config {
 		SkillRoots:               csv(env("XIAOLI_SKILL_ROOTS", "/opt/xiaoli/skills")),
 		EnabledSkills:            csv(env("XIAOLI_ENABLED_SKILLS", "*")),
 		SkillMaxBytes:            int64(envInt("XIAOLI_SKILL_MAX_BYTES", int(defaultSkillMaxBytes))),
+		SkillExecTimeout:         time.Duration(envInt("XIAOLI_SKILL_EXEC_TIMEOUT_SECONDS", int(defaultSkillExecTimeout/time.Second))) * time.Second,
+		SkillExecMaxOutputBytes:  int64(envInt("XIAOLI_SKILL_EXEC_MAX_OUTPUT_BYTES", defaultSkillExecMaxOutputBytes)),
+		SkillExecGlobalBinDirs:   csv(env("XIAOLI_SKILL_EXEC_GLOBAL_BIN_DIRS", "/usr/local/bin")),
 		StudyMonitorEnabled:      envBool("STUDY_MONITOR_ENABLED", false),
 		StudyMonitorTimezone:     env("STUDY_MONITOR_TIMEZONE", "Asia/Shanghai"),
 		StudyMonitorStartHour:    envInt("STUDY_MONITOR_START_HOUR", 17),

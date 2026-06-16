@@ -736,15 +736,23 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		if err != nil {
 			logger.Infof("skill backend init failed: %v", err)
 		} else if backend.Count() > 0 {
+			buildSkillContent := newSkillContentBuilder(skillExecConfig{
+				Timeout:        cfg.SkillExecTimeout,
+				MaxOutputBytes: cfg.SkillExecMaxOutputBytes,
+				GlobalBinDirs:  cfg.SkillExecGlobalBinDirs,
+			})
 			mw, err := einoskill.NewMiddleware(ctx, &einoskill.Config{
-				Backend:    backend,
-				UseChinese: true,
+				Backend:               backend,
+				UseChinese:            true,
+				CustomToolDescription: buildSkillToolDescription,
+				CustomToolParams:      buildSkillToolParams,
+				BuildContent:          buildSkillContent,
 			})
 			if err != nil {
 				logger.Infof("skill middleware init failed: %v", err)
 			} else {
 				skillMW = mw
-				logger.Infof("skill backend ready: roots=%v skills=%d", cfg.SkillRoots, backend.Count())
+				logger.Infof("skill backend ready: roots=%v skills=%d exec_bins=%v", cfg.SkillRoots, backend.Count(), cfg.SkillExecGlobalBinDirs)
 			}
 		} else {
 			logger.Infof("skill backend empty: roots=%v", cfg.SkillRoots)
