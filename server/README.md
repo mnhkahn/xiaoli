@@ -145,4 +145,12 @@ Important environment variables:
 - `ZHIPU_API_KEY`: used only if switching back to `ChatGLMLLM` / `ChatGLMVLLM`
 - `DASHSCOPE_API_KEY`: used if switching to `AliLLM` / `QwenVLVLLM`
 
+Skill support:
+
+- The Docker image installs all skills from `npx -y skills add mnhkahn/cyeam-cli` into `/opt/xiaoli/skills`.
+- `XIAOLI_SKILL_ROOTS`: comma-separated skill roots; default `/opt/xiaoli/skills`.
+- `XIAOLI_ENABLED_SKILLS`: comma-separated allowlist; default `*` enables every indexed skill.
+- `XIAOLI_SKILL_MAX_BYTES`: maximum bytes per loaded `SKILL.md`; default `65536`.
+- At startup the server indexes only Skill frontmatter. During an agent run, Eino exposes a `skill` tool; the model calls it with a skill name to lazily load the full `SKILL.md`.
+
 Use `fly secrets set` for keys. Do not commit real keys.

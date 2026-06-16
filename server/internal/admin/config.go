@@ -48,6 +48,9 @@ type Config struct {
 	GoTTSTimeout             time.Duration
 	ExternalMCPURLs          []string
 	MCPConfigPath            string
+	SkillRoots               []string
+	EnabledSkills            []string
+	SkillMaxBytes            int64
 	StudyMonitorEnabled      bool
 	StudyMonitorTimezone     string
 	StudyMonitorStartHour    int
@@ -116,6 +119,9 @@ func LoadConfig() Config {
 		GoTTSTimeout:             time.Duration(envInt("XIAOLI_GO_TTS_TIMEOUT_SECONDS", 30)) * time.Second,
 		MCPConfigPath:            env("MCP_SERVERS_CONFIG", "mcp-servers.json"),
 		ExternalMCPURLs:          loadMCPConfigFile(env("MCP_SERVERS_CONFIG", "mcp-servers.json")),
+		SkillRoots:               csv(env("XIAOLI_SKILL_ROOTS", "/opt/xiaoli/skills")),
+		EnabledSkills:            csv(env("XIAOLI_ENABLED_SKILLS", "*")),
+		SkillMaxBytes:            int64(envInt("XIAOLI_SKILL_MAX_BYTES", int(defaultSkillMaxBytes))),
 		StudyMonitorEnabled:      envBool("STUDY_MONITOR_ENABLED", false),
 		StudyMonitorTimezone:     env("STUDY_MONITOR_TIMEZONE", "Asia/Shanghai"),
 		StudyMonitorStartHour:    envInt("STUDY_MONITOR_START_HOUR", 17),

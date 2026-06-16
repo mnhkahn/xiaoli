@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"github.com/mnhkahn/gogogo/logger"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -16,10 +15,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mnhkahn/gogogo/logger"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
+	einoskill "github.com/cloudwego/eino/adk/middlewares/skill"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
@@ -674,6 +675,7 @@ type EinoAgent struct {
 	hub         *DeviceHub
 	extMCPs     []*externalMCPClient
 	extToolSets [][]tool.BaseTool
+	skillMW     adk.ChatModelAgentMiddleware
 }
 
 func newEinoAgent(cfg Config) *EinoAgent {
@@ -724,8 +726,33 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		logger.Infof("ext MCP ready: %s tools=%d", mcpURL, len(tools))
 	}
 
-	logger.Infof("eino agent ready: model=%s base=%s redis=%v extMCPs=%d", cfg.GoLLMModel, baseURL, memory != nil, len(extMCPs))
-	return &EinoAgent{chatModel: chatModel, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets}
+	var skillMW adk.ChatModelAgentMiddleware
+	if len(cfg.SkillRoots) > 0 {
+		backend, err := newFileSkillBackend(fileSkillBackendConfig{
+			Roots:    cfg.SkillRoots,
+			Enabled:  cfg.EnabledSkills,
+			MaxBytes: cfg.SkillMaxBytes,
+		})
+		if err != nil {
+			logger.Infof("skill backend init failed: %v", err)
+		} else if backend.Count() > 0 {
+			mw, err := einoskill.NewMiddleware(ctx, &einoskill.Config{
+				Backend:    backend,
+				UseChinese: true,
+			})
+			if err != nil {
+				logger.Infof("skill middleware init failed: %v", err)
+			} else {
+				skillMW = mw
+				logger.Infof("skill backend ready: roots=%v skills=%d", cfg.SkillRoots, backend.Count())
+			}
+		} else {
+			logger.Infof("skill backend empty: roots=%v", cfg.SkillRoots)
+		}
+	}
+
+	logger.Infof("eino agent ready: model=%s base=%s redis=%v extMCPs=%d skills=%v", cfg.GoLLMModel, baseURL, memory != nil, len(extMCPs), skillMW != nil)
+	return &EinoAgent{chatModel: chatModel, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, skillMW: skillMW}
 }
 
 func (a *EinoAgent) SetHub(hub *DeviceHub) {
@@ -775,6 +802,9 @@ func (a *EinoAgent) ChatWithContext(ctx context.Context, conversationID string, 
 		Instruction:   "", // already prepended as system message
 		Model:         a.chatModel,
 		MaxIterations: 10,
+	}
+	if a.skillMW != nil {
+		agentCfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
 	}
 	if len(einoTools) > 0 {
 		agentCfg.ToolsConfig = adk.ToolsConfig{
@@ -844,8 +874,12 @@ func (a *EinoAgent) Generate(ctx context.Context, system, user string) (string, 
 	}
 
 	cfg := &adk.ChatModelAgentConfig{
-		Name:  "xiaoli",
-		Model: a.chatModel,
+		Name:          "xiaoli",
+		Model:         a.chatModel,
+		MaxIterations: 10,
+	}
+	if a.skillMW != nil {
+		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
 	}
 	if len(einoTools) > 0 {
 		cfg.ToolsConfig = adk.ToolsConfig{

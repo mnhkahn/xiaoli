@@ -29,6 +29,10 @@ RUN curl -fsSL -o /tmp/ort.tgz \
     && tar -xzf /tmp/ort.tgz -C /opt/onnxruntime --strip-components=1 \
     && rm /tmp/ort.tgz
 
+FROM node:22-bookworm-slim AS skill-build
+
+RUN mkdir -p /skills
+
 FROM debian:bookworm-slim
 
 RUN apt-get update \
@@ -39,6 +43,7 @@ COPY --from=onnxrt /opt/onnxruntime/lib/libonnxruntime.so* /usr/local/lib/
 RUN ldconfig
 
 COPY --from=go-build /out/xiaoli-admin /usr/local/bin/xiaoli-admin
+COPY --from=skill-build /skills /opt/xiaoli/skills
 
 WORKDIR /data
 

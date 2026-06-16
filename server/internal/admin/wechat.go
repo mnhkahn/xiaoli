@@ -299,7 +299,7 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 		return
 	}
 
-	wechatSendTyping(ctx, c, msg.FromUserID, msg.ContextToken)
+	wechatSendTyping(ctx, c, msg.ToUserID, msg.FromUserID, msg.ContextToken)
 
 	reply, err := s.conversation.Run(ctx, WechatTextFactory{}.Build(msg.ContextToken, msg.FromUserID, text))
 	if err != nil {
@@ -307,19 +307,20 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 		reply = ConversationReply{Text: "抱歉，我暂时无法回答。"}
 	}
 
-	if err := wechatSendText(ctx, c, msg.FromUserID, msg.ContextToken, reply.Text); err != nil {
+	if err := wechatSendText(ctx, c, msg.ToUserID, msg.FromUserID, msg.ContextToken, reply.Text); err != nil {
 		logger.Infof("[wechat] send error: %v", err)
 	} else {
 		logger.Infof("[wechat] send ok to=%s text=%q", msg.FromUserID, reply.Text)
 	}
 }
 
-func wechatSendTyping(ctx context.Context, c *wechatClient, toUserID, contextToken string) error {
+func wechatSendTyping(ctx context.Context, c *wechatClient, botUserID, toUserID, contextToken string) error {
 	msg := &wechatMessage{
+		FromUserID:   botUserID,
 		ToUserID:     toUserID,
 		MessageType:  wechatMsgBot,
 		MessageState: 1,
-		ContextToken: contextToken,
+		ContextToken: "",
 		ItemList: []wechatMsgItem{
 			{Type: wechatItemText, TextItem: &wechatTextItem{Text: " "}},
 		},
@@ -335,9 +336,9 @@ func wechatSendTyping(ctx context.Context, c *wechatClient, toUserID, contextTok
 	return nil
 }
 
-func wechatSendText(ctx context.Context, c *wechatClient, toUserID, contextToken, text string) error {
+func wechatSendText(ctx context.Context, c *wechatClient, botUserID, toUserID, contextToken, text string) error {
 	msg := &wechatMessage{
-		FromUserID:   "",
+		FromUserID:   botUserID,
 		ToUserID:     toUserID,
 		MessageType:  wechatMsgBot,
 		MessageState: 2,
