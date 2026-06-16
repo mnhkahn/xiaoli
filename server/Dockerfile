@@ -33,16 +33,18 @@ FROM node:22-bookworm-slim AS skill-build
 
 ARG XIAOLI_SKILLS="mnhkahn/cyeam-cli"
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl tar \
+    && apt-get install -y --no-install-recommends ca-certificates curl git tar \
     && rm -rf /var/lib/apt/lists/*
 
+WORKDIR /skill-src
 RUN set -eux; \
     mkdir -p /skills; \
     for skill in $XIAOLI_SKILLS; do \
         npx -y skills add "$skill"; \
     done; \
-    find /root -path '*/skills/*/SKILL.md' -print | while read -r skill_file; do \
+    find ./.agents/skills -mindepth 2 -maxdepth 2 -name SKILL.md -print | while read -r skill_file; do \
         skill_dir="$(dirname "$skill_file")"; \
+        rm -rf "/skills/$(basename "$skill_dir")"; \
         cp -a "$skill_dir" "/skills/$(basename "$skill_dir")"; \
     done; \
     test "$(find /skills -name SKILL.md | wc -l)" -gt 0
