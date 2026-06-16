@@ -5,15 +5,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"github.com/mnhkahn/gogogo/logger"
 	"math/big"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/mnhkahn/gogogo/logger"
 )
 
 const (
@@ -39,16 +41,17 @@ const (
 )
 
 type wechatMessage struct {
-	Seq          int              `json:"seq,omitempty"`
-	MessageID    int64            `json:"message_id,omitempty"`
-	FromUserID   string           `json:"from_user_id,omitempty"`
-	ToUserID     string           `json:"to_user_id,omitempty"`
-	CreateTimeMs int64            `json:"create_time_ms,omitempty"`
-	SessionID    string           `json:"session_id,omitempty"`
+	Seq          int               `json:"seq,omitempty"`
+	MessageID    int64             `json:"message_id,omitempty"`
+	FromUserID   string            `json:"from_user_id,omitempty"`
+	ToUserID     string            `json:"to_user_id,omitempty"`
+	ClientID     string            `json:"client_id,omitempty"`
+	CreateTimeMs int64             `json:"create_time_ms,omitempty"`
+	SessionID    string            `json:"session_id,omitempty"`
 	MessageType  wechatMessageType `json:"message_type"`
-	MessageState int              `json:"message_state"`
-	ContextToken string           `json:"context_token,omitempty"`
-	ItemList     []wechatMsgItem  `json:"item_list,omitempty"`
+	MessageState int               `json:"message_state"`
+	ContextToken string            `json:"context_token,omitempty"`
+	ItemList     []wechatMsgItem   `json:"item_list,omitempty"`
 }
 
 func (m *wechatMessage) Text() string {
@@ -61,11 +64,11 @@ func (m *wechatMessage) Text() string {
 }
 
 type wechatMsgItem struct {
-	Type     wechatItemType    `json:"type"`
-	TextItem *wechatTextItem   `json:"text_item,omitempty"`
+	Type      wechatItemType   `json:"type"`
+	TextItem  *wechatTextItem  `json:"text_item,omitempty"`
 	ImageItem *wechatImageItem `json:"image_item,omitempty"`
 	VoiceItem *wechatVoiceItem `json:"voice_item,omitempty"`
-	FileItem *wechatFileItem   `json:"file_item,omitempty"`
+	FileItem  *wechatFileItem  `json:"file_item,omitempty"`
 	VideoItem *wechatVideoItem `json:"video_item,omitempty"`
 }
 
@@ -74,9 +77,9 @@ type wechatTextItem struct {
 }
 
 type wechatImageItem struct {
-	Media    *wechatCDNMedia `json:"media,omitempty"`
-	AESKey   string          `json:"aes_key,omitempty"`
-	MidSize  int             `json:"mid_size,omitempty"`
+	Media   *wechatCDNMedia `json:"media,omitempty"`
+	AESKey  string          `json:"aes_key,omitempty"`
+	MidSize int             `json:"mid_size,omitempty"`
 }
 
 type wechatVoiceItem struct {
@@ -128,13 +131,33 @@ type wechatSendMsgResp struct {
 	ErrMsg  string `json:"errmsg,omitempty"`
 }
 
+type wechatGetConfigReq struct {
+	ILinkUserID  string          `json:"ilink_user_id,omitempty"`
+	ContextToken string          `json:"context_token,omitempty"`
+	BaseInfo     *wechatBaseInfo `json:"base_info,omitempty"`
+}
+
+type wechatGetConfigResp struct {
+	Ret          int    `json:"ret"`
+	ErrCode      int    `json:"errcode,omitempty"`
+	ErrMsg       string `json:"errmsg,omitempty"`
+	TypingTicket string `json:"typing_ticket,omitempty"`
+}
+
+type wechatSendTypingReq struct {
+	ILinkUserID  string          `json:"ilink_user_id,omitempty"`
+	TypingTicket string          `json:"typing_ticket,omitempty"`
+	Status       int             `json:"status,omitempty"`
+	BaseInfo     *wechatBaseInfo `json:"base_info,omitempty"`
+}
+
 type wechatBaseInfo struct {
 	ChannelVersion string `json:"channel_version"`
 }
 
 type wechatQRCodeResp struct {
-	QRCode          string `json:"qrcode"`
-	QRCodeImgURL    string `json:"qrcode_img_url,omitempty"`
+	QRCode           string `json:"qrcode"`
+	QRCodeImgURL     string `json:"qrcode_img_url,omitempty"`
 	QRCodeImgContent string `json:"qrcode_img_content,omitempty"`
 }
 
@@ -145,8 +168,16 @@ type wechatQRCodeStatus struct {
 }
 
 func generateUIN() string {
-	n, _ := rand.Int(rand.Reader, new(big.Int).SetUint64(1 << 32))
+	n, _ := rand.Int(rand.Reader, new(big.Int).SetUint64(1<<32))
 	return base64.StdEncoding.EncodeToString([]byte(n.String()))
+}
+
+func generateWechatClientID() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("xiaoli-wechat-%d", time.Now().UnixNano())
+	}
+	return "xiaoli-wechat-" + hex.EncodeToString(b[:])
 }
 
 type wechatClient struct {
@@ -299,7 +330,11 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 		return
 	}
 
-	wechatSendTyping(ctx, c, msg.ToUserID, msg.FromUserID, msg.ContextToken)
+	if err := wechatSendTyping(ctx, c, msg.ToUserID, msg.FromUserID, msg.ContextToken); err != nil {
+		logger.Infof("[wechat] typing send error: %v", err)
+	} else {
+		logger.Infof("[wechat] typing send ok to=%s", msg.FromUserID)
+	}
 
 	reply, err := s.conversation.Run(ctx, WechatTextFactory{}.Build(msg.ContextToken, msg.FromUserID, text))
 	if err != nil {
@@ -314,32 +349,52 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 	}
 }
 
-func wechatSendTyping(ctx context.Context, c *wechatClient, botUserID, toUserID, contextToken string) error {
-	msg := &wechatMessage{
-		FromUserID:   botUserID,
-		ToUserID:     toUserID,
-		MessageType:  wechatMsgBot,
-		MessageState: 1,
-		ContextToken: "",
-		ItemList: []wechatMsgItem{
-			{Type: wechatItemText, TextItem: &wechatTextItem{Text: " "}},
-		},
+func wechatGetTypingTicket(ctx context.Context, c *wechatClient, toUserID, contextToken string) (string, error) {
+	req := &wechatGetConfigReq{
+		ILinkUserID:  toUserID,
+		ContextToken: contextToken,
+		BaseInfo:     &wechatBaseInfo{ChannelVersion: "1.0.3"},
 	}
-	req := &wechatSendMsgReq{
-		Msg:      msg,
-		BaseInfo: &wechatBaseInfo{ChannelVersion: "1.0.3"},
-	}
-	_, err := c.postJSON(ctx, "/ilink/bot/sendmessage", req)
+	raw, err := c.postJSON(ctx, "/ilink/bot/getconfig", req)
 	if err != nil {
-		logger.Infof("[wechat] typing send error: %v", err)
+		return "", err
 	}
-	return nil
+	var resp wechatGetConfigResp
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return "", err
+	}
+	if resp.Ret != 0 {
+		return "", fmt.Errorf("wechat getconfig ret=%d err=%s", resp.Ret, resp.ErrMsg)
+	}
+	if resp.TypingTicket == "" {
+		return "", fmt.Errorf("wechat getconfig missing typing_ticket")
+	}
+	return resp.TypingTicket, nil
 }
 
-func wechatSendText(ctx context.Context, c *wechatClient, botUserID, toUserID, contextToken, text string) error {
+func wechatSendTyping(ctx context.Context, c *wechatClient, _ string, toUserID, contextToken string) error {
+	ticket, err := wechatGetTypingTicket(ctx, c, toUserID, contextToken)
+	if err != nil {
+		return err
+	}
+	req := &wechatSendTypingReq{
+		ILinkUserID:  toUserID,
+		TypingTicket: ticket,
+		Status:       1,
+		BaseInfo:     &wechatBaseInfo{ChannelVersion: "1.0.3"},
+	}
+	raw, err := c.postJSON(ctx, "/ilink/bot/sendtyping", req)
+	if err != nil {
+		return err
+	}
+	return decodeWechatSendResponse(raw)
+}
+
+func wechatSendText(ctx context.Context, c *wechatClient, _ string, toUserID, contextToken, text string) error {
 	msg := &wechatMessage{
-		FromUserID:   botUserID,
+		FromUserID:   "",
 		ToUserID:     toUserID,
+		ClientID:     generateWechatClientID(),
 		MessageType:  wechatMsgBot,
 		MessageState: 2,
 		ContextToken: contextToken,
@@ -355,6 +410,10 @@ func wechatSendText(ctx context.Context, c *wechatClient, botUserID, toUserID, c
 	if err != nil {
 		return err
 	}
+	return decodeWechatSendResponse(raw)
+}
+
+func decodeWechatSendResponse(raw []byte) error {
 	var resp wechatSendMsgResp
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return err
