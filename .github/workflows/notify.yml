@@ -44,7 +44,7 @@ jobs:
                       [ { tag: "text", text: "🔧 \($source_branch // "∅") -> \($target_branch // "∅")" } ],
                       [ { tag: "text", text: "🏆 \($env // "未知版本") / \($version // "未知版本")" } ],
                       [ { tag: "text", text: "📝 提交信息: \($commit_body // "")" } ],
-                      [ { tag: "a", text: "查看更多", href: ($repo_homepage // $repo_html_url) } ]
+                      [ { tag: "a", text: "查看更多", href: "${{ github.event.workflow_run.html_url }}" } ]
                     ]
                   }
                 }
