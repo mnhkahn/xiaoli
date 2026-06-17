@@ -54,7 +54,7 @@ func (s *AdminServer) startLarkWSClient(ctx context.Context) {
 			}
 			callback.Event = eventBytes
 
-			handleCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			handleCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
 			return s.handleLarkTextMessage(handleCtx, callback)
 		})

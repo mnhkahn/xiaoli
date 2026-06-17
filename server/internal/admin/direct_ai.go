@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/textproto"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/mnhkahn/gogogo/logger"
@@ -26,6 +25,8 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	einojsonschema "github.com/eino-contrib/jsonschema"
+
+	agentmcp "xiaoli/server/internal/agent/tool/mcp"
 )
 
 // ---------------------------------------------------------------------------
@@ -520,230 +521,6 @@ func safeToolName(name string) string {
 }
 
 // ---------------------------------------------------------------------------
-// external MCP client — automatically injects tools from remote MCP servers
-// ---------------------------------------------------------------------------
-
-type externalMCPTool struct {
-	info     *schema.ToolInfo
-	client   *externalMCPClient
-	toolName string
-}
-
-func (t *externalMCPTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return t.info, nil
-}
-
-func (t *externalMCPTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	var args map[string]any
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		args = map[string]any{}
-	}
-	return t.client.call(ctx, t.toolName, args)
-}
-
-type externalMCPClient struct {
-	url       string
-	sessionID string
-	mu        sync.Mutex
-}
-
-func newExternalMCPClient(ctx context.Context, url string) (*externalMCPClient, error) {
-	c := &externalMCPClient{url: url}
-	sid, err := c.mcpInit(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("mcp connect %s: %w", url, err)
-	}
-	c.sessionID = sid
-	return c, nil
-}
-
-// listTools queries the MCP server for all available tools and wraps each as an Eino BaseTool.
-func (c *externalMCPClient) listTools(ctx context.Context) ([]tool.BaseTool, error) {
-	payload, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "tools/list",
-		"params":  map[string]any{},
-	})
-	c.mu.Lock()
-	sessionID := c.sessionID
-	c.mu.Unlock()
-	bodyStr, err := c.mcpPost(ctx, payload, "Mcp-Session-Id", sessionID)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp struct {
-		Result *struct {
-			Tools []map[string]any `json:"tools"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal([]byte(bodyStr), &resp); err != nil {
-		return nil, fmt.Errorf("parse tools/list: %w", err)
-	}
-	if resp.Result == nil {
-		return nil, fmt.Errorf("tools/list: no result")
-	}
-
-	var tools []tool.BaseTool
-	usedNames := map[string]int{}
-	for _, raw := range resp.Result.Tools {
-		name, _ := raw["name"].(string)
-		if name == "" {
-			continue
-		}
-		desc, _ := raw["description"].(string)
-		if desc == "" {
-			desc = name
-		}
-
-		var paramsOneOf *schema.ParamsOneOf
-		if inputSchema, ok := raw["inputSchema"]; ok && inputSchema != nil {
-			schemaBytes, err := json.Marshal(inputSchema)
-			if err == nil {
-				var js einojsonschema.Schema
-				if err := json.Unmarshal(schemaBytes, &js); err == nil {
-					paramsOneOf = schema.NewParamsOneOfByJSONSchema(&js)
-				}
-			}
-		}
-
-		tools = append(tools, &externalMCPTool{
-			info: &schema.ToolInfo{
-				Name:        uniqueSafeToolName(name, usedNames),
-				Desc:        desc,
-				ParamsOneOf: paramsOneOf,
-			},
-			client:   c,
-			toolName: name,
-		})
-	}
-	return tools, nil
-}
-
-// call invokes a tool on the remote MCP server.
-func (c *externalMCPClient) call(ctx context.Context, toolName string, args map[string]any) (string, error) {
-	c.mu.Lock()
-	sessionID := c.sessionID
-	c.mu.Unlock()
-
-	payload, _ := json.Marshal(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      2,
-		"method":  "tools/call",
-		"params": map[string]any{
-			"name":      toolName,
-			"arguments": args,
-		},
-	})
-	bodyStr, err := c.mcpPost(ctx, payload, "Mcp-Session-Id", sessionID)
-	if err != nil {
-		// session might have expired — re-init and retry once
-		if sid, reErr := c.reinit(ctx); reErr == nil {
-			c.mu.Lock()
-			c.sessionID = sid
-			c.mu.Unlock()
-			return c.call(ctx, toolName, args)
-		}
-		return fmt.Sprintf(`{"error":"tool call failed: %v"}`, err), nil
-	}
-
-	var mcpResp struct {
-		Result *struct {
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"result"`
-		Error *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal([]byte(bodyStr), &mcpResp); err != nil {
-		return fmt.Sprintf(`{"error":"parse response: %v"}`, err), nil
-	}
-	if mcpResp.Error != nil {
-		return fmt.Sprintf(`{"error":"MCP error code=%d: %s"}`, mcpResp.Error.Code, mcpResp.Error.Message), nil
-	}
-	if mcpResp.Result == nil || len(mcpResp.Result.Content) == 0 {
-		return `{"error":"empty result"}`, nil
-	}
-	return mcpResp.Result.Content[0].Text, nil
-}
-
-func (c *externalMCPClient) mcpInit(ctx context.Context) (string, error) {
-	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"xiaoli-server","version":"1.0"}}}`
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, strings.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	sessionID := resp.Header.Get("Mcp-Session-Id")
-	if sessionID == "" {
-		raw, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("MCP init: no session ID, body: %s", string(raw))
-	}
-	return sessionID, nil
-}
-
-func (c *externalMCPClient) reinit(ctx context.Context) (string, error) {
-	sid, err := c.mcpInit(ctx)
-	if err != nil {
-		return "", err
-	}
-	return sid, nil
-}
-
-func (c *externalMCPClient) mcpPost(ctx context.Context, payload []byte, extraHeaders ...string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(payload))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	for i := 0; i+1 < len(extraHeaders); i += 2 {
-		req.Header.Set(extraHeaders[i], extraHeaders[i+1])
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	raw, _ := io.ReadAll(resp.Body)
-	bodyStr := string(raw)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("MCP HTTP %d: %s", resp.StatusCode, strings.TrimSpace(bodyStr))
-	}
-	return extractMCPData(bodyStr), nil
-}
-
-func extractMCPData(body string) string {
-	lines := strings.Split(body, "\n")
-	var data []string
-	for _, line := range lines {
-		line = strings.TrimRight(line, "\r")
-		if strings.HasPrefix(line, "data:") {
-			data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-		}
-	}
-	if len(data) > 0 {
-		return strings.Join(data, "\n")
-	}
-	return strings.TrimSpace(body)
-}
-
-// ---------------------------------------------------------------------------
 // EinoAgent — Eino-powered LLM with memory and skill support
 // ---------------------------------------------------------------------------
 
@@ -752,7 +529,7 @@ type EinoAgent struct {
 	memory      *redisMemory
 	cfg         Config
 	hub         *DeviceHub
-	extMCPs     []*externalMCPClient
+	extMCPs     []*agentmcp.Client
 	extToolSets [][]tool.BaseTool
 	skillMW     adk.ChatModelAgentMiddleware
 }
@@ -783,19 +560,19 @@ func newEinoAgent(cfg Config) *EinoAgent {
 	memory := newRedisMemory(cfg)
 
 	// Connect to external MCP servers and discover their tools
-	var extMCPs []*externalMCPClient
+	var extMCPs []*agentmcp.Client
 	var extToolSets [][]tool.BaseTool
 	for _, mcpURL := range cfg.ExternalMCPURLs {
 		mcpURL = strings.TrimSpace(mcpURL)
 		if mcpURL == "" {
 			continue
 		}
-		client, err := newExternalMCPClient(ctx, mcpURL)
+		client, err := agentmcp.NewClient(ctx, mcpURL)
 		if err != nil {
 			logger.Infof("ext MCP connect failed %s: %v", mcpURL, err)
 			continue
 		}
-		tools, err := client.listTools(ctx)
+		tools, err := client.ListTools(ctx)
 		if err != nil {
 			logger.Infof("ext MCP list tools failed %s: %v", mcpURL, err)
 			continue

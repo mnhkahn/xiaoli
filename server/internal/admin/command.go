@@ -2,126 +2,83 @@ package admin
 
 import (
 	"context"
-	"fmt"
-	"strings"
+
+	agentchannel "xiaoli/server/internal/agent/channel"
+	"xiaoli/server/internal/agent/slash"
 )
 
-type builtinCommand struct {
-	Name string
-	Args string
-}
+type builtinCommand = slash.Command
 
 func parseBuiltinCommand(text string) (builtinCommand, bool) {
-	text = strings.TrimSpace(text)
-	if !strings.HasPrefix(text, "/") {
+	cmd, ok := slash.Parse(text)
+	if !ok {
 		return builtinCommand{}, false
 	}
-	fields := strings.Fields(strings.TrimPrefix(text, "/"))
-	if len(fields) == 0 {
-		return builtinCommand{}, false
-	}
-	name := strings.ToLower(fields[0])
-	switch name {
+	switch cmd.Name {
 	case "skills", "model", "channel":
-		return builtinCommand{Name: name, Args: strings.TrimSpace(strings.Join(fields[1:], " "))}, true
+		return cmd, true
 	default:
 		return builtinCommand{}, false
 	}
 }
 
-func (s *AdminServer) handleBuiltinCommand(ctx context.Context, channel ConversationChannel, text string) (string, bool) {
-	if channel == ChannelDeviceVoice {
-		return "", false
-	}
-	cmd, ok := parseBuiltinCommand(text)
+func (s *AdminServer) handleBuiltinCommand(ctx context.Context, source ConversationChannel, text string) (string, bool) {
+	sourceType, ok := slashSourceType(source)
 	if !ok {
 		return "", false
 	}
-	switch cmd.Name {
-	case "skills":
-		return s.builtinSkills(ctx), true
-	case "model":
-		return s.builtinModel(), true
-	case "channel":
-		return s.builtinChannel(ctx), true
+	return slash.NewHandler(adminSlashDeps{s: s}).Handle(ctx, sourceType, text)
+}
+
+func slashSourceType(source ConversationChannel) (agentchannel.Type, bool) {
+	switch source {
+	case ChannelLarkText:
+		return agentchannel.TypeLark, true
+	case ChannelWechatText:
+		return agentchannel.TypeWechat, true
+	case ChannelDeviceVoice:
+		return agentchannel.TypeESP32, true
 	default:
 		return "", false
 	}
 }
 
-func (s *AdminServer) builtinSkills(ctx context.Context) string {
-	if len(s.cfg.SkillRoots) == 0 {
-		return "当前没有配置 Skill 根目录。"
+type adminSlashDeps struct {
+	s *AdminServer
+}
+
+func (d adminSlashDeps) ListSkills(ctx context.Context) ([]slash.SkillInfo, error) {
+	if len(d.s.cfg.SkillRoots) == 0 {
+		return nil, nil
 	}
 	backend, err := newFileSkillBackend(fileSkillBackendConfig{
-		Roots:    s.cfg.SkillRoots,
-		Enabled:  s.cfg.EnabledSkills,
-		MaxBytes: s.cfg.SkillMaxBytes,
+		Roots:    d.s.cfg.SkillRoots,
+		Enabled:  d.s.cfg.EnabledSkills,
+		MaxBytes: d.s.cfg.SkillMaxBytes,
 	})
 	if err != nil {
-		return "读取 Skill 列表失败：" + err.Error()
+		return nil, err
 	}
 	skills, err := backend.List(ctx)
 	if err != nil {
-		return "读取 Skill 列表失败：" + err.Error()
+		return nil, err
 	}
-	if len(skills) == 0 {
-		return "当前没有启用的 Skill。"
-	}
-	var b strings.Builder
-	b.WriteString("可用 Skills：")
+	out := make([]slash.SkillInfo, 0, len(skills))
 	for _, skill := range skills {
-		b.WriteString("\n- ")
-		b.WriteString(skill.Name)
-		if skill.Description != "" {
-			b.WriteString("：")
-			b.WriteString(skill.Description)
-		}
+		out = append(out, slash.SkillInfo{Name: skill.Name, Description: skill.Description})
 	}
-	return b.String()
+	return out, nil
 }
 
-func (s *AdminServer) builtinModel() string {
-	var b strings.Builder
-	b.WriteString("当前模型配置：")
-	writeCommandValue(&b, "LLM", s.cfg.GoLLMModel)
-	writeCommandValue(&b, "VLLM", s.cfg.GoVLLMModel)
-	writeCommandValue(&b, "ASR", s.cfg.GoASRModel)
-	writeCommandValue(&b, "TTS", s.cfg.GoTTSModel)
-	return b.String()
+func (d adminSlashDeps) ModelInfo() slash.ModelInfo {
+	return slash.ModelInfo{
+		LLM:  d.s.cfg.GoLLMModel,
+		VLLM: d.s.cfg.GoVLLMModel,
+		ASR:  d.s.cfg.GoASRModel,
+		TTS:  d.s.cfg.GoTTSModel,
+	}
 }
 
-func (s *AdminServer) builtinChannel(ctx context.Context) string {
-	channels, err := s.channels(ctx)
-	if err != nil {
-		return "读取 Channel 列表失败：" + err.Error()
-	}
-	if len(channels) == 0 {
-		return "当前没有可用 Channel。"
-	}
-	var b strings.Builder
-	b.WriteString("可用 Channels：")
-	for _, channel := range channels {
-		b.WriteString("\n- ")
-		b.WriteString(channel.ID)
-		b.WriteString(" [")
-		b.WriteString(string(channel.Type))
-		b.WriteString("]")
-		if channel.Status != "" {
-			b.WriteString(" ")
-			b.WriteString(channel.Status)
-		}
-		if channel.DeviceID != "" {
-			b.WriteString(" device=")
-			b.WriteString(channel.DeviceID)
-		}
-	}
-	return b.String()
-}
-
-func writeCommandValue(b *strings.Builder, name, value string) {
-	if strings.TrimSpace(value) == "" {
-		value = "未配置"
-	}
-	fmt.Fprintf(b, "\n- %s: %s", name, value)
+func (d adminSlashDeps) ListChannels(ctx context.Context) ([]agentchannel.Info, error) {
+	return d.s.channels(ctx)
 }

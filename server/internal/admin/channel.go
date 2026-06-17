@@ -2,61 +2,30 @@ package admin
 
 import (
 	"context"
-	"sort"
+
+	agentchannel "xiaoli/server/internal/agent/channel"
 )
 
-type ChannelType string
+type ChannelType = agentchannel.Type
 
 const (
-	ChannelTypeESP32  ChannelType = "esp32"
-	ChannelTypeLark   ChannelType = "lark"
-	ChannelTypeWechat ChannelType = "wechat"
+	ChannelTypeESP32  = agentchannel.TypeESP32
+	ChannelTypeLark   = agentchannel.TypeLark
+	ChannelTypeWechat = agentchannel.TypeWechat
 )
 
-type ChannelCapabilities struct {
-	Text  bool `json:"text"`
-	Image bool `json:"image"`
-	Audio bool `json:"audio"`
-	Tools bool `json:"tools"`
-	Video bool `json:"video"`
-}
+type ChannelCapabilities = agentchannel.Capabilities
 
-type ChannelInfo struct {
-	ID             string              `json:"id"`
-	Type           ChannelType         `json:"type"`
-	DisplayName    string              `json:"display_name"`
-	Status         string              `json:"status"`
-	ConversationID string              `json:"conversation_id,omitempty"`
-	DeviceID       string              `json:"device_id,omitempty"`
-	Capabilities   ChannelCapabilities `json:"capabilities"`
-	LastActivity   float64             `json:"last_activity,omitempty"`
-	Raw            map[string]any      `json:"raw,omitempty"`
-}
+type ChannelInfo = agentchannel.Info
 
-type ChannelProvider interface {
-	ListChannels(ctx context.Context) ([]ChannelInfo, error)
-}
+type ChannelProvider = agentchannel.Provider
 
 func (s *AdminServer) channels(ctx context.Context) ([]ChannelInfo, error) {
-	var channels []ChannelInfo
-	for _, provider := range s.channelProviders() {
-		list, err := provider.ListChannels(ctx)
-		if err != nil {
-			return nil, err
-		}
-		channels = append(channels, list...)
-	}
-	sort.SliceStable(channels, func(i, j int) bool {
-		if channels[i].Type == channels[j].Type {
-			return channels[i].ID < channels[j].ID
-		}
-		return channelTypeRank(channels[i].Type) < channelTypeRank(channels[j].Type)
-	})
-	return channels, nil
+	return agentchannel.NewRegistry(s.channelProviders()...).List(ctx)
 }
 
-func (s *AdminServer) channelProviders() []ChannelProvider {
-	return []ChannelProvider{
+func (s *AdminServer) channelProviders() []agentchannel.Provider {
+	return []agentchannel.Provider{
 		deviceChannelProvider{devices: s.deviceController()},
 		larkChannelProvider{cfg: s.cfg},
 		wechatChannelProvider{cfg: s.cfg},
@@ -124,40 +93,14 @@ func (p wechatChannelProvider) ListChannels(ctx context.Context) ([]ChannelInfo,
 }
 
 func channelFromDevice(device Device) ChannelInfo {
-	displayName := device.DeviceID
-	if displayName == "" {
-		displayName = "ESP32"
-	}
-	return ChannelInfo{
-		ID:             "esp32:" + device.DeviceID,
-		Type:           ChannelTypeESP32,
-		DisplayName:    displayName,
-		Status:         "online",
-		ConversationID: device.DeviceID,
-		DeviceID:       device.DeviceID,
-		LastActivity:   device.LastActivity,
-		Capabilities: ChannelCapabilities{
-			Text:  true,
-			Image: true,
-			Audio: true,
-			Tools: device.MCPReady,
-			Video: true,
-		},
-		Raw: map[string]any{
-			"device": device,
-		},
-	}
-}
-
-func channelTypeRank(typ ChannelType) int {
-	switch typ {
-	case ChannelTypeESP32:
-		return 0
-	case ChannelTypeLark:
-		return 1
-	case ChannelTypeWechat:
-		return 2
-	default:
-		return 99
-	}
+	return agentchannel.ESP32InfoFromDevice(agentchannel.DeviceInfo{
+		DeviceID:     device.DeviceID,
+		SessionID:    device.SessionID,
+		ClientIP:     device.ClientIP,
+		MCPReady:     device.MCPReady,
+		ToolCount:    device.ToolCount,
+		ConnectedAt:  device.ConnectedAt,
+		LastActivity: device.LastActivity,
+		Raw:          device,
+	})
 }
