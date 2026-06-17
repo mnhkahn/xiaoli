@@ -85,7 +85,7 @@ func TestLarkTextEventUsesSharedPipelineAndReplies(t *testing.T) {
 		}),
 	}
 
-	authBodies := make(chan map[string]string, 1)
+	authBodies := make(chan map[string]string, 4)
 	replyBodies := make(chan string, 1)
 	srv.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		switch req.URL.Path {
@@ -103,6 +103,16 @@ func TestLarkTextEventUsesSharedPipelineAndReplies(t *testing.T) {
 			raw, _ := io.ReadAll(req.Body)
 			replyBodies <- string(raw)
 			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"message_id": "reply_1"}}), nil
+		case "/open-apis/im/v1/messages/om_123/reactions":
+			if req.Method != http.MethodPost {
+				t.Fatalf("reaction method = %s, want POST", req.Method)
+			}
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"reaction_id": "reaction_1"}}), nil
+		case "/open-apis/im/v1/messages/om_123/reactions/reaction_1":
+			if req.Method != http.MethodDelete {
+				t.Fatalf("remove reaction method = %s, want DELETE", req.Method)
+			}
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0}), nil
 		default:
 			t.Fatalf("unexpected Lark request path: %s", req.URL.Path)
 			return nil, nil
@@ -175,6 +185,16 @@ func TestLarkTextEventLogsIngressWithoutMessageContent(t *testing.T) {
 			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "tenant_access_token": "tenant-token"}), nil
 		case "/open-apis/im/v1/messages/om_log/reply":
 			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"message_id": "reply_log"}}), nil
+		case "/open-apis/im/v1/messages/om_log/reactions":
+			if req.Method != http.MethodPost {
+				t.Fatalf("reaction method = %s, want POST", req.Method)
+			}
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"reaction_id": "reaction_log"}}), nil
+		case "/open-apis/im/v1/messages/om_log/reactions/reaction_log":
+			if req.Method != http.MethodDelete {
+				t.Fatalf("remove reaction method = %s, want DELETE", req.Method)
+			}
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0}), nil
 		default:
 			t.Fatalf("unexpected Lark request path: %s", req.URL.Path)
 			return nil, nil

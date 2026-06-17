@@ -10,9 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mnhkahn/gogogo/logger"
 	"html"
 	"io"
-	"github.com/mnhkahn/gogogo/logger"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -157,6 +157,8 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleLogout(w, r)
 	case r.URL.Path == "/admin/api/me":
 		s.withUser(w, r, s.handleMe)
+	case r.URL.Path == "/admin/api/channels":
+		s.withUser(w, r, s.handleChannels)
 	case r.URL.Path == "/admin/api/devices":
 		s.withUser(w, r, s.handleDevices)
 	case r.URL.Path == "/admin/api/tools":
@@ -396,6 +398,15 @@ func (s *AdminServer) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *AdminServer) handleMe(w http.ResponseWriter, r *http.Request, user map[string]any) {
 	writeJSON(w, http.StatusOK, map[string]any{"user": user})
+}
+
+func (s *AdminServer) handleChannels(w http.ResponseWriter, r *http.Request, user map[string]any) {
+	channels, err := s.channels(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"channels": channels})
 }
 
 func (s *AdminServer) handleDevices(w http.ResponseWriter, r *http.Request, user map[string]any) {
@@ -1184,6 +1195,7 @@ func dashboardHTML(user map[string]any) string {
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
+    let channels = [];
     let devices = [];
     let tools = [];
     let streamSocket = null;
@@ -1210,7 +1222,11 @@ func dashboardHTML(user map[string]any) string {
       }
     }
 
-    function selectedDevice() { return $("device").value || ""; }
+    function selectedChannel() { return $("device").value || ""; }
+    function selectedDevice() {
+      const option = $("device").selectedOptions[0];
+      return (option && option.dataset.deviceId) || "";
+    }
     function show(value) { $("output").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2); }
     function showSpeak(value) { $("speakOutput").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2); }
     function setStreamStatus(text) { $("streamStatus").textContent = text; }
@@ -1257,23 +1273,34 @@ func dashboardHTML(user map[string]any) string {
     }
 
     async function loadDevices() {
-      const data = await api("/admin/api/devices");
-      devices = data.devices || [];
-      if (!devices.length) {
-        $("device").innerHTML = "<option value=\"\">当前没有在线设备</option>";
+      const data = await api("/admin/api/channels");
+      channels = data.channels || [];
+      devices = channels.filter(channel => channel.type === "esp32" && channel.device_id).map(channel => channel.raw && channel.raw.device ? channel.raw.device : { device_id: channel.device_id });
+      if (!channels.length) {
+        $("device").innerHTML = "<option value=\"\">当前没有可用通道</option>";
         $("tool").innerHTML = "";
-        show("当前没有在线设备");
+        show("当前没有可用通道");
         return;
       }
-      const current = selectedDevice();
-      $("device").innerHTML = devices.map(d => "<option value=\"" + d.device_id + "\">" + d.device_id + " " + (d.mcp_ready ? "ready" : "not ready") + "</option>").join("");
-      if (current && devices.some(d => d.device_id === current)) $("device").value = current;
+      const current = selectedChannel();
+      $("device").innerHTML = channels.map(channel => {
+        const caps = channel.capabilities || {};
+        const deviceID = channel.device_id || "";
+        const label = (channel.display_name || channel.id) + " [" + channel.type + "] " + (caps.tools ? "ready" : channel.status || "");
+        return "<option value=\"" + channel.id + "\" data-device-id=\"" + deviceID + "\">" + label + "</option>";
+      }).join("");
+      if (current && channels.some(channel => channel.id === current)) $("device").value = current;
       await loadTools();
       show(data);
     }
     async function loadTools() {
       const id = selectedDevice();
-      if (!id) return;
+      if (!id) {
+        tools = [];
+        $("tool").innerHTML = "";
+        $("args").value = "{}";
+        return;
+      }
       const data = await api("/admin/api/tools?device_id=" + encodeURIComponent(id));
       tools = data.tools || [];
       $("tool").innerHTML = tools.map(t => {

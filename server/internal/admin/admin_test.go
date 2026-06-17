@@ -281,6 +281,79 @@ func TestDashboardRestoresThreeTabControlLayout(t *testing.T) {
 	}
 }
 
+func TestDashboardLoadsChannelListIntoDeviceSelector(t *testing.T) {
+	html := dashboardHTML(map[string]any{"sub": "logto-user"})
+
+	for _, fragment := range []string{
+		`let channels = [];`,
+		`/admin/api/channels`,
+		`channel.device_id || ""`,
+		`data-device-id`,
+		`if (!id) {`,
+		`tools = [];`,
+		`当前没有可用通道`,
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("dashboard HTML missing channel selector fragment %s", fragment)
+		}
+	}
+}
+
+func TestChannelsAPIIncludesDevicesAndConfiguredChatChannels(t *testing.T) {
+	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/bridge/devices" {
+			t.Fatalf("path = %s, want /bridge/devices", r.URL.Path)
+		}
+		return jsonResponse(http.StatusOK, map[string]any{
+			"devices": []map[string]any{
+				{
+					"device_id":     "device-1",
+					"session_id":    "session-1",
+					"client_ip":     "127.0.0.1",
+					"mcp_ready":     true,
+					"tool_count":    3,
+					"connected_at":  float64(1700000000),
+					"last_activity": float64(1700000010),
+				},
+			},
+		}), nil
+	})}
+
+	cfg := testConfig()
+	cfg.LarkAppID = "lark-app"
+	cfg.LarkAppToken = "lark-token"
+	cfg.WeChatEnabled = true
+	cfg.WeChatBotToken = "wechat-token"
+	srv := NewServer(cfg)
+	srv.bridge = NewBridgeClient("http://bridge.local", httpClient)
+	req := authenticatedRequest(t, srv, http.MethodGet, "/admin/api/channels", nil)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	var payload struct {
+		Channels []ChannelInfo `json:"channels"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Channels) != 3 {
+		t.Fatalf("channels length = %d, want 3: %#v", len(payload.Channels), payload.Channels)
+	}
+	if payload.Channels[0].ID != "esp32:device-1" || payload.Channels[0].DeviceID != "device-1" || !payload.Channels[0].Capabilities.Tools {
+		t.Fatalf("unexpected ESP32 channel: %#v", payload.Channels[0])
+	}
+	if payload.Channels[1].ID != "lark:app:lark-app" || payload.Channels[1].Type != ChannelTypeLark || !payload.Channels[1].Capabilities.Text {
+		t.Fatalf("unexpected Lark channel: %#v", payload.Channels[1])
+	}
+	if payload.Channels[2].ID != "wechat:bot" || payload.Channels[2].Type != ChannelTypeWechat || !payload.Channels[2].Capabilities.Text {
+		t.Fatalf("unexpected WeChat channel: %#v", payload.Channels[2])
+	}
+}
+
 func TestSpeakStopAPIForwardsToBridge(t *testing.T) {
 	var received map[string]string
 	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
