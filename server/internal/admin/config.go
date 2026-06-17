@@ -109,7 +109,7 @@ func LoadConfig() Config {
 		GoLLMAPIKey:              env("XIAOLI_GO_LLM_API_KEY", firstNonEmptyEnv("SILICONFLOW_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY")),
 		GoLLMModel:               env("XIAOLI_GO_LLM_MODEL", env("SILICONFLOW_LLM_MODEL", "Qwen/Qwen3-8B")),
 		GoLLMPrompt:              env("XIAOLI_GO_LLM_PROMPT", "你是一个叫小李的中文语音助手。回答要简短、自然、适合通过扬声器播放。"),
-		GoLLMTimeout:             time.Duration(envInt("XIAOLI_GO_LLM_TIMEOUT_SECONDS", 45)) * time.Second,
+		GoLLMTimeout:             time.Duration(envInt("XIAOLI_GO_LLM_TIMEOUT_SECONDS", 120)) * time.Second,
 		GoVLLMURL:                env("XIAOLI_GO_VLLM_URL", "https://api.siliconflow.cn/v1/chat/completions"),
 		GoVLLMAPIKey:             env("XIAOLI_GO_VLLM_API_KEY", firstNonEmptyEnv("SILICONFLOW_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY")),
 		GoVLLMModel:              env("XIAOLI_GO_VLLM_MODEL", env("SILICONFLOW_VLLM_MODEL", "Qwen/Qwen3-VL-8B-Instruct")),
