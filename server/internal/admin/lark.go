@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"github.com/mnhkahn/gogogo/logger"
+	"io"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -149,6 +149,13 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 	}
 	if event.Message.ChatID == "" || senderID == "" || event.Message.MessageID == "" {
 		return fmt.Errorf("message event missing chat, sender, or message id")
+	}
+	if reply, ok := s.handleBuiltinCommand(ctx, ChannelLarkText, text); ok {
+		if err := s.newLarkClient().ReplyText(ctx, event.Message.MessageID, reply); err != nil {
+			return err
+		}
+		logger.Infof("[lark] builtin command reply sent event_id=%s message=%s chat=%s", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID)
+		return nil
 	}
 	if s.conversation == nil {
 		return fmt.Errorf("conversation pipeline is not configured")

@@ -325,6 +325,15 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 		return
 	}
 
+	if reply, ok := s.handleBuiltinCommand(ctx, ChannelWechatText, text); ok {
+		if err := wechatSendText(ctx, c, msg.ToUserID, msg.FromUserID, msg.ContextToken, reply); err != nil {
+			logger.Infof("[wechat] builtin command send error: %v", err)
+		} else {
+			logger.Infof("[wechat] builtin command send ok to=%s command=%q", msg.FromUserID, text)
+		}
+		return
+	}
+
 	if s.conversation == nil {
 		logger.Infof("[wechat] conversation not configured")
 		return
