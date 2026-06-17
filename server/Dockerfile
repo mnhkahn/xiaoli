@@ -40,9 +40,9 @@ WORKDIR /skill-src
 RUN set -eux; \
     mkdir -p /skills; \
     for skill in $XIAOLI_SKILLS; do \
-        printf 'a\n' | npx -y skills add "$skill"; \
+        npx -y skills add "$skill" -- -y -g; \
     done; \
-    find /skill-src/.agents/skills -name SKILL.md -print | while read -r skill_file; do \
+    find /root /home -name SKILL.md -not -path '/skills/*' -print 2>/dev/null | while read -r skill_file; do \
         skill_dir="$(dirname "$skill_file")"; \
         skill_name="$(basename "$skill_dir")"; \
         rm -rf "/skills/$skill_name"; \
