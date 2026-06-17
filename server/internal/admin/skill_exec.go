@@ -42,6 +42,8 @@ func buildSkillToolDescription(ctx context.Context, skills []einoskill.FrontMatt
 - 优先使用 argv，例如 {"skill":"cyeam-cli","argv":["cyeam","tv","today","--json"]}。
 - cmd 只作为简写，例如 {"skill":"cyeam-cli","cmd":"cyeam tv today --json"}；服务端不会使用 shell，且会拒绝 shell 操作符。
 - 只能使用下方列出的 Skill；执行文件必须来自 Skill 目录或服务端允许的全局 bin 目录。
+- **重要：argv 必须以正确的可执行文件名称开头（如 "cyeam"），不要只写子命令名称（如 "tv"）。**
+- **重要：如果不确定正确的可执行文件名称，先调用 {"skill":"<name>"} 查看 SKILL.md 中的命令示例。**
 
 <available_skills>
 `)
