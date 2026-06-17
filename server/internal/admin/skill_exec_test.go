@@ -33,10 +33,13 @@ func TestBuildSkillToolDescriptionExplainsSkillCommandExecution(t *testing.T) {
 		Description: "Use cyeam CLI.",
 	}})
 
-	for _, want := range []string{"cyeam-cli", "argv", "cmd", "SKILL.md", "cyeam tv today --json"} {
+	for _, want := range []string{"cyeam-cli", "argv", "skill"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("buildSkillToolDescription() missing %q in %q", want, desc)
 		}
+	}
+	if !strings.Contains(desc, "不可直接作为工具名调用") {
+		t.Fatalf("buildSkillToolDescription() should warn against calling skill names directly: %q", desc)
 	}
 }
 

@@ -33,29 +33,25 @@ type skillToolArgs struct {
 }
 
 func buildSkillToolDescription(ctx context.Context, skills []einoskill.FrontMatter) string {
-	var b strings.Builder
-	b.WriteString(`在主对话中按需加载并执行 Skill。
-
-调用方式：
-- 当用户需求匹配某个 Skill 时，先调用此工具并只传 {"skill":"<name>"}，读取返回的 SKILL.md 说明。
-- 如果 SKILL.md 说明需要执行本地 CLI，可再次调用同一个工具，传入 skill 和 argv。
-- 优先使用 argv，例如 {"skill":"cyeam-cli","argv":["cyeam","tv","today","--json"]}。
-- cmd 只作为简写，例如 {"skill":"cyeam-cli","cmd":"cyeam tv today --json"}；服务端不会使用 shell，且会拒绝 shell 操作符。
-- 只能使用下方列出的 Skill；执行文件必须来自 Skill 目录或服务端允许的全局 bin 目录。
-- **重要：argv 必须以正确的可执行文件名称开头（如 "cyeam"），不要只写子命令名称（如 "tv"）。**
-- **重要：如果不确定正确的可执行文件名称，先调用 {"skill":"<name>"} 查看 SKILL.md 中的命令示例。**
-
-<available_skills>
-`)
-	for _, skill := range skills {
-		b.WriteString("<skill>\n<name>\n")
-		b.WriteString(skill.Name)
-		b.WriteString("\n</name>\n<description>\n")
-		b.WriteString(skill.Description)
-		b.WriteString("\n</description>\n</skill>\n")
+	lines := make([]string, 0, len(skills)+8)
+	lines = append(lines,
+		"此工具名为 skill，用于加载和执行本地技能。",
+		"",
+		"调用方式：",
+		`  1. 初次调用：{"skill":"<技能名称>"} ← 只传 skill 参数，返回完整说明`,
+		`  2. 执行 CLI（如说明中指定）：{"skill":"<技能名称>","argv":["可执行文件","参数..."]}`,
+		"",
+		"重要规则：",
+		"  - 可用技能名称见下方列表，但不可直接作为工具名调用",
+		"  - argv 必须以可执行文件本身开头，例如 [\"cyeam\",\"tv\"] 而非 [\"tv\"]",
+		"  - 不确定命令格式时先调第 1 步查看说明",
+		"",
+		"可用技能列表：",
+	)
+	for _, sk := range skills {
+		lines = append(lines, fmt.Sprintf("  - %s: %s", sk.Name, sk.Description))
 	}
-	b.WriteString("</available_skills>\n")
-	return b.String()
+	return strings.Join(lines, "\n")
 }
 
 func buildSkillToolParams(ctx context.Context, defaults map[string]*schema.ParameterInfo) (map[string]*schema.ParameterInfo, error) {
