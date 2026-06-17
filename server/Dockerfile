@@ -73,6 +73,7 @@ RUN ldconfig
 COPY --from=go-build /out/xiaoli-admin /usr/local/bin/xiaoli-admin
 COPY --from=skill-build /skill-bin/ /usr/local/bin/
 COPY --from=skill-build /skills /opt/xiaoli/skills
+COPY mcp-servers.json /data/mcp-servers.json
 
 WORKDIR /data
 

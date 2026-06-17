@@ -391,6 +391,7 @@ type mcpTool struct {
 	info     *schema.ToolInfo
 	hub      *DeviceHub
 	deviceID string
+	toolName string
 }
 
 func (t *mcpTool) Info(_ context.Context) (*schema.ToolInfo, error) {
@@ -404,7 +405,7 @@ func (t *mcpTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ..
 	}
 	result, err := t.hub.Call(ctx, BridgeCallRequest{
 		DeviceID:  t.deviceID,
-		Tool:      t.info.Name,
+		Tool:      t.toolName,
 		Arguments: args,
 		Timeout:   30,
 	})
@@ -425,6 +426,7 @@ func mcpToolsToEinoTools(session *deviceSession, hub *DeviceHub) []tool.BaseTool
 	session.mu.Unlock()
 
 	var tools []tool.BaseTool
+	usedNames := map[string]int{}
 	for _, raw := range rawTools {
 		name, _ := raw["name"].(string)
 		if name == "" {
@@ -448,15 +450,73 @@ func mcpToolsToEinoTools(session *deviceSession, hub *DeviceHub) []tool.BaseTool
 
 		tools = append(tools, &mcpTool{
 			info: &schema.ToolInfo{
-				Name:        name,
+				Name:        uniqueSafeToolName(name, usedNames),
 				Desc:        desc,
 				ParamsOneOf: paramsOneOf,
 			},
 			hub:      hub,
 			deviceID: session.deviceID,
+			toolName: name,
 		})
 	}
 	return tools
+}
+
+func uniqueSafeToolName(name string, used map[string]int) string {
+	safe := safeToolName(name)
+	if used == nil {
+		return safe
+	}
+	used[safe]++
+	if used[safe] == 1 {
+		return safe
+	}
+	for {
+		suffix := fmt.Sprintf("_%d", used[safe])
+		base := safe
+		if len(base)+len(suffix) > 64 {
+			base = base[:64-len(suffix)]
+		}
+		candidate := base + suffix
+		if used[candidate] == 0 {
+			used[candidate] = 1
+			return candidate
+		}
+		used[safe]++
+	}
+}
+
+func safeToolName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "tool"
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	lastUnderscore := false
+	for _, r := range name {
+		valid := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+		if valid {
+			b.WriteRune(r)
+			lastUnderscore = false
+			continue
+		}
+		if !lastUnderscore {
+			b.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	safe := strings.Trim(b.String(), "_")
+	if safe == "" {
+		safe = "tool"
+	}
+	if len(safe) > 64 {
+		safe = strings.TrimRight(safe[:64], "_-")
+		if safe == "" {
+			safe = "tool"
+		}
+	}
+	return safe
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +565,10 @@ func (c *externalMCPClient) listTools(ctx context.Context) ([]tool.BaseTool, err
 		"method":  "tools/list",
 		"params":  map[string]any{},
 	})
-	bodyStr, err := c.mcpPost(ctx, payload)
+	c.mu.Lock()
+	sessionID := c.sessionID
+	c.mu.Unlock()
+	bodyStr, err := c.mcpPost(ctx, payload, "Mcp-Session-Id", sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -523,6 +586,7 @@ func (c *externalMCPClient) listTools(ctx context.Context) ([]tool.BaseTool, err
 	}
 
 	var tools []tool.BaseTool
+	usedNames := map[string]int{}
 	for _, raw := range resp.Result.Tools {
 		name, _ := raw["name"].(string)
 		if name == "" {
@@ -546,7 +610,7 @@ func (c *externalMCPClient) listTools(ctx context.Context) ([]tool.BaseTool, err
 
 		tools = append(tools, &externalMCPTool{
 			info: &schema.ToolInfo{
-				Name:        name,
+				Name:        uniqueSafeToolName(name, usedNames),
 				Desc:        desc,
 				ParamsOneOf: paramsOneOf,
 			},
@@ -658,10 +722,25 @@ func (c *externalMCPClient) mcpPost(ctx context.Context, payload []byte, extraHe
 
 	raw, _ := io.ReadAll(resp.Body)
 	bodyStr := string(raw)
-	if idx := strings.Index(bodyStr, "data: "); idx >= 0 {
-		bodyStr = bodyStr[idx+6:]
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("MCP HTTP %d: %s", resp.StatusCode, strings.TrimSpace(bodyStr))
 	}
-	return bodyStr, nil
+	return extractMCPData(bodyStr), nil
+}
+
+func extractMCPData(body string) string {
+	lines := strings.Split(body, "\n")
+	var data []string
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "data:") {
+			data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if len(data) > 0 {
+		return strings.Join(data, "\n")
+	}
+	return strings.TrimSpace(body)
 }
 
 // ---------------------------------------------------------------------------
