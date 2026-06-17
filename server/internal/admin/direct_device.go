@@ -439,7 +439,9 @@ func (h *DeviceHub) answerUserText(ctx context.Context, session *deviceSession, 
 	reply, err := h.conversation.Run(ctx, DeviceVoiceFactory{}.Build(session, userText))
 	if err != nil {
 		logger.Infof("conversation failed for %s: %v", session.deviceID, err)
-		return "我现在回答不了，语言模型调用失败。"
+	}
+	if reply.Text == "" {
+		return "我现在还没想好怎么回答。"
 	}
 	return reply.Text
 }

@@ -177,7 +177,10 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 
 	reply, err := s.conversation.Run(ctx, LarkTextFactory{}.Build(event.Message.ChatID, senderID, text))
 	if err != nil {
-		return err
+		logger.Infof("[lark] conversation error: %v", err)
+	}
+	if reply.Text == "" {
+		return fmt.Errorf("lark conversation returned empty reply")
 	}
 	if err := s.newLarkClient().ReplyText(ctx, event.Message.MessageID, reply.Text); err != nil {
 		return err

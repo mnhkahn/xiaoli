@@ -33,24 +33,27 @@ type skillToolArgs struct {
 }
 
 func buildSkillToolDescription(ctx context.Context, skills []einoskill.FrontMatter) string {
-	lines := make([]string, 0, len(skills)+8)
+	lines := make([]string, 0, len(skills)+16)
 	lines = append(lines,
-		"此工具名为 skill，用于加载和执行本地技能。",
+		"skill 工具用于加载和执行本地技能（Skills）。技能提供针对特定任务的专用指令和工作流。",
 		"",
-		"调用方式：",
-		`  1. 初次调用：{"skill":"<技能名称>"} ← 只传 skill 参数，返回完整说明`,
-		`  2. 执行 CLI（如说明中指定）：{"skill":"<技能名称>","argv":["可执行文件","参数..."]}`,
+		"## 调用方式",
 		"",
-		"重要规则：",
-		"  - 可用技能名称见下方列表，但不可直接作为工具名调用",
-		"  - argv 必须以可执行文件本身开头，例如 [\"cyeam\",\"tv\"] 而非 [\"tv\"]",
-		"  - 不确定命令格式时先调第 1 步查看说明",
+		"  1. 加载技能说明：{\"skill\":\"<技能名称>\"}",
+		"     返回该技能的 SKILL.md 内容和关联文件列表。可用技能见下方列表。",
 		"",
-		"可用技能列表：",
+		"  2. 执行技能命令：{\"skill\":\"<技能名称>\",\"argv\":[\"可执行文件\",\"参数...\"]}",
+		"     或 {\"skill\":\"<技能名称>\",\"cmd\":\"可执行文件 参数...\"}",
+		"     argv 优先于 cmd。命令不使用 shell 解析，shell 操作符（| & ; > < $ `）被拒绝。",
+		"     不确定命令格式时先调方式 1 查看说明。",
+		"",
+		"## 可用技能列表",
+		"<available_skills>",
 	)
 	for _, sk := range skills {
-		lines = append(lines, fmt.Sprintf("  - %s: %s", sk.Name, sk.Description))
+		lines = append(lines, fmt.Sprintf("  <skill name=\"%s\">%s</skill>", sk.Name, sk.Description))
 	}
+	lines = append(lines, "</available_skills>")
 	return strings.Join(lines, "\n")
 }
 
@@ -119,7 +122,7 @@ func skillExecArgv(args skillToolArgs) ([]string, error) {
 func runSkillCommand(ctx context.Context, skill einoskill.Skill, argv []string, cfg skillExecConfig) (string, error) {
 	bin, err := resolveSkillExecutable(skill.BaseDirectory, argv[0], cfg.GlobalBinDirs)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve skill executable: %w", err)
 	}
 	runCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
@@ -141,22 +144,25 @@ func runSkillCommand(ctx context.Context, skill einoskill.Skill, argv []string, 
 		return "", fmt.Errorf("skill command timed out after %s", cfg.Timeout)
 	}
 	if err != nil {
-		return formatSkillCommandResult(argv, stdout.String(), stderr.String(), false), nil
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			err = fmt.Errorf("exit code %d", exitErr.ExitCode())
+		}
+		return formatSkillCommandResult(argv, stdout.String(), stderr.String(), err), nil
 	}
-	return formatSkillCommandResult(argv, stdout.String(), stderr.String(), true), nil
+	return formatSkillCommandResult(argv, stdout.String(), stderr.String(), nil), nil
 }
 
 func defaultSkillToolContent(skill einoskill.Skill) string {
-	return fmt.Sprintf("正在启动 Skill：%s\n此 Skill 的目录：%s\n\n%s", skill.Name, skill.BaseDirectory, skill.Content)
+	return fmt.Sprintf("<skill_content name=\"%s\">\n# Skill: %s\n\n技能目录：%s\n\n%s\n\n此目录下的文件（如 scripts/、reference/ 等）中的相对路径均相对于此技能目录。\n</skill_content>", skill.Name, skill.Name, skill.BaseDirectory, skill.Content)
 }
 
-func formatSkillCommandResult(argv []string, stdout, stderr string, ok bool) string {
-	status := "completed"
-	if !ok {
-		status = "failed"
-	}
+func formatSkillCommandResult(argv []string, stdout, stderr string, err error) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Skill command %s: %s\n", status, strings.Join(argv, " "))
+	if err != nil {
+		fmt.Fprintf(&b, "Skill command %s failed: %v\n", strings.Join(argv, " "), err)
+	} else {
+		fmt.Fprintf(&b, "Skill command %s completed\n", strings.Join(argv, " "))
+	}
 	if stdout != "" {
 		b.WriteString("\nstdout:\n")
 		b.WriteString(stdout)

@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/mnhkahn/gogogo/logger"
 	"strings"
 )
@@ -114,7 +115,7 @@ func (p *ConversationPipeline) Run(ctx context.Context, turn ConversationTurn) (
 	answer, err := p.chat.Chat(ctx, turn)
 	if err != nil {
 		logger.Infof("conversation chat failed channel=%s conversation=%s device=%s: %v", turn.Channel, turn.ConversationID, turn.DeviceID, err)
-		return ConversationReply{Text: "我现在回答不了，语言模型调用失败。"}, nil
+		return ConversationReply{Text: fmt.Sprintf("我现在回答不了。错误原因：%v。", err)}, nil
 	}
 	answer = strings.TrimSpace(answer)
 	if answer == "" {

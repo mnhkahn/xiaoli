@@ -348,6 +348,8 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 	reply, err := s.conversation.Run(ctx, WechatTextFactory{}.Build(msg.ContextToken, msg.FromUserID, text))
 	if err != nil {
 		logger.Infof("[wechat] conversation error: %v", err)
+	}
+	if reply.Text == "" {
 		reply = ConversationReply{Text: "抱歉，我暂时无法回答。"}
 	}
 

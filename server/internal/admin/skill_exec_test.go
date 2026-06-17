@@ -22,8 +22,11 @@ func TestSkillBuildContentLoadsInstructionsWithoutCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildContent() error = %v", err)
 	}
-	if !strings.Contains(got, "此 Skill 的目录：") || !strings.Contains(got, skill.BaseDirectory) || !strings.Contains(got, "Use cyeam.") {
+	if !strings.Contains(got, skill.BaseDirectory) || !strings.Contains(got, "Use cyeam.") {
 		t.Fatalf("BuildContent() = %q, want default skill content with base directory and instructions", got)
+	}
+	if !strings.Contains(got, "<skill_content") {
+		t.Fatalf("BuildContent() = %q, want XML skill_content wrapper", got)
 	}
 }
 
@@ -33,13 +36,10 @@ func TestBuildSkillToolDescriptionExplainsSkillCommandExecution(t *testing.T) {
 		Description: "Use cyeam CLI.",
 	}})
 
-	for _, want := range []string{"cyeam-cli", "argv", "skill"} {
+	for _, want := range []string{"cyeam-cli", "argv", "<available_skills>", "<skill"} {
 		if !strings.Contains(desc, want) {
 			t.Fatalf("buildSkillToolDescription() missing %q in %q", want, desc)
 		}
-	}
-	if !strings.Contains(desc, "不可直接作为工具名调用") {
-		t.Fatalf("buildSkillToolDescription() should warn against calling skill names directly: %q", desc)
 	}
 }
 
@@ -57,8 +57,8 @@ func TestSkillBuildContentExecutesArgvFromGlobalBin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildContent() error = %v", err)
 	}
-	if !strings.Contains(got, "Skill command completed") || !strings.Contains(got, "argv:tv today --json") {
-		t.Fatalf("BuildContent() = %q, want command output", got)
+	if !strings.Contains(got, "completed") || !strings.Contains(got, "cyeam tv today --json") || !strings.Contains(got, "argv:tv today --json") {
+		t.Fatalf("BuildContent() = %q, want command output with argv", got)
 	}
 }
 
