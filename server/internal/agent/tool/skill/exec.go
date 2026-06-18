@@ -86,11 +86,11 @@ func NewContentBuilder(cfg ExecConfig) func(context.Context, einoskill.Skill, st
 	return func(ctx context.Context, skill einoskill.Skill, rawArgs string) (string, error) {
 		var args ToolArgs
 		if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
-			return "", fmt.Errorf("parse skill tool arguments: %w", err)
+			return formatSkillCommandResult(nil, "", "", fmt.Errorf("parse skill tool arguments: %w", err)), nil
 		}
 		argv, err := skillExecArgv(args)
 		if err != nil {
-			return "", err
+			return formatSkillCommandResult(nil, "", "", err), nil
 		}
 		if len(argv) == 0 {
 			logger.Infof("[skill] load instructions skill=%s", skill.Name)
@@ -127,7 +127,7 @@ func skillExecArgv(args ToolArgs) ([]string, error) {
 func runSkillCommand(ctx context.Context, skill einoskill.Skill, argv []string, cfg ExecConfig) (string, error) {
 	bin, err := resolveSkillExecutable(skill.BaseDirectory, argv[0], cfg.GlobalBinDirs)
 	if err != nil {
-		return "", fmt.Errorf("resolve skill executable: %w", err)
+		return formatSkillCommandResult(argv, "", "", fmt.Errorf("resolve skill executable: %w", err)), nil
 	}
 	runCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
@@ -146,7 +146,10 @@ func runSkillCommand(ctx context.Context, skill einoskill.Skill, argv []string, 
 
 	err = cmd.Run()
 	if runCtx.Err() == context.DeadlineExceeded {
-		return "", fmt.Errorf("skill command timed out after %s", cfg.Timeout)
+		return formatSkillCommandResult(argv, stdout.String(), stderr.String(), fmt.Errorf("skill command timed out after %s", cfg.Timeout)), nil
+	}
+	if runCtx.Err() != nil {
+		return "", runCtx.Err()
 	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -163,10 +166,14 @@ func defaultSkillToolContent(skill einoskill.Skill) string {
 
 func formatSkillCommandResult(argv []string, stdout, stderr string, err error) string {
 	var b strings.Builder
+	command := strings.Join(argv, " ")
+	if command == "" {
+		command = "<invalid>"
+	}
 	if err != nil {
-		fmt.Fprintf(&b, "Skill command %s failed: %v\n", strings.Join(argv, " "), err)
+		fmt.Fprintf(&b, "Skill command %s failed: %v\n", command, err)
 	} else {
-		fmt.Fprintf(&b, "Skill command %s completed\n", strings.Join(argv, " "))
+		fmt.Fprintf(&b, "Skill command %s completed\n", command)
 	}
 	if stdout != "" {
 		b.WriteString("\nstdout:\n")

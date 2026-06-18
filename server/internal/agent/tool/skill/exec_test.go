@@ -101,7 +101,7 @@ func TestSkillBuildContentExecutesSkillLocalBinary(t *testing.T) {
 	}
 }
 
-func TestSkillBuildContentRejectsShellOperators(t *testing.T) {
+func TestSkillBuildContentReturnsShellOperatorErrorToModel(t *testing.T) {
 	binDir := t.TempDir()
 	writeExecutable(t, filepath.Join(binDir, "cyeam"), "#!/bin/sh\nprintf 'bad\\n'\n")
 	skill := testExecSkill(t, "cyeam-cli", "Use cyeam.\n")
@@ -111,13 +111,16 @@ func TestSkillBuildContentRejectsShellOperators(t *testing.T) {
 		MaxOutputBytes: 1024,
 	})
 
-	_, err := build(context.Background(), skill, `{"skill":"cyeam-cli","cmd":"cyeam tv today --json && echo bad"}`)
-	if err == nil {
-		t.Fatal("BuildContent() error = nil, want shell operator rejection")
+	got, err := build(context.Background(), skill, `{"skill":"cyeam-cli","cmd":"cyeam tv today --json && echo bad"}`)
+	if err != nil {
+		t.Fatalf("BuildContent() error = %v, want recoverable observation", err)
+	}
+	if !strings.Contains(got, "failed") || !strings.Contains(got, "unsupported shell operator") {
+		t.Fatalf("BuildContent() = %q, want recoverable shell operator error", got)
 	}
 }
 
-func TestSkillBuildContentRejectsGlobalBinaryOutsideAllowedDirs(t *testing.T) {
+func TestSkillBuildContentReturnsResolveErrorToModel(t *testing.T) {
 	skill := testExecSkill(t, "unsafe-cli", "Use unsafe tool.\n")
 	build := NewContentBuilder(ExecConfig{
 		GlobalBinDirs:  []string{t.TempDir()},
@@ -125,9 +128,31 @@ func TestSkillBuildContentRejectsGlobalBinaryOutsideAllowedDirs(t *testing.T) {
 		MaxOutputBytes: 1024,
 	})
 
-	_, err := build(context.Background(), skill, `{"skill":"unsafe-cli","argv":["/bin/echo","hello"]}`)
-	if err == nil {
-		t.Fatal("BuildContent() error = nil, want outside path rejection")
+	got, err := build(context.Background(), skill, `{"skill":"unsafe-cli","argv":["/bin/echo","hello"]}`)
+	if err != nil {
+		t.Fatalf("BuildContent() error = %v, want recoverable observation", err)
+	}
+	if !strings.Contains(got, "failed") || !strings.Contains(got, "not an allowed executable") {
+		t.Fatalf("BuildContent() = %q, want recoverable resolve error", got)
+	}
+}
+
+func TestSkillBuildContentReturnsTimeoutErrorToModel(t *testing.T) {
+	binDir := t.TempDir()
+	writeExecutable(t, filepath.Join(binDir, "slow"), "#!/bin/sh\nsleep 2\n")
+	skill := testExecSkill(t, "slow-cli", "Use slow.\n")
+	build := NewContentBuilder(ExecConfig{
+		GlobalBinDirs:  []string{binDir},
+		Timeout:        20 * time.Millisecond,
+		MaxOutputBytes: 1024,
+	})
+
+	got, err := build(context.Background(), skill, `{"skill":"slow-cli","argv":["slow"]}`)
+	if err != nil {
+		t.Fatalf("BuildContent() error = %v, want recoverable observation", err)
+	}
+	if !strings.Contains(got, "failed") || !strings.Contains(got, "timed out") {
+		t.Fatalf("BuildContent() = %q, want recoverable timeout error", got)
 	}
 }
 
