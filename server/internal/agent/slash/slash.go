@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"xiaoli/server/internal/agent/channel"
+	"xiaoli/server/internal/agent/model"
 )
 
 type Command struct {
@@ -25,9 +26,13 @@ type ModelInfo struct {
 	TTS  string
 }
 
+type ModelOption = model.Option
+
 type Dependencies interface {
 	ListSkills(ctx context.Context) ([]SkillInfo, error)
 	ModelInfo() ModelInfo
+	ListModels(role model.Role) []ModelOption
+	UseModel(role model.Role, id string) error
 	ListChannels(ctx context.Context) ([]channel.Info, error)
 }
 
@@ -66,7 +71,7 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 	case "skills":
 		return h.skills(ctx), true
 	case "model":
-		return h.model(), true
+		return h.model(cmd.Args), true
 	case "channel":
 		return h.channels(ctx), true
 	default:
@@ -95,7 +100,16 @@ func (h Handler) skills(ctx context.Context) string {
 	return b.String()
 }
 
-func (h Handler) model() string {
+func (h Handler) model(args string) string {
+	fields := strings.Fields(args)
+	if len(fields) > 0 {
+		switch fields[0] {
+		case "list":
+			return h.modelList()
+		case "use":
+			return h.modelUse(fields[1:])
+		}
+	}
 	info := h.deps.ModelInfo()
 	var b strings.Builder
 	b.WriteString("当前模型配置：")
@@ -104,6 +118,51 @@ func (h Handler) model() string {
 	writeValue(&b, "ASR", info.ASR)
 	writeValue(&b, "TTS", info.TTS)
 	return b.String()
+}
+
+func (h Handler) modelList() string {
+	options := h.deps.ListModels(model.RoleLLM)
+	current := h.deps.ModelInfo().LLM
+	if len(options) == 0 {
+		return "当前没有配置可切换的 LLM 模型。"
+	}
+	var b strings.Builder
+	b.WriteString("可选 LLM 模型：")
+	for _, option := range options {
+		b.WriteString("\n- ")
+		b.WriteString(option.ID)
+		if option.ID == current {
+			b.WriteString(" 当前")
+		}
+	}
+	return b.String()
+}
+
+func (h Handler) modelUse(args []string) string {
+	if len(args) == 0 {
+		return "用法：/model use <model-id>"
+	}
+	role := model.RoleLLM
+	modelID := strings.TrimSpace(strings.Join(args, " "))
+	if len(args) >= 2 && isModelRole(args[0]) {
+		if model.Role(args[0]) != model.RoleLLM {
+			return "当前只支持切换 LLM 模型。"
+		}
+		modelID = strings.TrimSpace(strings.Join(args[1:], " "))
+	}
+	if err := h.deps.UseModel(role, modelID); err != nil {
+		return "切换模型失败：" + err.Error()
+	}
+	return "已切换 LLM 模型：" + modelID
+}
+
+func isModelRole(value string) bool {
+	switch model.Role(value) {
+	case model.RoleLLM, model.RoleVLLM, model.RoleASR, model.RoleTTS:
+		return true
+	default:
+		return false
+	}
 }
 
 func (h Handler) channels(ctx context.Context) string {

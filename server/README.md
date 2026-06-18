@@ -139,6 +139,7 @@ Important environment variables:
 - `XIAOLI_GO_ASR_MODEL`: default comes from `SILICONFLOW_ASR_MODEL`
 - `XIAOLI_GO_LLM_URL`: OpenAI-compatible chat completions endpoint; default `https://api.siliconflow.cn/v1/chat/completions`
 - `XIAOLI_GO_LLM_MODEL`: default comes from `SILICONFLOW_LLM_MODEL`
+- `XIAOLI_GO_LLM_MODELS`: comma-separated LLM models available to `/model use`; default should include the current `XIAOLI_GO_LLM_MODEL`
 - `XIAOLI_GO_VLLM_URL`: OpenAI-compatible vision chat endpoint; default `https://api.siliconflow.cn/v1/chat/completions`
 - `XIAOLI_GO_VLLM_MODEL`: default comes from `SILICONFLOW_VLLM_MODEL`
 - `XIAOLI_GO_TTS_RESPONSE_FORMAT`: default `opus`; keep this as Ogg Opus for board playback

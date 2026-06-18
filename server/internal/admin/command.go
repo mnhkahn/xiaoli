@@ -2,8 +2,10 @@ package admin
 
 import (
 	"context"
+	"fmt"
 
 	agentchannel "xiaoli/server/internal/agent/channel"
+	agentmodel "xiaoli/server/internal/agent/model"
 	"xiaoli/server/internal/agent/slash"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
 )
@@ -72,12 +74,37 @@ func (d adminSlashDeps) ListSkills(ctx context.Context) ([]slash.SkillInfo, erro
 }
 
 func (d adminSlashDeps) ModelInfo() slash.ModelInfo {
+	llm := d.s.cfg.GoLLMModel
+	if d.s.agent != nil && d.s.agent.currentLLMModel() != "" {
+		llm = d.s.agent.currentLLMModel()
+	}
 	return slash.ModelInfo{
-		LLM:  d.s.cfg.GoLLMModel,
+		LLM:  llm,
 		VLLM: d.s.cfg.GoVLLMModel,
 		ASR:  d.s.cfg.GoASRModel,
 		TTS:  d.s.cfg.GoTTSModel,
 	}
+}
+
+func (d adminSlashDeps) ListModels(role agentmodel.Role) []slash.ModelOption {
+	if role != agentmodel.RoleLLM || d.s.agent == nil {
+		models := d.s.cfg.GoLLMModels
+		if len(models) == 0 {
+			models = []string{d.s.cfg.GoLLMModel}
+		}
+		return agentmodel.OptionsFromIDs(agentmodel.RoleLLM, models)
+	}
+	return d.s.agent.listLLMModels()
+}
+
+func (d adminSlashDeps) UseModel(role agentmodel.Role, id string) error {
+	if role != agentmodel.RoleLLM {
+		return fmt.Errorf("only LLM model switching is supported")
+	}
+	if d.s.agent == nil {
+		return fmt.Errorf("LLM agent is not configured")
+	}
+	return d.s.agent.useLLMModel(id)
 }
 
 func (d adminSlashDeps) ListChannels(ctx context.Context) ([]agentchannel.Info, error) {

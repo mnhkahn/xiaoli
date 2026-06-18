@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mnhkahn/gogogo/logger"
@@ -19,6 +20,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	agentmedia "xiaoli/server/internal/agent/media"
+	agentmodel "xiaoli/server/internal/agent/model"
 	agentmcp "xiaoli/server/internal/agent/tool/mcp"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
 )
@@ -219,13 +221,15 @@ func (m *redisMemory) Save(ctx context.Context, deviceID string, msgs []*schema.
 // ---------------------------------------------------------------------------
 
 type EinoAgent struct {
-	chatModel   *openai.ChatModel
-	memory      *redisMemory
-	cfg         Config
-	hub         *DeviceHub
-	extMCPs     []*agentmcp.Client
-	extToolSets [][]tool.BaseTool
-	skillMW     adk.ChatModelAgentMiddleware
+	modelMu       sync.Mutex
+	chatModels    map[string]*openai.ChatModel
+	modelSelector *agentmodel.Selector
+	memory        *redisMemory
+	cfg           Config
+	hub           *DeviceHub
+	extMCPs       []*agentmcp.Client
+	extToolSets   [][]tool.BaseTool
+	skillMW       adk.ChatModelAgentMiddleware
 }
 
 func newEinoAgent(cfg Config) *EinoAgent {
@@ -236,20 +240,7 @@ func newEinoAgent(cfg Config) *EinoAgent {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	ctx := context.Background()
-	temp := float32(0.2)
-	maxTokens := 180
-	chatModel, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
-		BaseURL:     baseURL,
-		APIKey:      cfg.GoLLMAPIKey,
-		Model:       cfg.GoLLMModel,
-		Timeout:     cfg.GoLLMTimeout,
-		Temperature: &temp,
-		MaxTokens:   &maxTokens,
-	})
-	if err != nil {
-		logger.Infof("eino chat model init failed: %v", err)
-		return nil
-	}
+	selector := newModelSelector(cfg)
 
 	memory := newRedisMemory(cfg)
 
@@ -310,7 +301,75 @@ func newEinoAgent(cfg Config) *EinoAgent {
 	}
 
 	logger.Infof("eino agent ready: model=%s base=%s redis=%v extMCPs=%d skills=%v", cfg.GoLLMModel, baseURL, memory != nil, len(extMCPs), skillMW != nil)
-	return &EinoAgent{chatModel: chatModel, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, skillMW: skillMW}
+	return &EinoAgent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, skillMW: skillMW}
+}
+
+func newModelSelector(cfg Config) *agentmodel.Selector {
+	models := cfg.GoLLMModels
+	if len(models) == 0 {
+		models = []string{cfg.GoLLMModel}
+	}
+	return agentmodel.NewSelector(
+		map[agentmodel.Role]string{
+			agentmodel.RoleLLM:  cfg.GoLLMModel,
+			agentmodel.RoleVLLM: cfg.GoVLLMModel,
+			agentmodel.RoleASR:  cfg.GoASRModel,
+			agentmodel.RoleTTS:  cfg.GoTTSModel,
+		},
+		map[agentmodel.Role][]agentmodel.Option{
+			agentmodel.RoleLLM: agentmodel.OptionsFromIDs(agentmodel.RoleLLM, models),
+		},
+	)
+}
+
+func (a *EinoAgent) currentLLMModel() string {
+	if a == nil || a.modelSelector == nil {
+		return ""
+	}
+	return a.modelSelector.Current(agentmodel.RoleLLM)
+}
+
+func (a *EinoAgent) useLLMModel(id string) error {
+	if a == nil || a.modelSelector == nil {
+		return fmt.Errorf("model selector is not configured")
+	}
+	return a.modelSelector.Use(agentmodel.RoleLLM, id)
+}
+
+func (a *EinoAgent) listLLMModels() []agentmodel.Option {
+	if a == nil || a.modelSelector == nil {
+		return nil
+	}
+	return a.modelSelector.List(agentmodel.RoleLLM)
+}
+
+func (a *EinoAgent) chatModel(ctx context.Context) (*openai.ChatModel, error) {
+	modelID := a.currentLLMModel()
+	if strings.TrimSpace(modelID) == "" {
+		return nil, fmt.Errorf("LLM model is not configured")
+	}
+	a.modelMu.Lock()
+	defer a.modelMu.Unlock()
+	if model := a.chatModels[modelID]; model != nil {
+		return model, nil
+	}
+	baseURL := strings.TrimSuffix(a.cfg.GoLLMURL, "/chat/completions")
+	baseURL = strings.TrimRight(baseURL, "/")
+	temp := float32(0.2)
+	maxTokens := 180
+	model, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		BaseURL:     baseURL,
+		APIKey:      a.cfg.GoLLMAPIKey,
+		Model:       modelID,
+		Timeout:     a.cfg.GoLLMTimeout,
+		Temperature: &temp,
+		MaxTokens:   &maxTokens,
+	})
+	if err != nil {
+		return nil, err
+	}
+	a.chatModels[modelID] = model
+	return model, nil
 }
 
 func (a *EinoAgent) SetHub(hub *DeviceHub) {
@@ -363,6 +422,10 @@ func (a *EinoAgent) ChatWithContextOptions(ctx context.Context, conversationID s
 	}
 
 	// Create agent with tools
+	chatModel, err := a.chatModel(ctx)
+	if err != nil {
+		return "", fmt.Errorf("create chat model: %w", err)
+	}
 	maxIterations := opts.MaxIterations
 	if maxIterations <= 0 {
 		maxIterations = 10
@@ -370,7 +433,7 @@ func (a *EinoAgent) ChatWithContextOptions(ctx context.Context, conversationID s
 	agentCfg := &adk.ChatModelAgentConfig{
 		Name:          "xiaoli",
 		Instruction:   "", // already prepended as system message
-		Model:         a.chatModel,
+		Model:         chatModel,
 		MaxIterations: maxIterations,
 	}
 	if a.skillMW != nil {
@@ -443,9 +506,13 @@ func (a *EinoAgent) Generate(ctx context.Context, system, user string) (string, 
 		einoTools = append(einoTools, tools...)
 	}
 
+	chatModel, err := a.chatModel(ctx)
+	if err != nil {
+		return "", fmt.Errorf("create chat model: %w", err)
+	}
 	cfg := &adk.ChatModelAgentConfig{
 		Name:          "xiaoli",
-		Model:         a.chatModel,
+		Model:         chatModel,
 		MaxIterations: 10,
 	}
 	if a.skillMW != nil {

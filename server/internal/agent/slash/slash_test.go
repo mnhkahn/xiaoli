@@ -6,16 +6,37 @@ import (
 	"testing"
 
 	"xiaoli/server/internal/agent/channel"
+	"xiaoli/server/internal/agent/model"
 )
 
-type fakeDeps struct{}
+type fakeDeps struct {
+	current string
+	used    string
+}
 
 func (fakeDeps) ListSkills(context.Context) ([]SkillInfo, error) {
 	return []SkillInfo{{Name: "holiday", Description: "假期查询"}}, nil
 }
 
-func (fakeDeps) ModelInfo() ModelInfo {
-	return ModelInfo{LLM: "llm-test", VLLM: "vllm-test"}
+func (d *fakeDeps) ModelInfo() ModelInfo {
+	current := d.current
+	if current == "" {
+		current = "llm-test"
+	}
+	return ModelInfo{LLM: current, VLLM: "vllm-test"}
+}
+
+func (d *fakeDeps) ListModels(role model.Role) []ModelOption {
+	if role != model.RoleLLM {
+		return nil
+	}
+	return []ModelOption{{ID: "llm-test", Role: model.RoleLLM}, {ID: "llm-next", Role: model.RoleLLM}}
+}
+
+func (d *fakeDeps) UseModel(role model.Role, id string) error {
+	d.used = string(role) + ":" + id
+	d.current = id
+	return nil
 }
 
 func (fakeDeps) ListChannels(context.Context) ([]channel.Info, error) {
@@ -36,7 +57,7 @@ func TestParseRequiresLeadingSlash(t *testing.T) {
 }
 
 func TestHandleBuiltinsAndRejectsESP32(t *testing.T) {
-	handler := NewHandler(fakeDeps{})
+	handler := NewHandler(&fakeDeps{})
 
 	reply, handled := handler.Handle(context.Background(), channel.TypeLark, "/model")
 	if !handled || !strings.Contains(reply, "llm-test") || !strings.Contains(reply, "vllm-test") {
@@ -55,11 +76,34 @@ func TestHandleBuiltinsAndRejectsESP32(t *testing.T) {
 }
 
 func TestUnknownCommandIsNotHandled(t *testing.T) {
-	handler := NewHandler(fakeDeps{})
+	handler := NewHandler(&fakeDeps{})
 
 	reply, handled := handler.Handle(context.Background(), channel.TypeLark, "/unknown")
 
 	if handled || reply != "" {
 		t.Fatalf("unknown command handled=%v reply=%q, want passthrough", handled, reply)
+	}
+}
+
+func TestModelListAndUse(t *testing.T) {
+	deps := &fakeDeps{current: "llm-test"}
+	handler := NewHandler(deps)
+
+	reply, handled := handler.Handle(context.Background(), channel.TypeLark, "/model list")
+	if !handled || !strings.Contains(reply, "llm-test 当前") || !strings.Contains(reply, "llm-next") {
+		t.Fatalf("/model list reply=%q handled=%v, want model options", reply, handled)
+	}
+
+	reply, handled = handler.Handle(context.Background(), channel.TypeLark, "/model use llm-next")
+	if !handled || !strings.Contains(reply, "已切换 LLM 模型：llm-next") {
+		t.Fatalf("/model use reply=%q handled=%v, want success", reply, handled)
+	}
+	if deps.used != "llm:llm-next" {
+		t.Fatalf("used = %q, want llm:llm-next", deps.used)
+	}
+
+	reply, handled = handler.Handle(context.Background(), channel.TypeLark, "/model use asr asr-next")
+	if !handled || !strings.Contains(reply, "只支持切换 LLM") {
+		t.Fatalf("/model use asr reply=%q handled=%v, want unsupported role", reply, handled)
 	}
 }

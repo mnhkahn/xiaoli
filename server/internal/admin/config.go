@@ -37,6 +37,7 @@ type Config struct {
 	GoLLMURL                 string
 	GoLLMAPIKey              string
 	GoLLMModel               string
+	GoLLMModels              []string
 	GoLLMPrompt              string
 	GoLLMTimeout             time.Duration
 	GoVLLMURL                string
@@ -86,6 +87,11 @@ type Config struct {
 
 func LoadConfig() Config {
 	sessionSecret := env("ADMIN_SESSION_SECRET", "")
+	goLLMModel := env("XIAOLI_GO_LLM_MODEL", env("SILICONFLOW_LLM_MODEL", "Qwen/Qwen3-8B"))
+	goLLMModels := csv(env("XIAOLI_GO_LLM_MODELS", ""))
+	if len(goLLMModels) == 0 && goLLMModel != "" {
+		goLLMModels = []string{goLLMModel}
+	}
 	cfg := Config{
 		Host:                     env("XIAOLI_ADMIN_HOST", "0.0.0.0"),
 		Port:                     envInt("XIAOLI_ADMIN_PORT", 8004),
@@ -110,7 +116,8 @@ func LoadConfig() Config {
 		GoASRTimeout:             time.Duration(envInt("XIAOLI_GO_ASR_TIMEOUT_SECONDS", 45)) * time.Second,
 		GoLLMURL:                 env("XIAOLI_GO_LLM_URL", "https://api.siliconflow.cn/v1/chat/completions"),
 		GoLLMAPIKey:              env("XIAOLI_GO_LLM_API_KEY", firstNonEmptyEnv("SILICONFLOW_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY")),
-		GoLLMModel:               env("XIAOLI_GO_LLM_MODEL", env("SILICONFLOW_LLM_MODEL", "Qwen/Qwen3-8B")),
+		GoLLMModel:               goLLMModel,
+		GoLLMModels:              goLLMModels,
 		GoLLMPrompt:              env("XIAOLI_GO_LLM_PROMPT", "你是一个叫小李的中文语音助手。回答要简短、自然、适合通过扬声器播放。"),
 		GoLLMTimeout:             time.Duration(envInt("XIAOLI_GO_LLM_TIMEOUT_SECONDS", 120)) * time.Second,
 		GoVLLMURL:                env("XIAOLI_GO_VLLM_URL", "https://api.siliconflow.cn/v1/chat/completions"),

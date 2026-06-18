@@ -34,3 +34,28 @@ func TestLoadConfigSetsDefaultSkillConfig(t *testing.T) {
 		t.Fatalf("SkillExecGlobalBinDirs = %#v, want /usr/local/bin", cfg.SkillExecGlobalBinDirs)
 	}
 }
+
+func TestLoadConfigReadsLLMModelOptions(t *testing.T) {
+	t.Setenv("XIAOLI_GO_LLM_MODEL", "model-a")
+	t.Setenv("XIAOLI_GO_LLM_MODELS", "model-a,model-b")
+
+	cfg := LoadConfig()
+
+	if cfg.GoLLMModel != "model-a" {
+		t.Fatalf("GoLLMModel = %q, want model-a", cfg.GoLLMModel)
+	}
+	if len(cfg.GoLLMModels) != 2 || cfg.GoLLMModels[0] != "model-a" || cfg.GoLLMModels[1] != "model-b" {
+		t.Fatalf("GoLLMModels = %#v, want model-a/model-b", cfg.GoLLMModels)
+	}
+}
+
+func TestLoadConfigDefaultsLLMModelOptionsToCurrentModel(t *testing.T) {
+	t.Setenv("XIAOLI_GO_LLM_MODEL", "model-a")
+	t.Setenv("XIAOLI_GO_LLM_MODELS", "")
+
+	cfg := LoadConfig()
+
+	if len(cfg.GoLLMModels) != 1 || cfg.GoLLMModels[0] != "model-a" {
+		t.Fatalf("GoLLMModels = %#v, want current model", cfg.GoLLMModels)
+	}
+}
