@@ -1,4 +1,4 @@
-package admin
+package media
 
 import (
 	"bytes"
@@ -14,24 +14,24 @@ import (
 )
 
 func TestTTSSynthesizeSavesSampleForLocalPlayback(t *testing.T) {
-	cfg := testConfig()
-	cfg.GoTTSURL = env("XIAOLI_GO_TTS_URL", "https://api.siliconflow.cn/v1/audio/speech")
-	cfg.GoTTSAPIKey = env("XIAOLI_GO_TTS_API_KEY", env("SILICONFLOW_API_KEY", ""))
-	cfg.GoTTSModel = env("XIAOLI_GO_TTS_MODEL", env("SILICONFLOW_TTS_MODEL", cfg.GoTTSModel))
-	cfg.GoTTSVoice = env("XIAOLI_GO_TTS_VOICE", env("SILICONFLOW_TTS_VOICE", cfg.GoTTSVoice))
-	cfg.GoTTSResponseFormat = env("XIAOLI_GO_TTS_RESPONSE_FORMAT", "opus")
-	cfg.GoTTSTimeout = 30 * time.Second
-
-	if cfg.GoTTSAPIKey == "" {
+	cfg := TTSConfig{
+		URL:            env("XIAOLI_GO_TTS_URL", "https://api.siliconflow.cn/v1/audio/speech"),
+		APIKey:         env("XIAOLI_GO_TTS_API_KEY", env("SILICONFLOW_API_KEY", "")),
+		Model:          env("XIAOLI_GO_TTS_MODEL", env("SILICONFLOW_TTS_MODEL", "FunAudioLLM/CosyVoice2-0.5B")),
+		Voice:          env("XIAOLI_GO_TTS_VOICE", env("SILICONFLOW_TTS_VOICE", "FunAudioLLM/CosyVoice2-0.5B:anna")),
+		ResponseFormat: env("XIAOLI_GO_TTS_RESPONSE_FORMAT", "opus"),
+		Timeout:        30 * time.Second,
+	}
+	if cfg.APIKey == "" {
 		t.Skip("skipping real TTS test: set XIAOLI_GO_TTS_API_KEY or SILICONFLOW_API_KEY to run")
 	}
 
-	synth := newHTTPSpeechSynthesizer(cfg, &http.Client{Timeout: cfg.GoTTSTimeout})
+	synth := NewHTTPSpeechSynthesizer(cfg)
 	if synth == nil {
 		t.Fatal("synthesizer was not constructed despite API key being set")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.GoTTSTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 	defer cancel()
 
 	contentType, body, err := synth.Synthesize(ctx, "你好宝宝")
@@ -52,29 +52,16 @@ func TestTTSSynthesizeSavesSampleForLocalPlayback(t *testing.T) {
 	if err := os.WriteFile(outputPath, body, 0o644); err != nil {
 		t.Fatalf("write sample: %v", err)
 	}
-
 	t.Logf("Saved %d bytes of %s to %s", len(body), contentType, outputPath)
-
-	persistedPath, err := filepath.Abs(filepath.Join("testdata", "tts_sample.ogg"))
-	if err == nil {
-		if err := os.MkdirAll(filepath.Dir(persistedPath), 0o755); err != nil {
-			t.Fatalf("mkdir testdata: %v", err)
-		}
-		if err := os.WriteFile(persistedPath, body, 0o644); err != nil {
-			t.Fatalf("write persistent sample: %v", err)
-		}
-		t.Logf("Also saved persistent copy to %s", persistedPath)
-	}
 }
 
 func TestTTSSynthesizeRejectsNonOpusResponseFormat(t *testing.T) {
-	cfg := testConfig()
-	cfg.GoTTSAPIKey = "test-key"
-	cfg.GoTTSResponseFormat = "mp3"
-
-	synth, ok := newHTTPSpeechSynthesizer(cfg, nil).(*httpSpeechSynthesizer)
+	synth, ok := NewHTTPSpeechSynthesizer(TTSConfig{
+		APIKey:         "test-key",
+		ResponseFormat: "mp3",
+	}).(*HTTPSpeechSynthesizer)
 	if !ok {
-		t.Fatal("expected *httpSpeechSynthesizer")
+		t.Fatal("expected *HTTPSpeechSynthesizer")
 	}
 
 	_, _, err := synth.Synthesize(context.Background(), "你好宝宝")
@@ -103,13 +90,14 @@ func TestTTSSynthesizePostsExpectedRequestAndDecodesBody(t *testing.T) {
 		}, nil
 	})}
 
-	cfg := testConfig()
-	cfg.GoTTSAPIKey = "test-key"
-	cfg.GoTTSModel = "test-model"
-	cfg.GoTTSVoice = "test-voice"
-	cfg.GoTTSResponseFormat = "opus"
-
-	synth := newHTTPSpeechSynthesizer(cfg, httpClient).(*httpSpeechSynthesizer)
+	synth := NewHTTPSpeechSynthesizer(TTSConfig{
+		URL:            "https://tts.test",
+		APIKey:         "test-key",
+		Model:          "test-model",
+		Voice:          "test-voice",
+		ResponseFormat: "opus",
+		HTTPClient:     httpClient,
+	}).(*HTTPSpeechSynthesizer)
 
 	contentType, body, err := synth.Synthesize(context.Background(), "你好宝宝")
 	if err != nil {
@@ -147,11 +135,12 @@ func TestTTSSynthesizeSurfacesUpstreamErrorBody(t *testing.T) {
 		}, nil
 	})}
 
-	cfg := testConfig()
-	cfg.GoTTSAPIKey = "test-key"
-	cfg.GoTTSResponseFormat = "opus"
-
-	synth := newHTTPSpeechSynthesizer(cfg, httpClient).(*httpSpeechSynthesizer)
+	synth := NewHTTPSpeechSynthesizer(TTSConfig{
+		URL:            "https://tts.test",
+		APIKey:         "test-key",
+		ResponseFormat: "opus",
+		HTTPClient:     httpClient,
+	}).(*HTTPSpeechSynthesizer)
 
 	_, _, err := synth.Synthesize(context.Background(), "你好宝宝")
 	if err == nil {
@@ -160,4 +149,17 @@ func TestTTSSynthesizeSurfacesUpstreamErrorBody(t *testing.T) {
 	if !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "invalid api key") {
 		t.Fatalf("error %q should contain status and upstream body", err)
 	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func env(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
 }

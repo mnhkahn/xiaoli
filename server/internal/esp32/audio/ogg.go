@@ -1,4 +1,4 @@
-package admin
+package audio
 
 import (
 	"bytes"
@@ -13,7 +13,7 @@ const oggOpusSerial = 0x7869616f
 
 var oggCRCTable = buildOggCRCTable()
 
-func buildOggOpus(frames [][]byte, inputSampleRate int, channels int, frameDurationMS int) ([]byte, error) {
+func BuildOggOpus(frames [][]byte, inputSampleRate int, channels int, frameDurationMS int) ([]byte, error) {
 	if len(frames) == 0 {
 		return nil, errors.New("no opus frames")
 	}
@@ -141,7 +141,7 @@ func oggCRC(page []byte) uint32 {
 	return crc
 }
 
-func oggOpusDuration(body []byte) time.Duration {
+func OggOpusDuration(body []byte) time.Duration {
 	reader := bytes.NewReader(body)
 	var lastGranule uint64
 	for reader.Len() >= 27 {
@@ -186,7 +186,7 @@ func oggOpusDuration(body []byte) time.Duration {
 // final granule position / number of audio packets, all in 48kHz units).
 // Header packets (OpusHead, OpusTags) are skipped. Multi-segment Opus packets
 // (segments < 255 mark the end of a packet) are reassembled.
-func extractOpusPackets(body []byte) (packets [][]byte, frameDuration time.Duration) {
+func ExtractOpusPackets(body []byte) (packets [][]byte, frameDuration time.Duration) {
 	reader := bytes.NewReader(body)
 	var partial []byte
 	var lastGranule uint64
@@ -261,7 +261,7 @@ func isOpusHeaderPacket(p []byte) bool {
 // at the target frame duration, matching the Python server's approach.
 // This ensures the device decoder receives frames matching its configured
 // frame_duration (e.g. 60ms).
-func reencodeOpusFrames(packets [][]byte, sampleRate int, srcFrameDuration time.Duration, targetFrameDurationMs int) ([][]byte, time.Duration, error) {
+func ReencodeOpusFrames(packets [][]byte, sampleRate int, srcFrameDuration time.Duration, targetFrameDurationMs int) ([][]byte, time.Duration, error) {
 	if sampleRate <= 0 {
 		sampleRate = 16000
 	}

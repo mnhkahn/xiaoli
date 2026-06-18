@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	agentesp32 "xiaoli/server/internal/esp32"
+	esp32audio "xiaoli/server/internal/esp32/audio"
 )
 
 type DeviceController interface {
@@ -36,9 +37,9 @@ func NewDeviceHub(cfg Config, stream *streamHub, audio *audioStore, asr SpeechRe
 		TTS:                       tts,
 		Conversation:              conversation,
 		NewVoiceDetector:          newVoiceDetector,
-		BuildOggOpus:              buildOggOpus,
-		ExtractOpusPackets:        extractOpusPackets,
-		ReencodeOpusFrames:        reencodeOpusFrames,
+		BuildOggOpus:              esp32audio.BuildOggOpus,
+		ExtractOpusPackets:        esp32audio.ExtractOpusPackets,
+		ReencodeOpusFrames:        esp32audio.ReencodeOpusFrames,
 		NormalizeImageContentType: normalizeImageContentType,
 	})
 	return &DeviceHub{Hub: hub, conversation: conversation, vision: vision, tts: tts}
@@ -63,6 +64,19 @@ func (h *DeviceHub) Speak(ctx context.Context, deviceID string, text string) (ma
 		h.Hub.SetTTS(h.tts)
 	}
 	return h.Hub.Speak(ctx, deviceID, text)
+}
+
+func (h *DeviceHub) CallTool(ctx context.Context, deviceID string, toolName string, args map[string]any, timeout int) (any, string, error) {
+	result, err := h.Call(ctx, BridgeCallRequest{
+		DeviceID:  deviceID,
+		Tool:      toolName,
+		Arguments: args,
+		Timeout:   timeout,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return result.Result, result.Error, nil
 }
 
 type streamPublisher struct {
@@ -102,5 +116,5 @@ func (a *deviceConversationAdapter) AnswerDeviceText(ctx context.Context, device
 }
 
 func newVoiceDetector() (agentesp32.VoiceDetector, error) {
-	return NewSileroVAD()
+	return esp32audio.NewSileroVAD()
 }

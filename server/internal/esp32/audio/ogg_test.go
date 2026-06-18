@@ -1,4 +1,4 @@
-package admin
+package audio
 
 import (
 	"bytes"
@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildOggOpusWrapsRawFrames(t *testing.T) {
-	body, err := buildOggOpus([][]byte{
+	body, err := BuildOggOpus([][]byte{
 		{0x11, 0x22, 0x33},
 		{0x44, 0x55},
 	}, 16000, 1, 60)
@@ -22,7 +22,7 @@ func TestBuildOggOpusWrapsRawFrames(t *testing.T) {
 	if !bytes.Contains(body, []byte("OpusHead")) || !bytes.Contains(body, []byte("OpusTags")) {
 		t.Fatal("ogg body is missing Opus headers")
 	}
-	if got := oggOpusDuration(body); got != 120*time.Millisecond {
+	if got := OggOpusDuration(body); got != 120*time.Millisecond {
 		t.Fatalf("duration = %s, want 120ms", got)
 	}
 }
@@ -40,11 +40,11 @@ func TestExtractOpusPacketsRoundTrip(t *testing.T) {
 			f[j] = byte(i + 1)
 		}
 	}
-	ogg, err := buildOggOpus(frames, 16000, 1, 60)
+	ogg, err := BuildOggOpus(frames, 16000, 1, 60)
 	if err != nil {
 		t.Fatalf("buildOggOpus: %v", err)
 	}
-	got, frameDur := extractOpusPackets(ogg)
+	got, frameDur := ExtractOpusPackets(ogg)
 	if len(got) != len(frames) {
 		t.Fatalf("packet count: got %d want %d", len(got), len(frames))
 	}
@@ -80,7 +80,7 @@ func TestReencodeOpusFrames20To60(t *testing.T) {
 		packets = append(packets, pkt)
 	}
 
-	reencoded, frameDur, err := reencodeOpusFrames(packets, sampleRate, time.Duration(srcFrameMs)*time.Millisecond, targetFrameMs)
+	reencoded, frameDur, err := ReencodeOpusFrames(packets, sampleRate, time.Duration(srcFrameMs)*time.Millisecond, targetFrameMs)
 	if err != nil {
 		t.Fatalf("reencodeOpusFrames: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestReencodeOpusFramesRounded20To60(t *testing.T) {
 		packets = append(packets, pkt)
 	}
 
-	reencoded, frameDur, err := reencodeOpusFrames(packets, sampleRate, 19*time.Millisecond+900*time.Microsecond, targetFrameMs)
+	reencoded, frameDur, err := ReencodeOpusFrames(packets, sampleRate, 19*time.Millisecond+900*time.Microsecond, targetFrameMs)
 	if err != nil {
 		t.Fatalf("reencodeOpusFrames: %v", err)
 	}

@@ -1,4 +1,4 @@
-package admin
+package audio
 
 import (
 	"bytes"
@@ -28,7 +28,8 @@ func computeSNR(a, b []int16) float64 {
 }
 
 func TestTTSReencodePipelineFromSample(t *testing.T) {
-	body, err := os.ReadFile("testdata/tts_sample.ogg")
+	testdataDir := "../../admin/testdata"
+	body, err := os.ReadFile(filepath.Join(testdataDir, "tts_sample.ogg"))
 	if err != nil {
 		t.Skip("testdata/tts_sample.ogg missing — run TestTTSSynthesizeSavesSampleForLocalPlayback first")
 	}
@@ -36,7 +37,7 @@ func TestTTSReencodePipelineFromSample(t *testing.T) {
 		t.Fatalf("sample is not Ogg (first 4 bytes = %q)", body[:4])
 	}
 
-	inPackets, srcFrameDur := extractOpusPackets(body)
+	inPackets, srcFrameDur := ExtractOpusPackets(body)
 	if len(inPackets) == 0 {
 		t.Fatal("extractOpusPackets returned 0 packets")
 	}
@@ -44,7 +45,7 @@ func TestTTSReencodePipelineFromSample(t *testing.T) {
 		len(inPackets), srcFrameDur,
 		time.Duration(float64(time.Second)*float64(len(inPackets))*srcFrameDur.Seconds()))
 
-	outPackets, _, err := reencodeOpusFrames(inPackets, 16000, srcFrameDur, 60)
+	outPackets, _, err := ReencodeOpusFrames(inPackets, 16000, srcFrameDur, 60)
 	if err != nil {
 		t.Fatalf("reencodeOpusFrames: %v", err)
 	}
@@ -111,19 +112,21 @@ func TestTTSReencodePipelineFromSample(t *testing.T) {
 	}
 
 	if os.Getenv("DUMP_TTS") != "" {
-		if err := os.MkdirAll("testdata/frames_in", 0o755); err != nil {
+		framesIn := filepath.Join(testdataDir, "frames_in")
+		framesOut := filepath.Join(testdataDir, "frames_out")
+		if err := os.MkdirAll(framesIn, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.MkdirAll("testdata/frames_out", 0o755); err != nil {
+		if err := os.MkdirAll(framesOut, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		writeWAVs(t, "testdata/frames_in", inPackets, inSamples)
-		writeWAVs(t, "testdata/frames_out", outPackets, outSamples)
-		stitched, err := buildOggOpus(outPackets, 16000, 1, 60)
+		writeWAVs(t, framesIn, inPackets, inSamples)
+		writeWAVs(t, framesOut, outPackets, outSamples)
+		stitched, err := BuildOggOpus(outPackets, 16000, 1, 60)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile("testdata/stitched.ogg", stitched, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(testdataDir, "stitched.ogg"), stitched, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		t.Logf("DUMPED: testdata/frames_in/ (%d files), testdata/frames_out/ (%d files), testdata/stitched.ogg",

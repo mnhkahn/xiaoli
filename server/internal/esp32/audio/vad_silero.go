@@ -1,4 +1,4 @@
-package admin
+package audio
 
 import (
 	_ "embed"
@@ -16,8 +16,9 @@ import (
 var sileroONNXBytes []byte
 
 // Constants mirroring the Python reference (xiaozhi-esp32-server SileroVAD):
-//   threshold=0.5, threshold_low=0.3, frame_window=5, frame_window_threshold=3
-//   sample size = 512 samples @ 16kHz, context = 64 samples.
+//
+//	threshold=0.5, threshold_low=0.3, frame_window=5, frame_window_threshold=3
+//	sample size = 512 samples @ 16kHz, context = 64 samples.
 const (
 	sileroSampleRate    = 16000
 	sileroChunkSamples  = 512
@@ -37,9 +38,9 @@ var (
 
 // initSileroRuntime initializes the global ONNX runtime exactly once.
 // It looks for the shared library at:
-//   1. XIAOLI_ONNXRUNTIME_PATH env var
-//   2. /usr/local/lib/libonnxruntime.so (Linux default)
-//   3. /opt/homebrew/lib/libonnxruntime.dylib or /usr/local/lib/libonnxruntime.dylib (macOS)
+//  1. XIAOLI_ONNXRUNTIME_PATH env var
+//  2. /usr/local/lib/libonnxruntime.so (Linux default)
+//  3. /opt/homebrew/lib/libonnxruntime.dylib or /usr/local/lib/libonnxruntime.dylib (macOS)
 func initSileroRuntime() error {
 	sileroInitOnce.Do(func() {
 		path := os.Getenv("XIAOLI_ONNXRUNTIME_PATH")
@@ -198,10 +199,10 @@ func (v *SileroVAD) Detect(opusPayload []byte) (isVoice bool, ran bool, lastProb
 		v.pending = append(v.pending, float32(v.pcmBuf[i])/32768.0)
 	}
 
-	inputData := v.inputT.GetData()    // length 576
-	stateData := v.stateT.GetData()    // length 256
-	stateOut := v.outStat.GetData()    // length 256
-	probData := v.outProb.GetData()    // length 1
+	inputData := v.inputT.GetData() // length 576
+	stateData := v.stateT.GetData() // length 256
+	stateOut := v.outStat.GetData() // length 256
+	probData := v.outProb.GetData() // length 1
 
 	for len(v.pending) >= sileroChunkSamples {
 		// inputData layout: [context (64) | chunk (512)]

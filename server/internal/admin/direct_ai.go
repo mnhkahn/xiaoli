@@ -1,16 +1,10 @@
 package admin
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"mime/multipart"
-	"net/http"
-	"net/textproto"
 	"strings"
 	"time"
 
@@ -24,195 +18,30 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
-	einojsonschema "github.com/eino-contrib/jsonschema"
-
+	agentmedia "xiaoli/server/internal/agent/media"
 	agentmcp "xiaoli/server/internal/agent/tool/mcp"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
 )
 
-// ---------------------------------------------------------------------------
-// Interfaces kept for ASR / Vision (not migrated to Eino yet)
-// ---------------------------------------------------------------------------
-
-type SpeechRecognizer interface {
-	Transcribe(ctx context.Context, oggOpus []byte) (string, error)
-}
-
-type VisionAnalyzer interface {
-	Analyze(ctx context.Context, question string, contentType string, image []byte) (string, error)
-}
-
-// ---------------------------------------------------------------------------
-// ASR implementation (hand-rolled HTTP, kept as-is)
-// ---------------------------------------------------------------------------
-
-type openAITranscriber struct {
-	url    string
-	apiKey string
-	model  string
-	client *http.Client
-}
+type SpeechRecognizer = agentmedia.SpeechRecognizer
+type VisionAnalyzer = agentmedia.VisionAnalyzer
 
 func newOpenAITranscriber(cfg Config) SpeechRecognizer {
-	if cfg.GoASRAPIKey == "" {
-		return nil
-	}
-	return &openAITranscriber{
-		url:    cfg.GoASRURL,
-		apiKey: cfg.GoASRAPIKey,
-		model:  cfg.GoASRModel,
-		client: &http.Client{Timeout: cfg.GoASRTimeout},
-	}
-}
-
-func (c *openAITranscriber) Transcribe(ctx context.Context, oggOpus []byte) (string, error) {
-	if c == nil || c.apiKey == "" {
-		return "", errors.New("ASR is not configured")
-	}
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	if err := writer.WriteField("model", c.model); err != nil {
-		return "", err
-	}
-	_ = writer.WriteField("response_format", "json")
-	header := make(textproto.MIMEHeader)
-	header.Set("Content-Disposition", `form-data; name="file"; filename="speech.ogg"`)
-	header.Set("Content-Type", "audio/ogg")
-	part, err := writer.CreatePart(header)
-	if err != nil {
-		return "", err
-	}
-	if _, err := part.Write(oggOpus); err != nil {
-		return "", err
-	}
-	if err := writer.Close(); err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, &body)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, 600))
-		return "", fmt.Errorf("ASR request failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(errorBody)))
-	}
-	var payload map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", err
-	}
-	text := strings.TrimSpace(stringValue(payload["text"]))
-	if text == "" {
-		return "", errors.New("ASR returned empty text")
-	}
-	return text, nil
-}
-
-// ---------------------------------------------------------------------------
-// Vision implementation (hand-rolled HTTP, kept as-is)
-// ---------------------------------------------------------------------------
-
-type openAIVisionClient struct {
-	url    string
-	apiKey string
-	model  string
-	client *http.Client
+	return agentmedia.NewOpenAITranscriber(agentmedia.ASRConfig{
+		URL:     cfg.GoASRURL,
+		APIKey:  cfg.GoASRAPIKey,
+		Model:   cfg.GoASRModel,
+		Timeout: cfg.GoASRTimeout,
+	})
 }
 
 func newGoVisionClient(cfg Config) VisionAnalyzer {
-	if cfg.GoVLLMAPIKey == "" {
-		return nil
-	}
-	return &openAIVisionClient{
-		url:    cfg.GoVLLMURL,
-		apiKey: cfg.GoVLLMAPIKey,
-		model:  cfg.GoVLLMModel,
-		client: &http.Client{Timeout: cfg.GoVLLMTimeout},
-	}
-}
-
-func (c *openAIVisionClient) Analyze(ctx context.Context, question string, contentType string, image []byte) (string, error) {
-	if c == nil || c.apiKey == "" {
-		return "", errors.New("vision model is not configured")
-	}
-	if question == "" {
-		question = "请描述这张图片里的内容。"
-	}
-	dataURL := "data:" + normalizeImageContentType(contentType, "image/jpeg") + ";base64," + base64.StdEncoding.EncodeToString(image)
-	payload := map[string]any{
-		"model": c.model,
-		"messages": []map[string]any{
-			{"role": "system", "content": "你是一个视觉助手。回答要简短、直接，适合通过语音播放。"},
-			{"role": "user", "content": []map[string]any{
-				{"type": "text", "text": question},
-				{"type": "image_url", "image_url": map[string]any{"url": dataURL}},
-			}},
-		},
-		"temperature": 0.2,
-		"max_tokens":  300,
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, 800))
-		return "", fmt.Errorf("vision request failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(errorBody)))
-	}
-	var parsed struct {
-		Choices []struct {
-			Message struct {
-				Content any `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return "", err
-	}
-	if len(parsed.Choices) == 0 {
-		return "", errors.New("vision model returned no choices")
-	}
-	answer := strings.TrimSpace(contentText(parsed.Choices[0].Message.Content))
-	if answer == "" {
-		return "", errors.New("vision model returned empty answer")
-	}
-	return answer, nil
-}
-
-func contentText(value any) string {
-	switch v := value.(type) {
-	case string:
-		return v
-	case []any:
-		var parts []string
-		for _, item := range v {
-			if m, ok := item.(map[string]any); ok {
-				if text := stringValue(m["text"]); text != "" {
-					parts = append(parts, text)
-				}
-			}
-		}
-		return strings.Join(parts, "")
-	default:
-		return stringValue(value)
-	}
+	return agentmedia.NewOpenAIVisionClient(agentmedia.VisionConfig{
+		URL:     cfg.GoVLLMURL,
+		APIKey:  cfg.GoVLLMAPIKey,
+		Model:   cfg.GoVLLMModel,
+		Timeout: cfg.GoVLLMTimeout,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -386,137 +215,6 @@ func (m *redisMemory) Save(ctx context.Context, deviceID string, msgs []*schema.
 }
 
 // ---------------------------------------------------------------------------
-// MCP Tool wrapper — bridges device MCP tools into Eino tool.BaseTool
-// ---------------------------------------------------------------------------
-
-type mcpTool struct {
-	info     *schema.ToolInfo
-	hub      *DeviceHub
-	deviceID string
-	toolName string
-}
-
-func (t *mcpTool) Info(_ context.Context) (*schema.ToolInfo, error) {
-	return t.info, nil
-}
-
-func (t *mcpTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	var args map[string]any
-	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
-		args = map[string]any{}
-	}
-	result, err := t.hub.Call(ctx, BridgeCallRequest{
-		DeviceID:  t.deviceID,
-		Tool:      t.toolName,
-		Arguments: args,
-		Timeout:   30,
-	})
-	if err != nil {
-		return fmt.Sprintf("tool call error: %v", err), nil
-	}
-	if result.Error != "" {
-		return fmt.Sprintf("tool error: %s", result.Error), nil
-	}
-	raw, _ := json.Marshal(result.Result)
-	return string(raw), nil
-}
-
-func mcpToolsToEinoTools(deviceID string, rawTools []map[string]any, hub *DeviceHub) []tool.BaseTool {
-	var tools []tool.BaseTool
-	usedNames := map[string]int{}
-	for _, raw := range rawTools {
-		name, _ := raw["name"].(string)
-		if name == "" {
-			continue
-		}
-		desc, _ := raw["description"].(string)
-		if desc == "" {
-			desc = name
-		}
-
-		var paramsOneOf *schema.ParamsOneOf
-		if inputSchema, ok := raw["inputSchema"]; ok && inputSchema != nil {
-			schemaBytes, err := json.Marshal(inputSchema)
-			if err == nil {
-				var js einojsonschema.Schema
-				if err := json.Unmarshal(schemaBytes, &js); err == nil {
-					paramsOneOf = schema.NewParamsOneOfByJSONSchema(&js)
-				}
-			}
-		}
-
-		tools = append(tools, &mcpTool{
-			info: &schema.ToolInfo{
-				Name:        uniqueSafeToolName(name, usedNames),
-				Desc:        desc,
-				ParamsOneOf: paramsOneOf,
-			},
-			hub:      hub,
-			deviceID: deviceID,
-			toolName: name,
-		})
-	}
-	return tools
-}
-
-func uniqueSafeToolName(name string, used map[string]int) string {
-	safe := safeToolName(name)
-	if used == nil {
-		return safe
-	}
-	used[safe]++
-	if used[safe] == 1 {
-		return safe
-	}
-	for {
-		suffix := fmt.Sprintf("_%d", used[safe])
-		base := safe
-		if len(base)+len(suffix) > 64 {
-			base = base[:64-len(suffix)]
-		}
-		candidate := base + suffix
-		if used[candidate] == 0 {
-			used[candidate] = 1
-			return candidate
-		}
-		used[safe]++
-	}
-}
-
-func safeToolName(name string) string {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = "tool"
-	}
-	var b strings.Builder
-	b.Grow(len(name))
-	lastUnderscore := false
-	for _, r := range name {
-		valid := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
-		if valid {
-			b.WriteRune(r)
-			lastUnderscore = false
-			continue
-		}
-		if !lastUnderscore {
-			b.WriteByte('_')
-			lastUnderscore = true
-		}
-	}
-	safe := strings.Trim(b.String(), "_")
-	if safe == "" {
-		safe = "tool"
-	}
-	if len(safe) > 64 {
-		safe = strings.TrimRight(safe[:64], "_-")
-		if safe == "" {
-			safe = "tool"
-		}
-	}
-	return safe
-}
-
-// ---------------------------------------------------------------------------
 // EinoAgent — Eino-powered LLM with memory and skill support
 // ---------------------------------------------------------------------------
 
@@ -649,7 +347,7 @@ func (a *EinoAgent) ChatWithContext(ctx context.Context, conversationID string, 
 	var einoTools []tool.BaseTool
 	if a.hub != nil && deviceID != "" {
 		if rawTools, ok := a.hub.ToolSnapshot(deviceID); ok {
-			einoTools = mcpToolsToEinoTools(deviceID, rawTools, a.hub)
+			einoTools = agentmcp.NewDeviceTools(deviceID, rawTools, a.hub)
 		}
 	}
 	for _, tools := range a.extToolSets {
