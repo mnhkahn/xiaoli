@@ -1,5 +1,110 @@
 # Xiaoli Server on Fly.io
 
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 780" font-family="Menlo, Monaco, 'Courier New', monospace">
+  <defs>
+    <linearGradient id="in-progress" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#fbbf24"/>
+    </linearGradient>
+    <linearGradient id="done" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+    <filter id="shadow" x="-2%" y="-2%" width="104%" height="108%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.15"/>
+    </filter>
+  </defs>
+
+  <rect width="900" height="780" fill="#1a1b2e" rx="12"/>
+  <text x="450" y="32" text-anchor="middle" fill="#ffffff" font-size="17" font-weight="bold">Xiaoli Server — 分层架构</text>
+
+  <line x1="450" y1="42" x2="450" y2="58" stroke="#555" stroke-width="1"/>
+
+  <!-- 入口点层 -->
+  <rect x="120" y="58" width="660" height="62" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="145" y="80" fill="#064e3b" font-size="13" font-weight="bold">入口点层</text>
+  <text x="145" y="98" fill="#064e3b" font-size="11" opacity="0.85">cmd/xiaoli-admin/main.go → LoadConfig() → NewServer(cfg) → http.ListenAndServe</text>
+  <text x="145" y="112" fill="#064e3b" font-size="10" opacity="0.65">背景任务：StudyMonitor · Lark WS Client · WeChat 轮询</text>
+
+  <line x1="450" y1="120" x2="450" y2="140" stroke="#10b981" stroke-width="2"/>
+
+  <!-- HTTP 路由层 -->
+  <rect x="30" y="140" width="840" height="72" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="55" y="162" fill="#064e3b" font-size="13" font-weight="bold">HTTP 路由层</text>
+  <text x="55" y="182" fill="#064e3b" font-size="11" opacity="0.85">server.go — ServeHTTP 多路分发</text>
+  <text x="55" y="200" fill="#064e3b" font-size="10" opacity="0.65">/health · /xiaozhi/ota/ · /xiaozhi/v1/(WS) · /lark/events · /mcp/vision/ · /admin/*</text>
+
+  <line x1="450" y1="212" x2="450" y2="232" stroke="#10b981" stroke-width="2"/>
+
+  <!-- 渠道层 -->
+  <rect x="30" y="232" width="840" height="72" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="55" y="254" fill="#064e3b" font-size="13" font-weight="bold">渠道层</text>
+  <text x="55" y="274" fill="#064e3b" font-size="11" opacity="0.85">agent/channel · channel.go — Provider 注册 · ConversationPipeline</text>
+  <text x="55" y="292" fill="#064e3b" font-size="10" opacity="0.65">agent/channel/lark (WS) · agent/channel/wechat (轮询) · agent/esp32/hub (Device WS) · agent/slash (斜杠命令)</text>
+
+  <line x1="135" y1="304" x2="135" y2="324" stroke="#10b981" stroke-width="2"/>
+  <line x1="450" y1="304" x2="450" y2="324" stroke="#10b981" stroke-width="2"/>
+  <line x1="765" y1="304" x2="765" y2="324" stroke="#10b981" stroke-width="2"/>
+
+  <!-- 编排层 -->
+  <rect x="30" y="324" width="270" height="100" rx="8" fill="url(#in-progress)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="55" y="346" fill="#1a1b2e" font-size="12" font-weight="bold">编排层</text>
+  <text x="55" y="364" fill="#1a1b2e" font-size="10">direct_ai.go — EinoAgent</text>
+  <text x="55" y="380" fill="#1a1b2e" font-size="10">conversation.go — ConversationPipeline</text>
+  <text x="55" y="396" fill="#1a1b2e" font-size="9" opacity="0.65">Eino CloudWeGo 框架</text>
+  <text x="55" y="410" fill="#1a1b2e" font-size="9" opacity="0.65">ChatModelAgent · 工具循环 · 技能注入</text>
+
+  <!-- AI 服务层 -->
+  <rect x="315" y="324" width="270" height="100" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="340" y="346" fill="#064e3b" font-size="12" font-weight="bold">AI 服务层</text>
+  <text x="340" y="364" fill="#064e3b" font-size="10">ASR: direct_ai.go — OpenAITranscriber</text>
+  <text x="340" y="380" fill="#064e3b" font-size="10">VLLM: direct_vision.go — GoVisionClient</text>
+  <text x="340" y="396" fill="#064e3b" font-size="10">TTS: direct_tts.go — HTTPSpeechSynthesizer</text>
+  <text x="340" y="410" fill="#064e3b" font-size="9" opacity="0.65">SiliconFlow / OpenRouter 多 provider</text>
+
+  <!-- 工具层 -->
+  <rect x="600" y="324" width="270" height="100" rx="8" fill="url(#in-progress)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="625" y="346" fill="#1a1b2e" font-size="12" font-weight="bold">工具层</text>
+  <text x="625" y="364" fill="#1a1b2e" font-size="10">agent/tool/skill — Skill 后端</text>
+  <text x="625" y="380" fill="#1a1b2e" font-size="10">agent/tool/mcp — MCP 客户端</text>
+  <text x="625" y="396" fill="#1a1b2e" font-size="9" opacity="0.65">skill CLI 执行 · MCP HTTP/SSE 连接</text>
+  <text x="625" y="410" fill="#1a1b2e" font-size="9" opacity="0.65">设备 MCP 桥接</text>
+
+  <line x1="165" y1="424" x2="165" y2="448" stroke="#f59e0b" stroke-width="2"/>
+  <line x1="450" y1="424" x2="450" y2="448" stroke="#10b981" stroke-width="2"/>
+  <line x1="735" y1="424" x2="735" y2="448" stroke="#f59e0b" stroke-width="2"/>
+  <line x1="165" y1="448" x2="735" y2="448" stroke="#f59e0b" stroke-width="1.5"/>
+  <line x1="450" y1="448" x2="450" y2="468" stroke="#f59e0b" stroke-width="2"/>
+
+  <!-- 基础设施层 -->
+  <rect x="30" y="468" width="840" height="72" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="55" y="490" fill="#064e3b" font-size="13" font-weight="bold">基础设施层</text>
+  <text x="55" y="510" fill="#064e3b" font-size="11" opacity="0.85">Redis 记忆 (direct_ai.go) · Logto OIDC 认证 (server.go) · 配置管理 (config.go)</text>
+  <text x="55" y="528" fill="#064e3b" font-size="10" opacity="0.65">Stream Hub 摄像头帧转发 · HMAC Cookie 签名 · 设备认证 Token</text>
+
+  <line x1="450" y1="540" x2="450" y2="560" stroke="#10b981" stroke-width="2"/>
+
+  <!-- ESP32 设备层 -->
+  <rect x="30" y="560" width="840" height="65" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="55" y="582" fill="#064e3b" font-size="13" font-weight="bold">设备协议层</text>
+  <text x="55" y="600" fill="#064e3b" font-size="11" opacity="0.85">agent/esp32 — DeviceHub · 会话管理 · MCP 代理 · Voice 处理</text>
+  <text x="55" y="616" fill="#064e3b" font-size="10" opacity="0.65">agent/esp32/audio — Ogg Opus 编解码 · VadSilero 语音活动检测</text>
+
+  <line x1="450" y1="625" x2="450" y2="643" stroke="#10b981" stroke-width="2"/>
+
+  <!-- 外部依赖层 -->
+  <rect x="100" y="643" width="700" height="50" rx="8" fill="#252640" opacity="0.9" stroke="#4b5563" stroke-width="1"/>
+  <text x="450" y="665" text-anchor="middle" fill="#9ca3af" font-size="11">外部依赖</text>
+  <text x="450" y="682" text-anchor="middle" fill="#6b7280" font-size="10">SiliconFlow (ASR/LLM/VLLM/TTS) · OpenRouter · Fly.io (nrt) · Redis · Logto · Lark · 微信</text>
+
+  <!-- 图例 -->
+  <rect x="300" y="708" width="300" height="32" rx="6" fill="#252640" opacity="0.9"/>
+  <rect x="315" y="718" width="14" height="14" rx="3" fill="url(#done)"/>
+  <text x="335" y="730" fill="#34d399" font-size="10">已实现</text>
+  <rect x="415" y="718" width="14" height="14" rx="3" fill="url(#in-progress)"/>
+  <text x="435" y="730" fill="#fbbf24" font-size="10">迭代中</text>
+</svg>
+
 This directory deploys a Go-only Xiaoli device/admin backend to Fly.io.
 
 The container runs a single Go process on port `8080`:
