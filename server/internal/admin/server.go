@@ -495,34 +495,29 @@ func (s *AdminServer) handleSchedules(w http.ResponseWriter, r *http.Request, us
 }
 
 func (s *AdminServer) schedules() []map[string]any {
-	interval := s.cfg.StudyMonitorInterval
-	if interval == 0 {
-		interval = 10 * time.Minute
+	var out []map[string]any
+	for _, def := range s.workflowDefinitions() {
+		if def.Trigger.Kind != "cron" {
+			continue
+		}
+		item := map[string]any{
+			"id":          def.ID,
+			"name":        def.Name,
+			"description": def.Description,
+			"enabled":     def.Enabled,
+			"agent":       def.Agent.Name,
+			"mode":        def.Agent.Mode,
+			"max_steps":   def.Agent.MaxSteps,
+		}
+		if def.Trigger.Cron != nil {
+			item["timezone"] = def.Trigger.Cron.Timezone
+		}
+		for key, value := range def.Metadata {
+			item[key] = value
+		}
+		out = append(out, item)
 	}
-	return []map[string]any{
-		{
-			"id":               "study_monitor",
-			"name":             "学习状态监控",
-			"description":      "在设定时间窗内定时调用摄像头检查学习状态，并按需发送语音提醒和飞书通知。",
-			"enabled":          s.cfg.StudyMonitorEnabled,
-			"timezone":         s.cfg.StudyMonitorTimezone,
-			"window":           fmt.Sprintf("%02d:00-%02d:00", s.cfg.StudyMonitorStartHour, s.cfg.StudyMonitorEndHour),
-			"interval_seconds": int(interval.Seconds()),
-			"camera_tool":      s.cfg.StudyMonitorCameraTool,
-			"reminder_text":    s.cfg.StudyMonitorReminder,
-			"device_ids":       s.cfg.StudyMonitorDeviceIDs,
-		},
-		{
-			"id":          "morning_greeting",
-			"name":        "早安问候",
-			"description": "每天早上固定时间向在线设备播放问候语；没有在线设备时跳过，不补播。",
-			"enabled":     s.cfg.MorningGreetingEnabled,
-			"timezone":    s.cfg.MorningGreetingTimezone,
-			"time":        fmt.Sprintf("%02d:%02d", clampInt(s.cfg.MorningGreetingHour, 0, 23, 8), clampInt(s.cfg.MorningGreetingMinute, 0, 59, 0)),
-			"text":        firstText(strings.TrimSpace(s.cfg.MorningGreetingText), "早上好。"),
-			"device_ids":  s.cfg.MorningGreetingDeviceIDs,
-		},
-	}
+	return out
 }
 
 type memoryListItem struct {

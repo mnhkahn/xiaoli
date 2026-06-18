@@ -322,11 +322,19 @@ func (a *EinoAgent) Chat(ctx context.Context, deviceID string, userText string) 
 	return a.ChatWithContext(ctx, deviceID, deviceID, userText)
 }
 
+type ChatOptions struct {
+	MaxIterations int
+}
+
 // ChatWithContext separates the conversation memory key from the optional
 // device ID used for MCP tools. Device voice turns use the same value for both;
 // text-only channels such as Lark use their channel conversation ID and leave
 // deviceID empty unless they intentionally bind to a device.
 func (a *EinoAgent) ChatWithContext(ctx context.Context, conversationID string, deviceID string, userText string) (string, error) {
+	return a.ChatWithContextOptions(ctx, conversationID, deviceID, userText, ChatOptions{})
+}
+
+func (a *EinoAgent) ChatWithContextOptions(ctx context.Context, conversationID string, deviceID string, userText string, opts ChatOptions) (string, error) {
 	if conversationID == "" {
 		conversationID = deviceID
 	}
@@ -355,11 +363,15 @@ func (a *EinoAgent) ChatWithContext(ctx context.Context, conversationID string, 
 	}
 
 	// Create agent with tools
+	maxIterations := opts.MaxIterations
+	if maxIterations <= 0 {
+		maxIterations = 10
+	}
 	agentCfg := &adk.ChatModelAgentConfig{
 		Name:          "xiaoli",
 		Instruction:   "", // already prepended as system message
 		Model:         a.chatModel,
-		MaxIterations: 10,
+		MaxIterations: maxIterations,
 	}
 	if a.skillMW != nil {
 		agentCfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}

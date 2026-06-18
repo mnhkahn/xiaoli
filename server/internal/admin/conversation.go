@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"github.com/mnhkahn/gogogo/logger"
 	"strings"
+	"time"
+
+	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
 
 type ConversationChannel string
@@ -64,6 +67,10 @@ type conversationChat interface {
 	Chat(ctx context.Context, turn ConversationTurn) (string, error)
 }
 
+type conversationChatWithOptions interface {
+	ChatWithOptions(ctx context.Context, turn ConversationTurn, opts ChatOptions) (string, error)
+}
+
 type conversationChatFunc func(ctx context.Context, turn ConversationTurn) (string, error)
 
 func (f conversationChatFunc) Chat(ctx context.Context, turn ConversationTurn) (string, error) {
@@ -71,8 +78,9 @@ func (f conversationChatFunc) Chat(ctx context.Context, turn ConversationTurn) (
 }
 
 type ConversationPipeline struct {
-	chat    conversationChat
-	devices DeviceController
+	chat     conversationChat
+	devices  DeviceController
+	workflow *agentworkflow.Runner
 }
 
 func newConversationPipeline(agent *EinoAgent, devices DeviceController) *ConversationPipeline {
@@ -80,7 +88,15 @@ func newConversationPipeline(agent *EinoAgent, devices DeviceController) *Conver
 	if agent != nil {
 		chat = einoConversationChat{agent: agent}
 	}
-	return &ConversationPipeline{chat: chat, devices: devices}
+	pipeline := &ConversationPipeline{chat: chat, devices: devices}
+	registry, err := agentworkflow.NewRegistry(DefinitionChatReact())
+	if err == nil {
+		pipeline.workflow = agentworkflow.NewRunner(agentworkflow.RunnerConfig{
+			Registry: registry,
+			Agent:    conversationWorkflowAgent{pipeline: pipeline},
+		})
+	}
+	return pipeline
 }
 
 func (p *ConversationPipeline) Run(ctx context.Context, turn ConversationTurn) (ConversationReply, error) {
@@ -91,6 +107,28 @@ func (p *ConversationPipeline) Run(ctx context.Context, turn ConversationTurn) (
 	if turn.ConversationID == "" {
 		turn.ConversationID = turn.DeviceID
 	}
+	if p.workflow != nil {
+		run, err := p.workflow.Run(ctx, "chat_react", agentworkflow.Input{
+			Trigger:        agentworkflow.TriggerMessage,
+			Channel:        string(turn.Channel),
+			ConversationID: turn.ConversationID,
+			DeviceID:       turn.DeviceID,
+			Text:           turn.Text,
+			UseDeviceTools: turn.UseDeviceTools,
+		})
+		if err == nil {
+			text := strings.TrimSpace(run.Output.Text)
+			if text == "" {
+				text = "我现在还没想好怎么回答。"
+			}
+			return ConversationReply{Text: text}, nil
+		}
+		return ConversationReply{Text: fmt.Sprintf("我现在回答不了。错误原因：%v。", err)}, nil
+	}
+	return p.runDirect(ctx, turn)
+}
+
+func (p *ConversationPipeline) runDirect(ctx context.Context, turn ConversationTurn) (ConversationReply, error) {
 	if turn.UseDeviceTools && turn.DeviceID != "" && p.devices != nil && needsVision(turn.Text) {
 		result, err := p.devices.Call(ctx, BridgeCallRequest{
 			DeviceID: turn.DeviceID,
@@ -124,10 +162,72 @@ func (p *ConversationPipeline) Run(ctx context.Context, turn ConversationTurn) (
 	return ConversationReply{Text: answer}, nil
 }
 
+func DefinitionChatReact() agentworkflow.Definition {
+	return agentworkflow.Definition{
+		ID:          "chat_react",
+		Name:        "调度 Agent",
+		Description: "由 channel 消息触发，使用 ReAct Agent 编排工具、技能和 MCP 调用并返回回复。",
+		Enabled:     true,
+		Trigger:     agentworkflow.Trigger{Kind: agentworkflow.TriggerMessage},
+		Agent: agentworkflow.AgentSpec{
+			Name:     "dispatch_agent",
+			Mode:     "react",
+			MaxSteps: 8,
+			Timeout:  120 * time.Second,
+		},
+	}
+}
+
+type conversationWorkflowAgent struct {
+	pipeline *ConversationPipeline
+}
+
+func (a conversationWorkflowAgent) Run(ctx context.Context, request agentworkflow.AgentRequest) (agentworkflow.AgentResponse, error) {
+	if a.pipeline == nil {
+		return agentworkflow.AgentResponse{}, errors.New("conversation pipeline is not configured")
+	}
+	turn := ConversationTurn{
+		Channel:        ConversationChannel(request.Input.Channel),
+		ConversationID: request.Input.ConversationID,
+		DeviceID:       request.Input.DeviceID,
+		Text:           request.Input.Text,
+		UseDeviceTools: request.Input.UseDeviceTools,
+	}
+	if request.LastError != "" {
+		turn.Text = strings.TrimSpace(turn.Text + "\n\n上一次执行失败：" + request.LastError + "\n请换一种方式继续完成。")
+	}
+	reply, err := a.pipeline.runWorkflowStep(ctx, turn, request.MaxSteps)
+	if err != nil {
+		return agentworkflow.AgentResponse{}, err
+	}
+	return agentworkflow.AgentResponse{Text: reply.Text, Finished: true}, nil
+}
+
+func (p *ConversationPipeline) runWorkflowStep(ctx context.Context, turn ConversationTurn, maxSteps int) (ConversationReply, error) {
+	if turn.UseDeviceTools && turn.DeviceID != "" && p.devices != nil && needsVision(turn.Text) {
+		return p.runDirect(ctx, turn)
+	}
+	if p.chat == nil {
+		return ConversationReply{Text: "我现在还没有配置语言模型。"}, nil
+	}
+	if chat, ok := p.chat.(conversationChatWithOptions); ok {
+		answer, err := chat.ChatWithOptions(ctx, turn, ChatOptions{MaxIterations: maxSteps})
+		if err != nil {
+			return ConversationReply{}, err
+		}
+		return ConversationReply{Text: answer}, nil
+	}
+	return p.runDirect(ctx, turn)
+}
+
 type einoConversationChat struct {
 	agent *EinoAgent
 }
 
 func (c einoConversationChat) Chat(ctx context.Context, turn ConversationTurn) (string, error) {
 	return c.agent.ChatWithContext(ctx, turn.ConversationID, turn.DeviceID, turn.Text)
+}
+
+func (c einoConversationChat) ChatWithOptions(ctx context.Context, turn ConversationTurn, opts ChatOptions) (string, error) {
+	return c.agent.ChatWithContextOptions(ctx, turn.ConversationID, turn.DeviceID, turn.Text, opts)
 }

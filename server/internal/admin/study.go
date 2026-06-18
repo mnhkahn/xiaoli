@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"github.com/mnhkahn/gogogo/logger"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
+
+	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
 
 const studyMonitorPrompt = `请检查这张照片中孩子的学习状态，重点判断：
@@ -45,110 +47,67 @@ func (s *AdminServer) StartBackground(ctx context.Context) {
 	if s.cfg.WeChatEnabled {
 		go s.startWechatPolling(ctx)
 	}
-	if s.cfg.StudyMonitorEnabled {
-		go s.runStudyMonitorScheduler(ctx)
-	}
-	if s.cfg.MorningGreetingEnabled {
-		go s.runMorningGreetingScheduler(ctx)
-	}
-}
-
-func (s *AdminServer) runStudyMonitorScheduler(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	var lastSlot int64
-	for {
-		now := s.studyMonitorNow()
-		if slot := s.studyMonitorSlot(now); slot != nil && *slot != lastSlot {
-			lastSlot = *slot
-			_ = s.runStudyMonitorOnce(ctx, now)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-func (s *AdminServer) studyMonitorNow() time.Time {
-	location, err := time.LoadLocation(s.cfg.StudyMonitorTimezone)
-	if err != nil {
-		location = time.FixedZone("CST", 8*3600)
-	}
-	return s.cfg.now().In(location)
+	go s.startWorkflowCronScheduler(ctx)
 }
 
 func (s *AdminServer) studyMonitorSlot(checkedAt time.Time) *int64 {
-	location, err := time.LoadLocation(s.cfg.StudyMonitorTimezone)
-	if err == nil {
-		checkedAt = checkedAt.In(location)
-	}
-	if !s.inStudyMonitorWindow(checkedAt) {
-		return nil
-	}
-	interval := s.cfg.StudyMonitorInterval
-	if interval < time.Minute {
-		interval = time.Minute
-	}
-	slot := checkedAt.Unix() - checkedAt.Unix()%int64(interval.Seconds())
-	return &slot
+	return agentworkflow.CronSlot(s.studyMonitorCronSpec(), checkedAt)
 }
 
 func (s *AdminServer) inStudyMonitorWindow(checkedAt time.Time) bool {
-	start := s.cfg.StudyMonitorStartHour
-	end := s.cfg.StudyMonitorEndHour
-	hour := checkedAt.Hour()
-	if start == end {
-		return true
-	}
-	if start < end {
-		return start <= hour && hour < end
-	}
-	return hour >= start || hour < end
-}
-
-func (s *AdminServer) runMorningGreetingScheduler(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	var lastSlot int64
-	for {
-		now := s.morningGreetingNow()
-		if slot := s.morningGreetingSlot(now); slot != nil && *slot != lastSlot {
-			lastSlot = *slot
-			if err := s.runMorningGreetingOnce(ctx, now); err != nil {
-				logger.Infof("morning greeting failed: %v", err)
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
-func (s *AdminServer) morningGreetingNow() time.Time {
-	location, err := time.LoadLocation(s.cfg.MorningGreetingTimezone)
-	if err != nil {
-		location = time.FixedZone("CST", 8*3600)
-	}
-	return s.cfg.now().In(location)
+	return agentworkflow.InWindow(s.studyMonitorCronSpec(), checkedAt)
 }
 
 func (s *AdminServer) morningGreetingSlot(checkedAt time.Time) *int64 {
-	location, err := time.LoadLocation(s.cfg.MorningGreetingTimezone)
-	if err == nil {
-		checkedAt = checkedAt.In(location)
+	return agentworkflow.CronSlot(s.morningGreetingCronSpec(), checkedAt)
+}
+
+func (s *AdminServer) startWorkflowCronScheduler(ctx context.Context) {
+	jobs := []agentworkflow.CronJob{}
+	for _, def := range s.workflowDefinitions() {
+		switch def.ID {
+		case "study_monitor":
+			jobs = append(jobs, agentworkflow.CronJob{Definition: def, Run: s.runStudyMonitorOnce})
+		case "morning_greeting":
+			jobs = append(jobs, agentworkflow.CronJob{
+				Definition: def,
+				Run: func(ctx context.Context, scheduledAt time.Time) error {
+					if err := s.runMorningGreetingOnce(ctx, scheduledAt); err != nil {
+						logger.Infof("morning greeting failed: %v", err)
+						return err
+					}
+					return nil
+				},
+			})
+		}
 	}
+	if len(jobs) == 0 {
+		return
+	}
+	agentworkflow.NewCronScheduler(agentworkflow.CronSchedulerConfig{
+		Jobs: jobs,
+		Tick: 30 * time.Second,
+		Now:  s.cfg.now,
+	}).Start(ctx)
+}
+
+func (s *AdminServer) studyMonitorCronSpec() agentworkflow.CronSpec {
+	return agentworkflow.CronSpec{
+		Every:     s.cfg.StudyMonitorInterval,
+		Timezone:  s.cfg.StudyMonitorTimezone,
+		StartHour: s.cfg.StudyMonitorStartHour,
+		EndHour:   s.cfg.StudyMonitorEndHour,
+	}
+}
+
+func (s *AdminServer) morningGreetingCronSpec() agentworkflow.CronSpec {
 	hour := clampInt(s.cfg.MorningGreetingHour, 0, 23, 8)
 	minute := clampInt(s.cfg.MorningGreetingMinute, 0, 59, 0)
-	if checkedAt.Hour() != hour || checkedAt.Minute() != minute {
-		return nil
+	return agentworkflow.CronSpec{
+		Timezone: s.cfg.MorningGreetingTimezone,
+		AtHour:   &hour,
+		AtMinute: &minute,
 	}
-	dayStart := time.Date(checkedAt.Year(), checkedAt.Month(), checkedAt.Day(), 0, 0, 0, 0, checkedAt.Location())
-	slot := dayStart.Unix()
-	return &slot
 }
 
 func (s *AdminServer) runMorningGreetingOnce(ctx context.Context, checkedAt time.Time) error {
