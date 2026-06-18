@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -8,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	agentwechat "xiaoli/server/internal/agent/channel/wechat"
 )
 
 func TestParseBuiltinCommandRequiresLeadingSlash(t *testing.T) {
@@ -85,7 +88,7 @@ func TestLarkBuiltinModelCommandRepliesWithoutPipeline(t *testing.T) {
 }
 
 func TestWechatBuiltinChannelCommandRepliesWithoutPipeline(t *testing.T) {
-	var sent wechatSendMsgReq
+	var sent agentwechat.SendMessageRequest
 	c, _ := fakeWechatClientSequence(t, &sent, fakeWechatResponse{
 		path:   "/ilink/bot/sendmessage",
 		status: http.StatusOK,
@@ -112,13 +115,13 @@ func TestWechatBuiltinChannelCommandRepliesWithoutPipeline(t *testing.T) {
 		}),
 	}
 
-	srv.handleWechatMessage(context.Background(), c, &wechatMessage{
+	srv.handleWechatMessage(context.Background(), c, &agentwechat.Message{
 		FromUserID:   "user-1",
 		ToUserID:     "bot-1",
 		ContextToken: "ctx-1",
-		MessageType:  wechatMsgUser,
-		ItemList: []wechatMsgItem{
-			{Type: wechatItemText, TextItem: &wechatTextItem{Text: "/channel"}},
+		MessageType:  agentwechat.MsgUser,
+		ItemList: []agentwechat.MsgItem{
+			{Type: agentwechat.ItemText, TextItem: &agentwechat.TextItem{Text: "/channel"}},
 		},
 	})
 
@@ -158,4 +161,50 @@ func TestBuiltinCommandUnknownIsNotHandled(t *testing.T) {
 		encoded, _ := json.Marshal(reply)
 		t.Fatalf("unknown command handled=%v reply=%s, want passthrough", handled, encoded)
 	}
+}
+
+type fakeWechatResponse struct {
+	path   string
+	status int
+	body   string
+}
+
+type capturedWechatRequest struct {
+	path string
+	body []byte
+}
+
+func fakeWechatClientSequence(t *testing.T, sent any, responses ...fakeWechatResponse) (*wechatClient, *[]capturedWechatRequest) {
+	t.Helper()
+	captured := []capturedWechatRequest{}
+	call := 0
+	return &wechatClient{
+		BaseURL: "https://wechat.test",
+		Token:   "token",
+		HTTPDo: func(req *http.Request) (*http.Response, error) {
+			if call >= len(responses) {
+				t.Fatalf("unexpected request path = %s", req.URL.Path)
+			}
+			response := responses[call]
+			call++
+			if req.URL.Path != response.path {
+				t.Fatalf("request path = %s, want %s", req.URL.Path, response.path)
+			}
+			raw, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("ReadAll(request body) error = %v", err)
+			}
+			captured = append(captured, capturedWechatRequest{path: req.URL.Path, body: raw})
+			if sent != nil {
+				if err := json.Unmarshal(raw, sent); err != nil {
+					t.Fatalf("Unmarshal(request body) error = %v body=%s", err, string(raw))
+				}
+			}
+			return &http.Response{
+				StatusCode: response.status,
+				Body:       io.NopCloser(bytes.NewBufferString(response.body)),
+				Header:     make(http.Header),
+			}, nil
+		},
+	}, &captured
 }

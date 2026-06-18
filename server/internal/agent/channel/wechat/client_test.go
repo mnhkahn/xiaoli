@@ -111,6 +111,46 @@ func TestSendTypingReturnsAPIError(t *testing.T) {
 	}
 }
 
+func TestPollMessagesCarriesBufferAndDeliversUserMessagesOnly(t *testing.T) {
+	c, captured := fakeClientSequence(t, nil,
+		fakeResponse{
+			path:   "/ilink/bot/getupdates",
+			status: http.StatusOK,
+			body:   `{"ret":0,"get_updates_buf":"next","msgs":[{"message_type":2}]}`,
+		},
+		fakeResponse{
+			path:   "/ilink/bot/getupdates",
+			status: http.StatusOK,
+			body:   `{"ret":0,"msgs":[{"message_type":1,"from_user_id":"user-1","item_list":[{"type":1,"text_item":{"text":"hello"}}]}]}`,
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var got []*Message
+	PollMessages(ctx, c, func(_ context.Context, msg *Message) {
+		got = append(got, msg)
+		cancel()
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("delivered messages = %d, want 1", len(got))
+	}
+	if got[0].FromUserID != "user-1" || got[0].Text() != "hello" {
+		t.Fatalf("delivered message = %#v, want user text message", got[0])
+	}
+	if len(*captured) != 2 {
+		t.Fatalf("captured requests = %d, want 2", len(*captured))
+	}
+	var second map[string]any
+	if err := json.Unmarshal((*captured)[1].body, &second); err != nil {
+		t.Fatalf("decode second poll body: %v", err)
+	}
+	if second["get_updates_buf"] != "next" {
+		t.Fatalf("second poll body = %#v, want carried get_updates_buf", second)
+	}
+}
+
 type fakeResponse struct {
 	path   string
 	status int

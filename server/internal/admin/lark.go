@@ -7,7 +7,6 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/mnhkahn/gogogo/logger"
@@ -15,49 +14,8 @@ import (
 	agentlark "xiaoli/server/internal/agent/channel/lark"
 )
 
-const (
-	larkEventTypeURLVerification = "url_verification"
-	larkEventTypeMessageReceive  = "im.message.receive_v1"
-)
-
-type larkCallback struct {
-	Schema string `json:"schema"`
-	Header struct {
-		EventID   string `json:"event_id"`
-		EventType string `json:"event_type"`
-		AppID     string `json:"app_id"`
-		TenantKey string `json:"tenant_key"`
-	} `json:"header"`
-	Event json.RawMessage `json:"event"`
-
-	Type      string `json:"type"`
-	Challenge string `json:"challenge"`
-}
-
-type larkChallengeEvent struct {
-	Challenge string `json:"challenge"`
-}
-
-type larkMessageEvent struct {
-	Sender struct {
-		SenderType string `json:"sender_type"`
-		SenderID   struct {
-			OpenID  string `json:"open_id"`
-			UserID  string `json:"user_id"`
-			UnionID string `json:"union_id"`
-		} `json:"sender_id"`
-	} `json:"sender"`
-	Message struct {
-		MessageID   string `json:"message_id"`
-		ChatID      string `json:"chat_id"`
-		MessageType string `json:"message_type"`
-		Content     string `json:"content"`
-	} `json:"message"`
-}
-
-type larkTextContent struct {
-	Text string `json:"text"`
-}
+type larkCallback = agentlark.Callback
+type larkMessageEvent = agentlark.MessageEvent
 
 func (s *AdminServer) handleLarkEvents(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.LarkEnabled() {
@@ -80,7 +38,7 @@ func (s *AdminServer) handleLarkEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
-	eventType := callback.eventType()
+	eventType := callback.EventType()
 	logger.Infof("[lark] event received type=%s event_id=%s app_id=%s tenant=%s schema=%s bytes=%d", eventType, callback.Header.EventID, callback.Header.AppID, callback.Header.TenantKey, callback.Schema, len(raw))
 	if callback.Header.AppID != "" && callback.Header.AppID != s.cfg.LarkAppID {
 		logger.Infof("[lark] event rejected: app_id mismatch got=%s want=%s type=%s event_id=%s", callback.Header.AppID, s.cfg.LarkAppID, eventType, callback.Header.EventID)
@@ -88,16 +46,11 @@ func (s *AdminServer) handleLarkEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch eventType {
-	case larkEventTypeURLVerification:
-		challenge := callback.Challenge
-		if challenge == "" && len(callback.Event) > 0 {
-			var event larkChallengeEvent
-			_ = json.Unmarshal(callback.Event, &event)
-			challenge = event.Challenge
-		}
+	case agentlark.EventTypeURLVerification:
+		challenge := callback.URLVerificationChallenge()
 		logger.Infof("[lark] url verification received event_id=%s challenge_present=%v", callback.Header.EventID, challenge != "")
 		writeJSON(w, http.StatusOK, map[string]string{"challenge": challenge})
-	case larkEventTypeMessageReceive:
+	case agentlark.EventTypeMessageReceive:
 		if callback.Header.EventID != "" && s.larkEventSeen(callback.Header.EventID) {
 			logger.Infof("[lark] event duplicate ignored type=%s event_id=%s", eventType, callback.Header.EventID)
 			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "duplicate": true})
@@ -115,13 +68,6 @@ func (s *AdminServer) handleLarkEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (c larkCallback) eventType() string {
-	if c.Header.EventType != "" {
-		return c.Header.EventType
-	}
-	return c.Type
-}
-
 var larkProcessingEmojis = []string{"Typing", "OnIt", "THINKING", "OneSecond"}
 
 func pickLarkReaction() string {
@@ -133,7 +79,7 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 	if err := json.Unmarshal(callback.Event, &event); err != nil {
 		return fmt.Errorf("decode message event: %w", err)
 	}
-	senderID := event.senderID()
+	senderID := event.SenderID()
 	logger.Infof("[lark] message received event_id=%s chat=%s message=%s sender_type=%s sender=%s message_type=%s content_bytes=%d", callback.Header.EventID, event.Message.ChatID, event.Message.MessageID, event.Sender.SenderType, senderID, event.Message.MessageType, len(event.Message.Content))
 	if event.Sender.SenderType == "bot" {
 		logger.Infof("[lark] message ignored event_id=%s reason=bot_sender message=%s", callback.Header.EventID, event.Message.MessageID)
@@ -143,7 +89,7 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 		logger.Infof("[lark] message ignored event_id=%s reason=non_text message=%s message_type=%s", callback.Header.EventID, event.Message.MessageID, event.Message.MessageType)
 		return nil
 	}
-	text := extractLarkText(event.Message.Content)
+	text := event.Text()
 	if text == "" {
 		logger.Infof("[lark] message ignored event_id=%s reason=empty_text message=%s", callback.Header.EventID, event.Message.MessageID)
 		return nil
@@ -190,24 +136,6 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 	}
 	logger.Infof("[lark] message reply sent event_id=%s message=%s chat=%s", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID)
 	return nil
-}
-
-func (e larkMessageEvent) senderID() string {
-	if e.Sender.SenderID.OpenID != "" {
-		return e.Sender.SenderID.OpenID
-	}
-	if e.Sender.SenderID.UserID != "" {
-		return e.Sender.SenderID.UserID
-	}
-	return e.Sender.SenderID.UnionID
-}
-
-func extractLarkText(content string) string {
-	var payload larkTextContent
-	if err := json.Unmarshal([]byte(content), &payload); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(payload.Text)
 }
 
 func (s *AdminServer) larkEventSeen(eventID string) bool {
