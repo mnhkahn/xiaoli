@@ -5,6 +5,7 @@ import (
 
 	agentchannel "xiaoli/server/internal/agent/channel"
 	"xiaoli/server/internal/agent/slash"
+	agentskill "xiaoli/server/internal/agent/tool/skill"
 )
 
 type builtinCommand = slash.Command
@@ -51,7 +52,7 @@ func (d adminSlashDeps) ListSkills(ctx context.Context) ([]slash.SkillInfo, erro
 	if len(d.s.cfg.SkillRoots) == 0 {
 		return nil, nil
 	}
-	backend, err := newFileSkillBackend(fileSkillBackendConfig{
+	backend, err := agentskill.NewFileBackend(agentskill.BackendConfig{
 		Roots:    d.s.cfg.SkillRoots,
 		Enabled:  d.s.cfg.EnabledSkills,
 		MaxBytes: d.s.cfg.SkillMaxBytes,

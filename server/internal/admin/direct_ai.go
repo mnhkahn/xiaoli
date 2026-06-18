@@ -27,6 +27,7 @@ import (
 	einojsonschema "github.com/eino-contrib/jsonschema"
 
 	agentmcp "xiaoli/server/internal/agent/tool/mcp"
+	agentskill "xiaoli/server/internal/agent/tool/skill"
 )
 
 // ---------------------------------------------------------------------------
@@ -420,12 +421,7 @@ func (t *mcpTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ..
 	return string(raw), nil
 }
 
-func mcpToolsToEinoTools(session *deviceSession, hub *DeviceHub) []tool.BaseTool {
-	session.mu.Lock()
-	rawTools := make([]map[string]any, len(session.tools))
-	copy(rawTools, session.tools)
-	session.mu.Unlock()
-
+func mcpToolsToEinoTools(deviceID string, rawTools []map[string]any, hub *DeviceHub) []tool.BaseTool {
 	var tools []tool.BaseTool
 	usedNames := map[string]int{}
 	for _, raw := range rawTools {
@@ -456,7 +452,7 @@ func mcpToolsToEinoTools(session *deviceSession, hub *DeviceHub) []tool.BaseTool
 				ParamsOneOf: paramsOneOf,
 			},
 			hub:      hub,
-			deviceID: session.deviceID,
+			deviceID: deviceID,
 			toolName: name,
 		})
 	}
@@ -584,7 +580,7 @@ func newEinoAgent(cfg Config) *EinoAgent {
 
 	var skillMW adk.ChatModelAgentMiddleware
 	if len(cfg.SkillRoots) > 0 {
-		backend, err := newFileSkillBackend(fileSkillBackendConfig{
+		backend, err := agentskill.NewFileBackend(agentskill.BackendConfig{
 			Roots:    cfg.SkillRoots,
 			Enabled:  cfg.EnabledSkills,
 			MaxBytes: cfg.SkillMaxBytes,
@@ -592,7 +588,7 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		if err != nil {
 			logger.Infof("skill backend init failed: %v", err)
 		} else if backend.Count() > 0 {
-			buildSkillContent := newSkillContentBuilder(skillExecConfig{
+			buildSkillContent := agentskill.NewContentBuilder(agentskill.ExecConfig{
 				Timeout:        cfg.SkillExecTimeout,
 				MaxOutputBytes: cfg.SkillExecMaxOutputBytes,
 				GlobalBinDirs:  cfg.SkillExecGlobalBinDirs,
@@ -600,8 +596,8 @@ func newEinoAgent(cfg Config) *EinoAgent {
 			mw, err := einoskill.NewMiddleware(ctx, &einoskill.Config{
 				Backend:               backend,
 				UseChinese:            true,
-				CustomToolDescription: buildSkillToolDescription,
-				CustomToolParams:      buildSkillToolParams,
+				CustomToolDescription: agentskill.BuildToolDescription,
+				CustomToolParams:      agentskill.BuildToolParams,
 				BuildContent:          buildSkillContent,
 			})
 			if err != nil {
@@ -652,8 +648,8 @@ func (a *EinoAgent) ChatWithContext(ctx context.Context, conversationID string, 
 	// Build tool list: device MCP tools + external MCP tools
 	var einoTools []tool.BaseTool
 	if a.hub != nil && deviceID != "" {
-		if session := a.hub.session(deviceID); session != nil {
-			einoTools = mcpToolsToEinoTools(session, a.hub)
+		if rawTools, ok := a.hub.ToolSnapshot(deviceID); ok {
+			einoTools = mcpToolsToEinoTools(deviceID, rawTools, a.hub)
 		}
 	}
 	for _, tools := range a.extToolSets {

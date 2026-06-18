@@ -102,7 +102,7 @@ func NewServer(cfg Config) *AdminServer {
 		agent.SetHub(deviceHub)
 	}
 	conversation := newConversationPipeline(agent, deviceHub)
-	deviceHub.conversation = conversation
+	deviceHub.setConversation(conversation)
 	s := &AdminServer{
 		cfg:          cfg,
 		signer:       newSigner(cfg.SessionSecret, cfg.now),

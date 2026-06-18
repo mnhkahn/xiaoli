@@ -3,12 +3,12 @@ package admin
 import (
 	"crypto/sha1"
 	"encoding/base64"
-	"encoding/binary"
-	"encoding/json"
 	"net"
 	"net/http"
 	"strings"
 	"time"
+
+	esp32ws "xiaoli/server/internal/esp32/ws"
 )
 
 const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -65,25 +65,5 @@ func (s *AdminServer) handleStreamWS(w http.ResponseWriter, r *http.Request, use
 }
 
 func writeWebSocketJSON(conn net.Conn, value any) error {
-	body, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	header := []byte{0x81}
-	switch {
-	case len(body) < 126:
-		header = append(header, byte(len(body)))
-	case len(body) <= 0xffff:
-		header = append(header, 126, byte(len(body)>>8), byte(len(body)))
-	default:
-		header = append(header, 127)
-		var length [8]byte
-		binary.BigEndian.PutUint64(length[:], uint64(len(body)))
-		header = append(header, length[:]...)
-	}
-	if _, err := conn.Write(header); err != nil {
-		return err
-	}
-	_, err = conn.Write(body)
-	return err
+	return esp32ws.WriteJSON(conn, value)
 }

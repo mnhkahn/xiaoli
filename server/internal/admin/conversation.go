@@ -30,11 +30,11 @@ type ConversationReply struct {
 
 type DeviceVoiceFactory struct{}
 
-func (DeviceVoiceFactory) Build(session *deviceSession, text string) ConversationTurn {
+func (DeviceVoiceFactory) Build(deviceID string, text string) ConversationTurn {
 	return ConversationTurn{
 		Channel:        ChannelDeviceVoice,
-		ConversationID: session.deviceID,
-		DeviceID:       session.deviceID,
+		ConversationID: deviceID,
+		DeviceID:       deviceID,
 		Text:           text,
 		UseDeviceTools: true,
 	}

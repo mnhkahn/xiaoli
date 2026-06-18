@@ -2,11 +2,14 @@ package admin
 
 import (
 	"encoding/json"
-	"github.com/mnhkahn/gogogo/logger"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mnhkahn/gogogo/logger"
+
+	agentskill "xiaoli/server/internal/agent/tool/skill"
 )
 
 type Config struct {
@@ -124,9 +127,9 @@ func LoadConfig() Config {
 		ExternalMCPURLs:          loadMCPConfigFile(env("MCP_SERVERS_CONFIG", "mcp-servers.json")),
 		SkillRoots:               csv(env("XIAOLI_SKILL_ROOTS", "/opt/xiaoli/skills")),
 		EnabledSkills:            csv(env("XIAOLI_ENABLED_SKILLS", "*")),
-		SkillMaxBytes:            int64(envInt("XIAOLI_SKILL_MAX_BYTES", int(defaultSkillMaxBytes))),
-		SkillExecTimeout:         time.Duration(envInt("XIAOLI_SKILL_EXEC_TIMEOUT_SECONDS", int(defaultSkillExecTimeout/time.Second))) * time.Second,
-		SkillExecMaxOutputBytes:  int64(envInt("XIAOLI_SKILL_EXEC_MAX_OUTPUT_BYTES", defaultSkillExecMaxOutputBytes)),
+		SkillMaxBytes:            int64(envInt("XIAOLI_SKILL_MAX_BYTES", int(agentskill.DefaultMaxBytes))),
+		SkillExecTimeout:         time.Duration(envInt("XIAOLI_SKILL_EXEC_TIMEOUT_SECONDS", int(agentskill.DefaultExecTimeout/time.Second))) * time.Second,
+		SkillExecMaxOutputBytes:  int64(envInt("XIAOLI_SKILL_EXEC_MAX_OUTPUT_BYTES", agentskill.DefaultExecMaxOutputBytes)),
 		SkillExecGlobalBinDirs:   csv(env("XIAOLI_SKILL_EXEC_GLOBAL_BIN_DIRS", "/usr/local/bin")),
 		StudyMonitorEnabled:      envBool("STUDY_MONITOR_ENABLED", false),
 		StudyMonitorTimezone:     env("STUDY_MONITOR_TIMEZONE", "Asia/Shanghai"),

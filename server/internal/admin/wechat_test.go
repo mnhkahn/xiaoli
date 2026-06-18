@@ -26,9 +26,9 @@ func TestWechatSendLocal(t *testing.T) {
 	}
 
 	c := &wechatClient{
-		baseURL: baseURL,
-		token:   token,
-		httpDo:  http.DefaultClient.Do,
+		BaseURL: baseURL,
+		Token:   token,
+		HTTPDo:  http.DefaultClient.Do,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -202,9 +202,9 @@ func fakeWechatClientSequence(t *testing.T, sent any, responses ...fakeWechatRes
 	captured := []capturedWechatRequest{}
 	call := 0
 	return &wechatClient{
-		baseURL: "https://wechat.test",
-		token:   "token",
-		httpDo: func(req *http.Request) (*http.Response, error) {
+		BaseURL: "https://wechat.test",
+		Token:   "token",
+		HTTPDo: func(req *http.Request) (*http.Response, error) {
 			if call >= len(responses) {
 				t.Fatalf("unexpected request path = %s", req.URL.Path)
 			}

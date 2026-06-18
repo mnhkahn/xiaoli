@@ -7,24 +7,21 @@ import (
 )
 
 func TestMCPToolsExposeOpenAICompatibleNames(t *testing.T) {
-	session := &deviceSession{
-		deviceID: "device-1",
-		tools: []map[string]any{
-			{
-				"name":        "self.camera.take_photo",
-				"description": "Take a photo",
-				"inputSchema": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"question": map[string]any{"type": "string"},
-					},
-					"required": []any{"question"},
+	rawTools := []map[string]any{
+		{
+			"name":        "self.camera.take_photo",
+			"description": "Take a photo",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"question": map[string]any{"type": "string"},
 				},
+				"required": []any{"question"},
 			},
 		},
 	}
 
-	tools := mcpToolsToEinoTools(session, nil)
+	tools := mcpToolsToEinoTools("device-1", rawTools, nil)
 	if len(tools) != 1 {
 		t.Fatalf("tools len = %d, want 1", len(tools))
 	}
