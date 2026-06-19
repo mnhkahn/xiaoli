@@ -195,7 +195,7 @@ func parseBuiltinCommand(text string) (builtinCommand, bool) {
 		return builtinCommand{}, false
 	}
 	switch cmd.Name {
-	case "skills", "model", "channel":
+	case "skills", "model", "channel", "help":
 		return cmd, true
 	default:
 		return builtinCommand{}, false
@@ -239,13 +239,14 @@ func (d adminSlashDeps) ListSkills(ctx context.Context) ([]slash.SkillInfo, erro
 	if err != nil {
 		return nil, err
 	}
-	skills, err := backend.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]slash.SkillInfo, 0, len(skills))
-	for _, skill := range skills {
-		out = append(out, slash.SkillInfo{Name: skill.Name, Description: skill.Description})
+	sfs := backend.ListVersions()
+	out := make([]slash.SkillInfo, 0, len(sfs))
+	for _, sf := range sfs {
+		out = append(out, slash.SkillInfo{
+			Name:        sf.Name,
+			Description: sf.Description,
+			Version:     sf.Version,
+		})
 	}
 	return out, nil
 }

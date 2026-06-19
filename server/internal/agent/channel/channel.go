@@ -5,6 +5,11 @@ import (
 	"sort"
 )
 
+type ChannelFormatter interface {
+	Instruction() string
+	Send(ctx context.Context, reply string) error
+}
+
 type Type string
 
 const (

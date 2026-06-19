@@ -134,6 +134,42 @@ func TestWechatBuiltinChannelCommandRepliesWithoutPipeline(t *testing.T) {
 	}
 }
 
+func TestFormattedUserTextWrapsFormatterInstruction(t *testing.T) {
+	turn := ConversationTurn{
+		ConversationID: "conv-1",
+		Text:           "用户问题",
+		Formatter:      fakeFormatter{instruction: "请用微信纯文本回答。"},
+	}
+
+	userText := formattedUserText(turn)
+	if !strings.Contains(userText, "请用微信纯文本回答。") || !strings.Contains(userText, "用户问题") {
+		t.Fatalf("userText = %q, want instruction and original question", userText)
+	}
+}
+
+func TestDeviceVoiceFactoryProvidesVoiceFormatter(t *testing.T) {
+	turn := DeviceVoiceFactory{}.Build("device-1", "讲个故事")
+	if turn.Formatter == nil {
+		t.Fatal("Formatter is nil, want device voice formatter")
+	}
+	userText := formattedUserText(turn)
+	if !strings.Contains(userText, "适合语音播报") || strings.Contains(userText, "Markdown 回答") {
+		t.Fatalf("formatted voice text = %q, want voice instruction", userText)
+	}
+}
+
+type fakeFormatter struct {
+	instruction string
+}
+
+func (f fakeFormatter) Instruction() string {
+	return f.instruction
+}
+
+func (f fakeFormatter) Send(context.Context, string) error {
+	return nil
+}
+
 func TestBuiltinSkillsCommandListsConfiguredSkills(t *testing.T) {
 	root := t.TempDir()
 	writeTestSkill(t, root, "holiday", "假期查询", "holiday body")

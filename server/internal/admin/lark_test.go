@@ -152,6 +152,12 @@ func TestLarkTextEventUsesSharedPipelineAndReplies(t *testing.T) {
 	if turn.Channel != ChannelLarkText {
 		t.Fatalf("turn.Channel = %q, want %q", turn.Channel, ChannelLarkText)
 	}
+	if turn.Formatter == nil {
+		t.Fatal("turn.Formatter is nil, want Lark formatter")
+	}
+	if instruction := turn.Formatter.Instruction(); !strings.Contains(instruction, "飞书") || !strings.Contains(instruction, "Markdown") {
+		t.Fatalf("turn formatter instruction = %q, want Lark markdown instruction", instruction)
+	}
 	if turn.ConversationID != "lark:oc_chat:ou_user" {
 		t.Fatalf("turn.ConversationID = %q, want lark:oc_chat:ou_user", turn.ConversationID)
 	}

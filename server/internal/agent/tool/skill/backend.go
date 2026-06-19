@@ -33,8 +33,15 @@ type Backend struct {
 	skills   map[string]indexedSkill
 }
 
+type SkillFrontMatter struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	Version     string `yaml:"version"`
+}
+
 type indexedSkill struct {
-	einoskill.FrontMatter
+	SkillFrontMatter
+	fm   einoskill.FrontMatter
 	path string
 	dir  string
 }
@@ -118,20 +125,24 @@ func (b *Backend) scan(roots []string) error {
 
 func (b *Backend) indexSkill(dst map[string]indexedSkill, dir string) error {
 	path := filepath.Join(dir, "SKILL.md")
-	frontMatter, err := readSkillFrontMatter(path)
+	sfm, err := readSkillFrontMatter(path)
 	if err != nil {
 		return err
 	}
-	if frontMatter.Name == "" {
+	if sfm.Name == "" {
 		return fmt.Errorf("skill %s: missing name", path)
 	}
-	if !b.all && !b.enabled[frontMatter.Name] {
+	if !b.all && !b.enabled[sfm.Name] {
 		return nil
 	}
-	dst[frontMatter.Name] = indexedSkill{
-		FrontMatter: frontMatter,
-		path:        path,
-		dir:         dir,
+	dst[sfm.Name] = indexedSkill{
+		SkillFrontMatter: sfm,
+		fm: einoskill.FrontMatter{
+			Name:        sfm.Name,
+			Description: sfm.Description,
+		},
+		path: path,
+		dir:  dir,
 	}
 	return nil
 }
@@ -148,9 +159,26 @@ func (b *Backend) List(context.Context) ([]einoskill.FrontMatter, error) {
 
 	out := make([]einoskill.FrontMatter, 0, len(names))
 	for _, name := range names {
-		out = append(out, b.skills[name].FrontMatter)
+		out = append(out, b.skills[name].fm)
 	}
 	return out, nil
+}
+
+func (b *Backend) ListVersions() []SkillFrontMatter {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	names := make([]string, 0, len(b.skills))
+	for name := range b.skills {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	out := make([]SkillFrontMatter, 0, len(names))
+	for _, name := range names {
+		out = append(out, b.skills[name].SkillFrontMatter)
+	}
+	return out
 }
 
 func (b *Backend) Count() int {
@@ -172,15 +200,18 @@ func (b *Backend) Get(_ context.Context, name string) (einoskill.Skill, error) {
 	if err != nil {
 		return einoskill.Skill{}, err
 	}
-	frontMatter, body, err := parseSkillFile(raw, item.path)
+	sfm, body, err := parseSkillFile(raw, item.path)
 	if err != nil {
 		return einoskill.Skill{}, err
 	}
-	if frontMatter.Name == "" {
-		frontMatter.Name = item.Name
+	if sfm.Name == "" {
+		sfm.Name = item.Name
 	}
 	return einoskill.Skill{
-		FrontMatter:   frontMatter,
+		FrontMatter: einoskill.FrontMatter{
+			Name:        sfm.Name,
+			Description: sfm.Description,
+		},
 		Content:       body,
 		BaseDirectory: item.dir,
 	}, nil
@@ -203,17 +234,17 @@ func readLimitedFile(path string, maxBytes int64) ([]byte, error) {
 	return raw, nil
 }
 
-func readSkillFrontMatter(path string) (einoskill.FrontMatter, error) {
+func readSkillFrontMatter(path string) (SkillFrontMatter, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return einoskill.FrontMatter{}, fmt.Errorf("read skill metadata %s: %w", path, err)
+		return SkillFrontMatter{}, fmt.Errorf("read skill metadata %s: %w", path, err)
 	}
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 1024), 64*1024)
 	if !scanner.Scan() || strings.TrimSpace(scanner.Text()) != "---" {
-		return einoskill.FrontMatter{}, fmt.Errorf("skill %s: missing frontmatter", path)
+		return SkillFrontMatter{}, fmt.Errorf("skill %s: missing frontmatter", path)
 	}
 
 	var front bytes.Buffer
@@ -226,28 +257,28 @@ func readSkillFrontMatter(path string) (einoskill.FrontMatter, error) {
 		front.WriteByte('\n')
 	}
 	if err := scanner.Err(); err != nil {
-		return einoskill.FrontMatter{}, fmt.Errorf("read skill metadata %s: %w", path, err)
+		return SkillFrontMatter{}, fmt.Errorf("read skill metadata %s: %w", path, err)
 	}
-	return einoskill.FrontMatter{}, fmt.Errorf("skill %s: unterminated frontmatter", path)
+	return SkillFrontMatter{}, fmt.Errorf("skill %s: unterminated frontmatter", path)
 }
 
-func parseSkillFile(raw []byte, path string) (einoskill.FrontMatter, string, error) {
+func parseSkillFile(raw []byte, path string) (SkillFrontMatter, string, error) {
 	parts := bytes.SplitN(raw, []byte("---"), 3)
 	if len(parts) != 3 || strings.TrimSpace(string(parts[0])) != "" {
-		return einoskill.FrontMatter{}, "", fmt.Errorf("skill %s: missing frontmatter", path)
+		return SkillFrontMatter{}, "", fmt.Errorf("skill %s: missing frontmatter", path)
 	}
 	frontMatter, err := decodeSkillFrontMatter(parts[1], path)
 	if err != nil {
-		return einoskill.FrontMatter{}, "", err
+		return SkillFrontMatter{}, "", err
 	}
 	body := strings.TrimLeft(string(parts[2]), "\r\n")
 	return frontMatter, body, nil
 }
 
-func decodeSkillFrontMatter(raw []byte, path string) (einoskill.FrontMatter, error) {
-	var frontMatter einoskill.FrontMatter
-	if err := yaml.Unmarshal(raw, &frontMatter); err != nil {
-		return einoskill.FrontMatter{}, fmt.Errorf("parse skill frontmatter %s: %w", path, err)
+func decodeSkillFrontMatter(raw []byte, path string) (SkillFrontMatter, error) {
+	var sfm SkillFrontMatter
+	if err := yaml.Unmarshal(raw, &sfm); err != nil {
+		return SkillFrontMatter{}, fmt.Errorf("parse skill frontmatter %s: %w", path, err)
 	}
-	return frontMatter, nil
+	return sfm, nil
 }

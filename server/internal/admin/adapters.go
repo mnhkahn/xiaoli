@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	agentchannel "xiaoli/server/internal/agent/channel"
 	agentlark "xiaoli/server/internal/agent/channel/lark"
 	agentwechat "xiaoli/server/internal/agent/channel/wechat"
 	agentmedia "xiaoli/server/internal/agent/media"
@@ -312,6 +313,7 @@ type ConversationTurn struct {
 	DeviceID       string
 	Text           string
 	UseDeviceTools bool
+	Formatter      agentchannel.ChannelFormatter
 }
 
 type ConversationReply struct {
@@ -327,7 +329,18 @@ func (DeviceVoiceFactory) Build(deviceID string, text string) ConversationTurn {
 		DeviceID:       deviceID,
 		Text:           text,
 		UseDeviceTools: true,
+		Formatter:      deviceVoiceFormatter{},
 	}
+}
+
+type deviceVoiceFormatter struct{}
+
+func (deviceVoiceFormatter) Instruction() string {
+	return "请用简短自然的口语回答，适合语音播报。不要使用 Markdown、表格、代码块或复杂链接格式。"
+}
+
+func (deviceVoiceFormatter) Send(context.Context, string) error {
+	return nil
 }
 
 type LarkTextFactory struct{}
@@ -512,11 +525,22 @@ type einoConversationChat struct {
 }
 
 func (c einoConversationChat) Chat(ctx context.Context, turn ConversationTurn) (string, error) {
-	return c.agent.ChatWithContext(ctx, turn.ConversationID, turn.DeviceID, turn.Text)
+	return c.agent.ChatWithContext(ctx, turn.ConversationID, turn.DeviceID, formattedUserText(turn))
 }
 
 func (c einoConversationChat) ChatWithOptions(ctx context.Context, turn ConversationTurn, opts ChatOptions) (string, error) {
-	return c.agent.ChatWithContextOptions(ctx, turn.ConversationID, turn.DeviceID, turn.Text, opts)
+	return c.agent.ChatWithContextOptions(ctx, turn.ConversationID, turn.DeviceID, formattedUserText(turn), opts)
+}
+
+func formattedUserText(turn ConversationTurn) string {
+	if turn.Formatter == nil {
+		return turn.Text
+	}
+	instruction := strings.TrimSpace(turn.Formatter.Instruction())
+	if instruction == "" {
+		return turn.Text
+	}
+	return "回复格式要求：\n" + instruction + "\n\n用户问题：\n" + turn.Text
 }
 
 type larkCallback = agentlark.Callback
@@ -604,7 +628,8 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 		return fmt.Errorf("message event missing chat, sender, or message id")
 	}
 	if reply, ok := s.handleBuiltinCommand(ctx, ChannelLarkText, text); ok {
-		if err := s.newLarkClient().ReplyText(ctx, event.Message.MessageID, reply); err != nil {
+		formatter := agentlark.NewReplyFormatter(s.newLarkClient(), event.Message.MessageID)
+		if err := formatter.Send(ctx, reply); err != nil {
 			return err
 		}
 		logger.Infof("[lark] builtin command reply sent event_id=%s message=%s chat=%s", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID)
@@ -615,6 +640,7 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 	}
 
 	lc := s.newLarkClient()
+	formatter := agentlark.NewReplyFormatter(lc, event.Message.MessageID)
 	emojiType := pickLarkReaction()
 	reactionID, err := lc.AddReaction(ctx, event.Message.MessageID, emojiType)
 	if err != nil {
@@ -630,14 +656,16 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 		}()
 	}
 
-	reply, err := s.conversation.Run(ctx, LarkTextFactory{}.Build(event.Message.ChatID, senderID, text))
+	turn := LarkTextFactory{}.Build(event.Message.ChatID, senderID, text)
+	turn.Formatter = formatter
+	reply, err := s.conversation.Run(ctx, turn)
 	if err != nil {
 		logger.Infof("[lark] conversation error: %v", err)
 	}
 	if reply.Text == "" {
 		return fmt.Errorf("lark conversation returned empty reply")
 	}
-	if err := s.newLarkClient().ReplyText(ctx, event.Message.MessageID, reply.Text); err != nil {
+	if err := formatter.Send(ctx, reply.Text); err != nil {
 		return err
 	}
 	logger.Infof("[lark] message reply sent event_id=%s message=%s chat=%s", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID)
@@ -779,7 +807,8 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 	}
 
 	if reply, ok := s.handleBuiltinCommand(ctx, ChannelWechatText, text); ok {
-		if err := wechatSendText(ctx, c, msg.ToUserID, msg.FromUserID, msg.ContextToken, reply); err != nil {
+		formatter := agentwechat.NewReplyFormatter(c, msg.ToUserID, msg.FromUserID, msg.ContextToken)
+		if err := formatter.Send(ctx, reply); err != nil {
 			logger.Infof("[wechat] builtin command send error: %v", err)
 		} else {
 			logger.Infof("[wechat] builtin command send ok to=%s command=%q", msg.FromUserID, text)
@@ -798,7 +827,10 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 		logger.Infof("[wechat] typing send ok to=%s", msg.FromUserID)
 	}
 
-	reply, err := s.conversation.Run(ctx, WechatTextFactory{}.Build(msg.ContextToken, msg.FromUserID, text))
+	formatter := agentwechat.NewReplyFormatter(c, msg.ToUserID, msg.FromUserID, msg.ContextToken)
+	turn := WechatTextFactory{}.Build(msg.ContextToken, msg.FromUserID, text)
+	turn.Formatter = formatter
+	reply, err := s.conversation.Run(ctx, turn)
 	if err != nil {
 		logger.Infof("[wechat] conversation error: %v", err)
 	}
@@ -806,7 +838,7 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 		reply = ConversationReply{Text: "抱歉，我暂时无法回答。"}
 	}
 
-	if err := wechatSendText(ctx, c, msg.ToUserID, msg.FromUserID, msg.ContextToken, reply.Text); err != nil {
+	if err := formatter.Send(ctx, reply.Text); err != nil {
 		logger.Infof("[wechat] send error: %v", err)
 	} else {
 		logger.Infof("[wechat] send ok to=%s text=%q", msg.FromUserID, reply.Text)
