@@ -178,7 +178,7 @@ func TestBuiltinSkillsCommandListsConfiguredSkills(t *testing.T) {
 	cfg.EnabledSkills = []string{"*"}
 	srv := NewServer(cfg)
 
-	reply, handled := srv.handleBuiltinCommand(context.Background(), ChannelLarkText, "/skills")
+	reply, handled := srv.handleBuiltinCommand(context.Background(), ChannelLarkText, "", "/skills")
 
 	if !handled {
 		t.Fatal("handleBuiltinCommand() handled = false, want true")
@@ -191,7 +191,7 @@ func TestBuiltinSkillsCommandListsConfiguredSkills(t *testing.T) {
 func TestBuiltinCommandUnknownIsNotHandled(t *testing.T) {
 	srv := NewServer(testConfig())
 
-	reply, handled := srv.handleBuiltinCommand(context.Background(), ChannelLarkText, "/unknown")
+	reply, handled := srv.handleBuiltinCommand(context.Background(), ChannelLarkText, "", "/unknown")
 
 	if handled || reply != "" {
 		encoded, _ := json.Marshal(reply)

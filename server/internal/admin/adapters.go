@@ -350,6 +350,7 @@ func (LarkTextFactory) Build(chatID string, senderID string, text string) Conver
 	return ConversationTurn{
 		Channel:        ChannelLarkText,
 		ConversationID: "lark:" + chatID + ":" + senderID,
+		DeviceID:       senderID,
 		Text:           text,
 	}
 }
@@ -360,6 +361,7 @@ func (WechatTextFactory) Build(contextToken string, fromUserID string, text stri
 	return ConversationTurn{
 		Channel:        ChannelWechatText,
 		ConversationID: "wechat:" + contextToken + ":" + fromUserID,
+		DeviceID:       fromUserID,
 		Text:           text,
 	}
 }
@@ -631,7 +633,7 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 	if event.Message.ChatID == "" || senderID == "" || event.Message.MessageID == "" {
 		return fmt.Errorf("message event missing chat, sender, or message id")
 	}
-	if reply, ok := s.handleBuiltinCommand(ctx, ChannelLarkText, text); ok {
+	if reply, ok := s.handleBuiltinCommand(ctx, ChannelLarkText, senderID, text); ok {
 		formatter := agentlark.NewReplyFormatter(s.newLarkClient(), event.Message.MessageID, text)
 		if err := formatter.Send(ctx, reply); err != nil {
 			return err
@@ -846,7 +848,7 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 		return
 	}
 
-	if reply, ok := s.handleBuiltinCommand(ctx, ChannelWechatText, text); ok {
+	if reply, ok := s.handleBuiltinCommand(ctx, ChannelWechatText, msg.FromUserID, text); ok {
 		formatter := agentwechat.NewReplyFormatter(c, msg.ToUserID, msg.FromUserID, msg.ContextToken)
 		if err := formatter.Send(ctx, reply); err != nil {
 			logger.Infof("[wechat] builtin command send error: %v", err)

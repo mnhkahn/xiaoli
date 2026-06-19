@@ -18,6 +18,7 @@ import (
 	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
 	agentmcp "xiaoli/server/internal/agent/tool/mcp"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
+	agentsession "xiaoli/server/internal/agent/session"
 )
 
 type DeviceTools interface {
@@ -36,6 +37,7 @@ type Agent struct {
 	extToolSets   [][]tool.BaseTool
 	skillMW       adk.ChatModelAgentMiddleware
 	recorder      *Recorder
+	sessionMgr    *agentsession.Manager
 }
 
 func NewAgent(cfg Config) *Agent {
@@ -49,6 +51,11 @@ func NewAgent(cfg Config) *Agent {
 	ctx := context.Background()
 	selector := newModelSelector(cfg)
 	memory := NewRedisMemory(cfg)
+
+	var sessionMgr *agentsession.Manager
+	if memory != nil {
+		sessionMgr = agentsession.NewManager(memory.client, cfg.RedisKeyPrefix)
+	}
 
 	recorder := GlobalRecorder()
 
@@ -108,7 +115,7 @@ func NewAgent(cfg Config) *Agent {
 	}
 
 	logger.Infof("eino agent ready: model=%s base=%s redis=%v extMCPs=%d skills=%v", cfg.LLMModel, baseURL, memory != nil, len(extMCPs), skillMW != nil)
-	return &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, skillMW: skillMW, recorder: recorder}
+	return &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, skillMW: skillMW, recorder: recorder, sessionMgr: sessionMgr}
 }
 
 func (a *Agent) Recorder() *Recorder {
@@ -220,6 +227,18 @@ func (a *Agent) Chat(ctx context.Context, deviceID string, userText string) (str
 	return a.ChatWithContext(ctx, deviceID, deviceID, userText)
 }
 
+func (a *Agent) SessionManager() *agentsession.Manager {
+	return a.sessionMgr
+}
+
+func (a *Agent) NewSession(ctx context.Context, deviceID string) (string, error) {
+	if a.sessionMgr == nil {
+		return "", fmt.Errorf("会话功能未启用")
+	}
+	sessionID, _, err := a.sessionMgr.Create(ctx, deviceID, a.CurrentLLMModel())
+	return sessionID, err
+}
+
 type ChatOptions struct {
 	MaxIterations int
 }
@@ -232,9 +251,25 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	if conversationID == "" {
 		conversationID = deviceID
 	}
-	logger.Infof("Agent.Chat called: conversation=%s device=%s text=%q", conversationID, deviceID, userText)
 
-	history := a.memory.Load(ctx, conversationID)
+	memoryID := conversationID
+	var isNewSession bool
+	if a.sessionMgr != nil && deviceID != "" {
+		sid, isNew, err := a.sessionMgr.GetOrCreate(ctx, deviceID, a.CurrentLLMModel())
+		if err != nil {
+			logger.Infof("session get/create failed: %v, fallback to conversationID", err)
+		} else {
+			memoryID = sid
+			isNewSession = isNew
+		}
+		if isNewSession {
+			a.sessionMgr.SetTitle(ctx, memoryID, userText)
+		}
+	}
+
+	logger.Infof("Agent.Chat called: conversation=%s device=%s memory=%s text=%q", conversationID, deviceID, memoryID, userText)
+
+	history := a.memory.Load(ctx, memoryID)
 	msgs := make([]*schema.Message, 0, len(history)+2)
 	if a.cfg.LLMPrompt != "" {
 		msgs = append(msgs, schema.SystemMessage(a.cfg.LLMPrompt))
@@ -242,7 +277,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	msgs = append(msgs, history...)
 	msgs = append(msgs, schema.UserMessage(userText))
 
-	einoTools := a.toolsForChat(ctx, conversationID, deviceID)
+	einoTools := a.toolsForChat(ctx, memoryID, deviceID)
 
 	chatModel, modelID, err := a.chatModel(ctx)
 	if err != nil {
@@ -310,7 +345,11 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		schema.UserMessage(userText),
 		result,
 	)
-	a.memory.Save(ctx, conversationID, updated)
+	a.memory.Save(ctx, memoryID, updated)
+
+	if a.sessionMgr != nil {
+		a.sessionMgr.UpdateAfterChat(ctx, memoryID, len(updated))
+	}
 
 	return result.Content, nil
 }

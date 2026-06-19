@@ -9,6 +9,15 @@ import (
 	"xiaoli/server/internal/agent/model"
 )
 
+type ctxKey string
+
+const CtxDeviceID ctxKey = "device_id"
+
+func DeviceIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(CtxDeviceID).(string)
+	return id
+}
+
 type Command struct {
 	Name string
 	Args string
@@ -36,6 +45,9 @@ type Dependencies interface {
 	UseModel(role model.Role, id string) error
 	ListChannels(ctx context.Context) ([]channel.Info, error)
 	LLMStats() string
+	NewSession(ctx context.Context) string
+	ListSessions(ctx context.Context) string
+	SessionContext(ctx context.Context, id string) string
 }
 
 type Handler struct {
@@ -78,11 +90,24 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 		return h.channels(ctx), true
 	case "status":
 		return h.deps.LLMStats(), true
+	case "new":
+		return h.deps.NewSession(ctx), true
+	case "sessions":
+		return h.deps.ListSessions(ctx), true
+	case "session":
+		return h.sessionContext(ctx, cmd.Args), true
 	case "help":
 		return helpText(), true
 	default:
 		return "", false
 	}
+}
+
+func (h Handler) sessionContext(ctx context.Context, id string) string {
+	if id == "" {
+		return "用法：/session <id>"
+	}
+	return h.deps.SessionContext(ctx, id)
 }
 
 func (h Handler) skills(ctx context.Context) string {
@@ -212,5 +237,8 @@ func helpText() string {
 /model      - 查看或切换 LLM 模型（/model list 查看可选模型，/model use <id> 切换）
 /channel    - 查看可用消息渠道
 /status     - 查看 LLM 调用统计
+/sessions   - 列出所有会话
+/session    - 查看会话上下文，/session <id>
+/new        - 新建会话
 /help       - 显示此帮助信息`
 }

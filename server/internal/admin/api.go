@@ -202,10 +202,13 @@ func parseBuiltinCommand(text string) (builtinCommand, bool) {
 	}
 }
 
-func (s *AdminServer) handleBuiltinCommand(ctx context.Context, source ConversationChannel, text string) (string, bool) {
+func (s *AdminServer) handleBuiltinCommand(ctx context.Context, source ConversationChannel, deviceID string, text string) (string, bool) {
 	sourceType, ok := slashSourceType(source)
 	if !ok {
 		return "", false
+	}
+	if deviceID != "" {
+		ctx = context.WithValue(ctx, slash.CtxDeviceID, deviceID)
 	}
 	return slash.NewHandler(adminSlashDeps{s: s}).Handle(ctx, sourceType, text)
 }
@@ -298,6 +301,77 @@ func (d adminSlashDeps) LLMStats() string {
 		return "LLM 统计未启用。"
 	}
 	return recorder.Status()
+}
+
+func (d adminSlashDeps) NewSession(ctx context.Context) string {
+	if d.s.agent == nil {
+		return "LLM agent 未初始化。"
+	}
+	deviceID := slash.DeviceIDFromContext(ctx)
+	if deviceID == "" {
+		return "无法识别用户。"
+	}
+	sessionID, err := d.s.agent.NewSession(ctx, deviceID)
+	if err != nil {
+		return "新建会话失败：" + err.Error()
+	}
+	return "✅ 已新建会话：" + sessionID
+}
+
+func (d adminSlashDeps) ListSessions(ctx context.Context) string {
+	if d.s.agent == nil {
+		return "LLM agent 未初始化。"
+	}
+	sm := d.s.agent.SessionManager()
+	if sm == nil {
+		return "会话功能未启用（需要 Redis）。"
+	}
+	deviceID := slash.DeviceIDFromContext(ctx)
+	if deviceID == "" {
+		return "无法识别用户。"
+	}
+	sessions, err := sm.List(ctx, deviceID)
+	if err != nil {
+		return "读取失败：" + err.Error()
+	}
+	if len(sessions) == 0 {
+		return "暂无会话。"
+	}
+	var b strings.Builder
+	b.WriteString("📋 会话列表：")
+	for _, s := range sessions {
+		fmt.Fprintf(&b, "\n- %s  %s  [%s]  %d条", s.ID, s.Title, s.Model, s.Count)
+	}
+	return b.String()
+}
+
+func (d adminSlashDeps) SessionContext(ctx context.Context, id string) string {
+	if d.s.agent == nil {
+		return "LLM agent 未初始化。"
+	}
+	sm := d.s.agent.SessionManager()
+	if sm == nil {
+		return "会话功能未启用（需要 Redis）。"
+	}
+	info, err := sm.Get(ctx, id)
+	if err != nil {
+		return "读取失败：" + err.Error()
+	}
+	deviceID := slash.DeviceIDFromContext(ctx)
+	if deviceID == "" || info.UserID != deviceID {
+		return "无权访问该会话。"
+	}
+	msgs := sm.LoadMessages(ctx, id)
+	var b strings.Builder
+	fmt.Fprintf(&b, "🗂 %s（%s）\n模型：%s  消息：%d条\n━━━", info.Title, info.ID, info.Model, info.Count)
+	for _, msg := range msgs {
+		role := "👤"
+		if msg.Role == "assistant" {
+			role = "🤖"
+		}
+		fmt.Fprintf(&b, "\n%s %s", role, msg.Content)
+	}
+	return b.String()
 }
 
 func (s *AdminServer) deviceController() DeviceController {

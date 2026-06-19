@@ -47,6 +47,18 @@ func (fakeDeps) LLMStats() string {
 	return "test stats"
 }
 
+func (fakeDeps) NewSession(_ context.Context) string {
+	return "test session"
+}
+
+func (fakeDeps) ListSessions(_ context.Context) string {
+	return "test sessions"
+}
+
+func (fakeDeps) SessionContext(_ context.Context, id string) string {
+	return "test session context " + id
+}
+
 func TestParseRequiresLeadingSlash(t *testing.T) {
 	cmd, ok := Parse(" /skills  --verbose ")
 	if !ok {
