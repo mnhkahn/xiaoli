@@ -99,6 +99,7 @@ func runtimeLLMModelConfigs(models map[string]LLMModelConfig) map[string]agentru
 			BaseURL:     model.BaseURL,
 			Model:       model.Model,
 			APIKey:      model.APIKey,
+			MaxTokens:   model.MaxTokens,
 		}
 	}
 	return out

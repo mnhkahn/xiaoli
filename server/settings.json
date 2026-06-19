@@ -1,25 +1,28 @@
 {
   "models": {
     "llm": {
-      "default": "siliconflow:qwen3-8b",
+      "default": "nvidia:deepseek-v4-pro",
       "options": {
         "siliconflow:qwen3-8b": {
           "name": "Qwen3 8B",
           "base_url": "https://api.siliconflow.cn/v1/chat/completions",
           "model": "Qwen/Qwen3-8B",
-          "api_key_env": "SILICONFLOW_API_KEY"
+          "api_key_env": "SILICONFLOW_API_KEY",
+          "max_tokens": 1024
         },
         "nvidia:deepseek-v4-pro": {
           "name": "NVIDIA DeepSeek V4 Pro",
           "base_url": "https://integrate.api.nvidia.com/v1",
           "model": "deepseek-ai/deepseek-v4-pro",
-          "api_key_env": "NVIDIA_API_KEY"
+          "api_key_env": "NVIDIA_API_KEY",
+          "max_tokens": 1024
         },
         "openrouter:nemotron-3-super-120b-free": {
           "name": "OpenRouter Nemotron 3 Super 120B Free",
           "base_url": "https://openrouter.ai/api/v1",
           "model": "nvidia/nemotron-3-super-120b-a12b:free",
-          "api_key_env": "OPENROUTER_API_KEY"
+          "api_key_env": "OPENROUTER_API_KEY",
+          "max_tokens": 1024
         }
       }
     },

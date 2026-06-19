@@ -32,6 +32,7 @@ type LLMModelConfig struct {
 	BaseURL     string
 	Model       string
 	APIKey      string
+	MaxTokens   int
 }
 
 func (c Config) selectedLLMModelConfig() LLMModelConfig {

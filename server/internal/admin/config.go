@@ -95,6 +95,7 @@ type LLMModelConfig struct {
 	BaseURL     string
 	Model       string
 	APIKey      string
+	MaxTokens   int
 }
 
 func LoadConfig() Config {
@@ -114,6 +115,7 @@ func LoadConfig() Config {
 			BaseURL:     strings.TrimSpace(option.BaseURL),
 			Model:       strings.TrimSpace(option.Model),
 			APIKey:      settingsAPIKey(option.APIKeyEnv),
+			MaxTokens:   option.MaxTokens,
 		}
 	}
 	if goLLMModel == "" && len(goLLMModels) > 0 {
@@ -244,6 +246,7 @@ type settingsModelEndpoint struct {
 	BaseURL        string `json:"base_url"`
 	Model          string `json:"model"`
 	APIKeyEnv      string `json:"api_key_env"`
+	MaxTokens      int    `json:"max_tokens"`
 	Voice          string `json:"voice"`
 	ResponseFormat string `json:"response_format"`
 }

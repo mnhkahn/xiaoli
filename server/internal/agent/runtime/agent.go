@@ -186,7 +186,10 @@ func (a *Agent) chatModel(ctx context.Context) (*openai.ChatModel, error) {
 	baseURL := strings.TrimSuffix(modelCfg.BaseURL, "/chat/completions")
 	baseURL = strings.TrimRight(baseURL, "/")
 	temp := float32(0.2)
-	maxTokens := 180
+	maxTokens := modelCfg.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 180
+	}
 	model, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		BaseURL:     baseURL,
 		APIKey:      modelCfg.APIKey,

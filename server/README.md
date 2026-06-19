@@ -35,6 +35,7 @@ If you change the app name, update `app` and `PUBLIC_BASE_URL` in `fly.toml`.
 Set required model secrets. For the current defaults, the minimum useful set is:
 
 ```bash
+fly secrets set NVIDIA_API_KEY=your_nvidia_key
 fly secrets set OPENROUTER_API_KEY=your_openrouter_key
 fly secrets set SILICONFLOW_API_KEY=your_siliconflow_key
 fly secrets set SERVER_AUTH_KEY=$(openssl rand -hex 32)
@@ -128,10 +129,10 @@ Important environment variables:
 - `LARK_APP_TOKEN`: Lark app token used as the app credential for tenant access tokens; set as a secret
 Model and MCP settings:
 
-- `settings.json`: stores non-secret model endpoints, model names, `/model` options, ASR/Vision/TTS settings, and MCP server URLs.
+- `settings.json`: stores non-secret model endpoints, model names, `/model` options, ASR/Vision/TTS settings, and MCP server URLs. Each model option can set `max_tokens` (default 180) and `api_key_env` to reference a Fly secret.
 - `AGENT.md`: stores the default agent prompt. Optional `SOUL.md` is appended when present.
 - `SILICONFLOW_API_KEY`: secret used by the default settings via `api_key_env`.
-- Other provider keys, such as `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, can be referenced from `settings.json` with `api_key_env`.
+- Other provider keys, such as `NVIDIA_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, can be referenced from `settings.json` with `api_key_env`.
 - The Docker image copies `settings.json` and `AGENT.md` to `/opt/xiaoli/`, alongside `/opt/xiaoli/skills`.
 
 Skill support:
