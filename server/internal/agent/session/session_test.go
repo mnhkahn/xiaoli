@@ -150,3 +150,35 @@ func TestOwnerIsolation(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckEpochInitializedOnFirstCall(t *testing.T) {
+	m, ctx := testManager(t)
+	sid, _, _ := m.Create(ctx, "u1", "m1")
+
+	r := m.ReconcileEpoch(ctx, sid, "2026-06-19")
+	if r != EpochInitialized {
+		t.Fatalf("first call should be Initialized, got %v", r)
+	}
+}
+
+func TestCheckEpochSameDay(t *testing.T) {
+	m, ctx := testManager(t)
+	sid, _, _ := m.Create(ctx, "u1", "m1")
+
+	m.CommitEpoch(ctx, sid, "2026-06-19")
+	r := m.ReconcileEpoch(ctx, sid, "2026-06-19")
+	if r != EpochUnchanged {
+		t.Fatalf("same day should be Unchanged, got %v", r)
+	}
+}
+
+func TestCheckEpochCrossDay(t *testing.T) {
+	m, ctx := testManager(t)
+	sid, _, _ := m.Create(ctx, "u1", "m1")
+
+	m.CommitEpoch(ctx, sid, "2026-06-19")
+	r := m.ReconcileEpoch(ctx, sid, "2026-06-20")
+	if r != EpochUpdated {
+		t.Fatalf("cross day should be Updated, got %v", r)
+	}
+}

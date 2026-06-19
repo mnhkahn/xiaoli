@@ -160,9 +160,9 @@ func (m *Memory) Load(ctx context.Context, conversationID string) []*schema.Mess
 	return msgs
 }
 
-func (m *Memory) Save(ctx context.Context, conversationID string, msgs []*schema.Message) {
+func (m *Memory) Save(ctx context.Context, conversationID string, msgs []*schema.Message) error {
 	if m == nil {
-		return
+		return nil
 	}
 	if len(msgs) > maxHistoryMessages {
 		msgs = msgs[len(msgs)-maxHistoryMessages:]
@@ -170,9 +170,11 @@ func (m *Memory) Save(ctx context.Context, conversationID string, msgs []*schema
 	data, err := json.Marshal(msgs)
 	if err != nil {
 		logger.Infof("redis marshal memory for %s: %v", conversationID, err)
-		return
+		return err
 	}
 	if err := m.client.Set(ctx, m.prefix+conversationID, data, m.ttl).Err(); err != nil {
 		logger.Infof("redis save memory for %s: %v", conversationID, err)
+		return err
 	}
+	return nil
 }

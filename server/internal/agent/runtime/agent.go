@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
@@ -25,6 +26,8 @@ type DeviceTools interface {
 	agentmcp.DeviceToolCaller
 	ToolSnapshot(deviceID string) ([]map[string]any, bool)
 }
+
+var chineseWeekday = []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
 
 type Agent struct {
 	modelMu       sync.Mutex
@@ -270,6 +273,37 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	logger.Infof("Agent.Chat called: conversation=%s device=%s memory=%s text=%q", conversationID, deviceID, memoryID, userText)
 
 	history := a.memory.Load(ctx, memoryID)
+
+	var epochToday string
+	var epochSessionID string
+
+	if a.sessionMgr != nil {
+		var loc, _ = time.LoadLocation("Asia/Shanghai")
+		now := time.Now().In(loc)
+		today := now.Format("2006-01-02")
+		switch a.sessionMgr.ReconcileEpoch(ctx, memoryID, today) {
+		case agentsession.EpochInitialized:
+			epochToday = today
+			epochSessionID = memoryID
+		case agentsession.EpochUpdated:
+			timeMsg := fmt.Sprintf("当前北京时间：%s %s %02d:%02d", today, chineseWeekday[now.Weekday()], now.Hour(), now.Minute())
+			timeSysMsg := schema.SystemMessage(timeMsg)
+			replaced := false
+			for i, m := range history {
+				if m.Role == schema.System && strings.Contains(m.Content, "当前北京时间") {
+					history[i] = timeSysMsg
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				history = append(history, timeSysMsg)
+			}
+			epochToday = today
+			epochSessionID = memoryID
+		}
+	}
+
 	msgs := make([]*schema.Message, 0, len(history)+2)
 	if a.cfg.LLMPrompt != "" {
 		msgs = append(msgs, schema.SystemMessage(a.cfg.LLMPrompt))
@@ -345,7 +379,11 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		schema.UserMessage(userText),
 		result,
 	)
-	a.memory.Save(ctx, memoryID, updated)
+	if err := a.memory.Save(ctx, memoryID, updated); err != nil {
+		logger.Infof("memory save failed, not committing epoch: %v", err)
+	} else if epochToday != "" {
+		a.sessionMgr.CommitEpoch(ctx, epochSessionID, epochToday)
+	}
 
 	if a.sessionMgr != nil {
 		a.sessionMgr.UpdateAfterChat(ctx, memoryID, len(updated))

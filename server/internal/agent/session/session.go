@@ -133,6 +133,37 @@ func (m *Manager) UpdateAfterChat(ctx context.Context, sessionID string, count i
 	})
 }
 
+type EpochResult int
+
+const (
+	EpochUnchanged EpochResult = iota
+	EpochInitialized
+	EpochUpdated
+)
+
+func (m *Manager) epochKey(sessionID string) string {
+	return m.sessionKey(sessionID) + ":epoch"
+}
+
+func (m *Manager) ReconcileEpoch(ctx context.Context, sessionID string, today string) EpochResult {
+	baseline, err := m.client.Get(ctx, m.epochKey(sessionID)).Result()
+	if err == redis.Nil || baseline == "" {
+		return EpochInitialized
+	}
+	if err != nil {
+		logger.Infof("epoch read failed: %v", err)
+		return EpochUnchanged
+	}
+	if baseline == today {
+		return EpochUnchanged
+	}
+	return EpochUpdated
+}
+
+func (m *Manager) CommitEpoch(ctx context.Context, sessionID string, today string) {
+	m.client.Set(ctx, m.epochKey(sessionID), today, 0)
+}
+
 func (m *Manager) LoadMessages(ctx context.Context, sessionID string) []*schema.Message {
 	key := m.prefix + sessionID
 	data, err := m.client.Get(ctx, key).Bytes()
