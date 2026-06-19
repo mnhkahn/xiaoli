@@ -163,7 +163,7 @@ func (r *Recorder) Status() string {
 
 		for _, k := range minutes {
 			bkt := mb[k]
-			mm := k[len(k)-4:]
+			mm := k[8:10] + ":" + k[10:12]
 			totalReqs += bkt.requests
 			totalErrs += bkt.errors
 			totalPi += bkt.promptTokens
