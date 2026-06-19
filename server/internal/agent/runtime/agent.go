@@ -366,6 +366,7 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 func (a *Agent) toolsForChat(_ context.Context, _ string, deviceID string) []tool.BaseTool {
 	var einoTools []tool.BaseTool
 	einoTools = append(einoTools, agentbuiltin.NewTools(a.cfg.BuiltinWebFetchEnabled)...)
+	einoTools = append(einoTools, agentbuiltin.NewWebSearchTool(""))
 	if a.hub != nil && deviceID != "" {
 		if rawTools, ok := a.hub.ToolSnapshot(deviceID); ok {
 			einoTools = append(einoTools, agentmcp.NewDeviceTools(deviceID, rawTools, a.hub)...)
