@@ -5,6 +5,7 @@ import (
 	"github.com/mnhkahn/gogogo/logger"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ type Config struct {
 	GoLLMAPIKey              string
 	GoLLMModel               string
 	GoLLMModels              []string
+	GoLLMModelConfigs        map[string]LLMModelConfig
 	GoLLMPrompt              string
 	GoLLMTimeout             time.Duration
 	GoVLLMURL                string
@@ -86,17 +88,47 @@ type Config struct {
 	Now                      func() time.Time
 }
 
+type LLMModelConfig struct {
+	ID          string
+	DisplayName string
+	BaseURL     string
+	Model       string
+	APIKey      string
+}
+
 func LoadConfig() Config {
 	sessionSecret := env("ADMIN_SESSION_SECRET", "")
-	goLLMModel := env("XIAOLI_GO_LLM_MODEL", env("SILICONFLOW_LLM_MODEL", "Qwen/Qwen3-8B"))
-	goLLMModels := csv(env("XIAOLI_GO_LLM_MODELS", ""))
-	if len(goLLMModels) == 0 && goLLMModel != "" {
-		goLLMModels = []string{goLLMModel}
+	settings, settingsPath := loadSettings(defaultSettingsPaths())
+	goLLMModel := strings.TrimSpace(settings.Models.LLM.Default)
+	goLLMModels := settings.Models.LLM.modelIDs()
+	goLLMModelConfigs := map[string]LLMModelConfig{}
+	for id, option := range settings.Models.LLM.Options {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		goLLMModelConfigs[id] = LLMModelConfig{
+			ID:          id,
+			DisplayName: strings.TrimSpace(option.Name),
+			BaseURL:     strings.TrimSpace(option.BaseURL),
+			Model:       strings.TrimSpace(option.Model),
+			APIKey:      settingsAPIKey(option.APIKeyEnv),
+		}
+	}
+	if goLLMModel == "" && len(goLLMModels) > 0 {
+		goLLMModel = goLLMModels[0]
+	}
+	selectedLLM := goLLMModelConfigs[goLLMModel]
+	if selectedLLM.Model == "" {
+		selectedLLM.Model = goLLMModel
 	}
 	goLLMPrompt := loadAgentPrompt(defaultAgentPromptRoots())
 	if goLLMPrompt == "" {
 		goLLMPrompt = fallbackLLMPrompt
 	}
+	vision := settings.Models.Vision
+	asr := settings.Models.ASR
+	tts := settings.Models.TTS
 	cfg := Config{
 		Host:                     env("XIAOLI_ADMIN_HOST", "0.0.0.0"),
 		Port:                     envInt("XIAOLI_ADMIN_PORT", 8004),
@@ -115,28 +147,29 @@ func LoadConfig() Config {
 		VisionProxyBaseURL:       strings.TrimRight(env("XIAOLI_VISION_PROXY_BASE_URL", "http://127.0.0.1:8003"), "/"),
 		InternalStreamToken:      env("XIAOLI_ADMIN_INTERNAL_TOKEN", sessionSecret),
 		MCPReadyWait:             time.Duration(envFloat("ADMIN_MCP_READY_WAIT_SECONDS", 5)) * time.Second,
-		GoASRURL:                 env("XIAOLI_GO_ASR_URL", env("OPENAI_ASR_BASE_URL", "https://api.siliconflow.cn/v1/audio/transcriptions")),
-		GoASRAPIKey:              env("XIAOLI_GO_ASR_API_KEY", firstNonEmptyEnv("SILICONFLOW_API_KEY", "OPENAI_API_KEY", "GROQ_API_KEY")),
-		GoASRModel:               env("XIAOLI_GO_ASR_MODEL", env("SILICONFLOW_ASR_MODEL", "FunAudioLLM/SenseVoiceSmall")),
+		GoASRURL:                 strings.TrimSpace(asr.BaseURL),
+		GoASRAPIKey:              settingsAPIKey(asr.APIKeyEnv),
+		GoASRModel:               strings.TrimSpace(asr.Model),
 		GoASRTimeout:             time.Duration(envInt("XIAOLI_GO_ASR_TIMEOUT_SECONDS", 45)) * time.Second,
-		GoLLMURL:                 env("XIAOLI_GO_LLM_URL", "https://api.siliconflow.cn/v1/chat/completions"),
-		GoLLMAPIKey:              env("XIAOLI_GO_LLM_API_KEY", firstNonEmptyEnv("SILICONFLOW_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY")),
+		GoLLMURL:                 selectedLLM.BaseURL,
+		GoLLMAPIKey:              selectedLLM.APIKey,
 		GoLLMModel:               goLLMModel,
 		GoLLMModels:              goLLMModels,
+		GoLLMModelConfigs:        goLLMModelConfigs,
 		GoLLMPrompt:              goLLMPrompt,
 		GoLLMTimeout:             time.Duration(envInt("XIAOLI_GO_LLM_TIMEOUT_SECONDS", 120)) * time.Second,
-		GoVLLMURL:                env("XIAOLI_GO_VLLM_URL", "https://api.siliconflow.cn/v1/chat/completions"),
-		GoVLLMAPIKey:             env("XIAOLI_GO_VLLM_API_KEY", firstNonEmptyEnv("SILICONFLOW_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY")),
-		GoVLLMModel:              env("XIAOLI_GO_VLLM_MODEL", env("SILICONFLOW_VLLM_MODEL", "Qwen/Qwen3-VL-8B-Instruct")),
+		GoVLLMURL:                strings.TrimSpace(vision.BaseURL),
+		GoVLLMAPIKey:             settingsAPIKey(vision.APIKeyEnv),
+		GoVLLMModel:              strings.TrimSpace(vision.Model),
 		GoVLLMTimeout:            time.Duration(envInt("XIAOLI_GO_VLLM_TIMEOUT_SECONDS", 60)) * time.Second,
-		GoTTSURL:                 env("XIAOLI_GO_TTS_URL", "https://api.siliconflow.cn/v1/audio/speech"),
-		GoTTSAPIKey:              env("XIAOLI_GO_TTS_API_KEY", env("SILICONFLOW_API_KEY", "")),
-		GoTTSModel:               env("XIAOLI_GO_TTS_MODEL", env("SILICONFLOW_TTS_MODEL", "FunAudioLLM/CosyVoice2-0.5B")),
-		GoTTSVoice:               env("XIAOLI_GO_TTS_VOICE", env("SILICONFLOW_TTS_VOICE", "FunAudioLLM/CosyVoice2-0.5B:anna")),
-		GoTTSResponseFormat:      env("XIAOLI_GO_TTS_RESPONSE_FORMAT", "opus"),
+		GoTTSURL:                 strings.TrimSpace(tts.BaseURL),
+		GoTTSAPIKey:              settingsAPIKey(tts.APIKeyEnv),
+		GoTTSModel:               strings.TrimSpace(tts.Model),
+		GoTTSVoice:               strings.TrimSpace(tts.Voice),
+		GoTTSResponseFormat:      strings.TrimSpace(tts.ResponseFormat),
 		GoTTSTimeout:             time.Duration(envInt("XIAOLI_GO_TTS_TIMEOUT_SECONDS", 30)) * time.Second,
-		MCPConfigPath:            env("MCP_SERVERS_CONFIG", "mcp-servers.json"),
-		ExternalMCPURLs:          loadMCPConfigFile(env("MCP_SERVERS_CONFIG", "mcp-servers.json")),
+		MCPConfigPath:            settingsPath,
+		ExternalMCPURLs:          settings.mcpURLs(),
 		SkillRoots:               csv(env("XIAOLI_SKILL_ROOTS", "/opt/xiaoli/skills")),
 		EnabledSkills:            csv(env("XIAOLI_ENABLED_SKILLS", "*")),
 		SkillMaxBytes:            int64(envInt("XIAOLI_SKILL_MAX_BYTES", int(agentskill.DefaultMaxBytes))),
@@ -169,6 +202,95 @@ func LoadConfig() Config {
 		MemoryTTL:                time.Duration(envInt("XIAOLI_MEMORY_TTL_HOURS", 24)) * time.Hour,
 	}
 	return cfg
+}
+
+func defaultSettingsPaths() []string {
+	return []string{
+		"settings.json",
+		"/opt/xiaoli/settings.json",
+	}
+}
+
+type settingsConfig struct {
+	Models     settingsModels      `json:"models"`
+	MCPServers []settingsMCPServer `json:"mcp_servers"`
+}
+
+type settingsModels struct {
+	LLM    settingsLLMModel      `json:"llm"`
+	Vision settingsModelEndpoint `json:"vision"`
+	ASR    settingsModelEndpoint `json:"asr"`
+	TTS    settingsModelEndpoint `json:"tts"`
+}
+
+type settingsLLMModel struct {
+	Default string                           `json:"default"`
+	Options map[string]settingsModelEndpoint `json:"options"`
+}
+
+type settingsModelEndpoint struct {
+	Name           string `json:"name"`
+	BaseURL        string `json:"base_url"`
+	Model          string `json:"model"`
+	APIKeyEnv      string `json:"api_key_env"`
+	Voice          string `json:"voice"`
+	ResponseFormat string `json:"response_format"`
+}
+
+type settingsMCPServer struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+func loadSettings(paths []string) (settingsConfig, string) {
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var cfg settingsConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			logger.Infof("settings: skip %s (parse error: %v)", path, err)
+			continue
+		}
+		return cfg, path
+	}
+	return settingsConfig{}, ""
+}
+
+func (s settingsLLMModel) modelIDs() []string {
+	ids := make([]string, 0, len(s.Options))
+	for id := range s.Options {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (s settingsConfig) mcpURLs() []string {
+	urls := make([]string, 0, len(s.MCPServers))
+	for _, server := range s.MCPServers {
+		url := strings.TrimSpace(server.URL)
+		if url != "" {
+			urls = append(urls, url)
+		}
+	}
+	return urls
+}
+
+func settingsAPIKey(envName string) string {
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return ""
+	}
+	return os.Getenv(envName)
 }
 
 func defaultAgentPromptRoots() []string {
@@ -278,30 +400,4 @@ func csv(value string) []string {
 		}
 	}
 	return items
-}
-
-type mcpServerConfig struct {
-	MCPServers []struct {
-		Name string `json:"name"`
-		URL  string `json:"url"`
-	} `json:"mcp_servers"`
-}
-
-func loadMCPConfigFile(path string) []string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var cfg mcpServerConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		logger.Infof("mcp config: skip %s (parse error: %v)", path, err)
-		return nil
-	}
-	var urls []string
-	for _, s := range cfg.MCPServers {
-		if s.URL != "" {
-			urls = append(urls, s.URL)
-		}
-	}
-	return urls
 }

@@ -82,13 +82,13 @@ func TestDockerfileCopySourcesExistInBuildContext(t *testing.T) {
 	}
 }
 
-func TestDockerfileCopiesMCPServersConfig(t *testing.T) {
+func TestDockerfileCopiesSettingsConfig(t *testing.T) {
 	data, err := os.ReadFile("../../Dockerfile")
 	if err != nil {
 		t.Fatalf("read Dockerfile: %v", err)
 	}
-	if !strings.Contains(string(data), "COPY mcp-servers.json") {
-		t.Fatal("Dockerfile should copy mcp-servers.json so ExternalMCPURLs is configured in the container")
+	if !strings.Contains(string(data), "COPY settings.json") {
+		t.Fatal("Dockerfile should copy settings.json so model and MCP settings are configured in the container")
 	}
 }
 

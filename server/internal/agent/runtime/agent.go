@@ -37,10 +37,11 @@ type Agent struct {
 }
 
 func NewAgent(cfg Config) *Agent {
-	if cfg.LLMAPIKey == "" {
+	selected := cfg.selectedLLMModelConfig()
+	if selected.APIKey == "" {
 		return nil
 	}
-	baseURL := strings.TrimSuffix(cfg.LLMURL, "/chat/completions")
+	baseURL := strings.TrimSuffix(selected.BaseURL, "/chat/completions")
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	ctx := context.Background()
@@ -111,6 +112,21 @@ func newModelSelector(cfg Config) *agentmodel.Selector {
 	if len(models) == 0 {
 		models = []string{cfg.LLMModel}
 	}
+	llmOptions := agentmodel.OptionsFromIDs(agentmodel.RoleLLM, models)
+	if len(cfg.LLMModelConfigs) > 0 {
+		llmOptions = make([]agentmodel.Option, 0, len(cfg.LLMModelConfigs))
+		for id, model := range cfg.LLMModelConfigs {
+			option := agentmodel.Option{
+				ID:          id,
+				Role:        agentmodel.RoleLLM,
+				DisplayName: model.DisplayName,
+			}
+			if idx := strings.Index(id, ":"); idx > 0 {
+				option.Provider = id[:idx]
+			}
+			llmOptions = append(llmOptions, option)
+		}
+	}
 	return agentmodel.NewSelector(
 		map[agentmodel.Role]string{
 			agentmodel.RoleLLM:  cfg.LLMModel,
@@ -119,7 +135,7 @@ func newModelSelector(cfg Config) *agentmodel.Selector {
 			agentmodel.RoleTTS:  cfg.TTSModel,
 		},
 		map[agentmodel.Role][]agentmodel.Option{
-			agentmodel.RoleLLM: agentmodel.OptionsFromIDs(agentmodel.RoleLLM, models),
+			agentmodel.RoleLLM: llmOptions,
 		},
 	)
 }
@@ -162,14 +178,18 @@ func (a *Agent) chatModel(ctx context.Context) (*openai.ChatModel, error) {
 	if model := a.chatModels[modelID]; model != nil {
 		return model, nil
 	}
-	baseURL := strings.TrimSuffix(a.cfg.LLMURL, "/chat/completions")
+	modelCfg := a.cfg.selectedLLMModelConfigFor(modelID)
+	if modelCfg.Model == "" || modelCfg.BaseURL == "" || modelCfg.APIKey == "" {
+		return nil, fmt.Errorf("LLM model %q is incomplete", modelID)
+	}
+	baseURL := strings.TrimSuffix(modelCfg.BaseURL, "/chat/completions")
 	baseURL = strings.TrimRight(baseURL, "/")
 	temp := float32(0.2)
 	maxTokens := 180
 	model, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		BaseURL:     baseURL,
-		APIKey:      a.cfg.LLMAPIKey,
-		Model:       modelID,
+		APIKey:      modelCfg.APIKey,
+		Model:       modelCfg.Model,
 		Timeout:     a.cfg.LLMTimeout,
 		Temperature: &temp,
 		MaxTokens:   &maxTokens,

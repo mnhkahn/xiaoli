@@ -74,7 +74,7 @@ COPY --from=go-build /out/xiaoli-admin /usr/local/bin/xiaoli-admin
 COPY --from=skill-build /skill-bin/ /usr/local/bin/
 COPY --from=skill-build /skills /opt/xiaoli/skills
 COPY AGENT.md /opt/xiaoli/AGENT.md
-COPY mcp-servers.json /data/mcp-servers.json
+COPY settings.json /opt/xiaoli/settings.json
 
 WORKDIR /data
 

@@ -122,31 +122,13 @@ Important environment variables:
 - `LARK_BOT_WEBHOOK_URL`: custom bot webhook URL; set as a secret
 - `LARK_APP_ID`: Lark app ID; when set together with `LARK_APP_TOKEN`, enables `/lark/events`
 - `LARK_APP_TOKEN`: Lark app token used as the app credential for tenant access tokens; set as a secret
-- `ASR_MODULE`: default `SiliconFlowASR`
-- `LLM_MODULE`: default `SiliconFlowLLM`
-- `VLLM_MODULE`: default `SiliconFlowVLLM`
-- `TTS_MODULE`: default `SiliconFlowTTS`
-- `OPENROUTER_API_KEY`: used by `OpenRouterLLM` and `OpenRouterVLLM`
-- `OPENROUTER_LLM_MODEL`: default `openrouter/free`
-- `OPENROUTER_VLLM_MODEL`: default `openrouter/free`
-- `SILICONFLOW_API_KEY`: used by the Go ASR/LLM/VLLM/TTS clients by default
-- `SILICONFLOW_LLM_MODEL`: default `Qwen/Qwen3-8B`
-- `SILICONFLOW_VLLM_MODEL`: default `Qwen/Qwen3-VL-8B-Instruct`
-- `SILICONFLOW_ASR_MODEL`: default `FunAudioLLM/SenseVoiceSmall`
-- `SILICONFLOW_TTS_MODEL`: default `FunAudioLLM/CosyVoice2-0.5B`
-- `SILICONFLOW_TTS_VOICE`: default `FunAudioLLM/CosyVoice2-0.5B:anna`
-- `XIAOLI_GO_ASR_URL`: OpenAI-compatible transcription endpoint; default `https://api.siliconflow.cn/v1/audio/transcriptions`
-- `XIAOLI_GO_ASR_MODEL`: default comes from `SILICONFLOW_ASR_MODEL`
-- `XIAOLI_GO_LLM_URL`: OpenAI-compatible chat completions endpoint; default `https://api.siliconflow.cn/v1/chat/completions`
-- `XIAOLI_GO_LLM_MODEL`: default comes from `SILICONFLOW_LLM_MODEL`
-- `XIAOLI_GO_LLM_MODELS`: comma-separated LLM models available to `/model use`; default should include the current `XIAOLI_GO_LLM_MODEL`
-- `XIAOLI_GO_VLLM_URL`: OpenAI-compatible vision chat endpoint; default `https://api.siliconflow.cn/v1/chat/completions`
-- `XIAOLI_GO_VLLM_MODEL`: default comes from `SILICONFLOW_VLLM_MODEL`
-- `XIAOLI_GO_TTS_RESPONSE_FORMAT`: default `opus`; keep this as Ogg Opus for board playback
-- `GROQ_API_KEY`: used only if switching back to `GroqASR`
-- `OPENAI_API_KEY`: used only if switching back to `OpenaiASR`
-- `ZHIPU_API_KEY`: used only if switching back to `ChatGLMLLM` / `ChatGLMVLLM`
-- `DASHSCOPE_API_KEY`: used if switching to `AliLLM` / `QwenVLVLLM`
+Model and MCP settings:
+
+- `settings.json`: stores non-secret model endpoints, model names, `/model` options, ASR/Vision/TTS settings, and MCP server URLs.
+- `AGENT.md`: stores the default agent prompt. Optional `SOUL.md` is appended when present.
+- `SILICONFLOW_API_KEY`: secret used by the default settings via `api_key_env`.
+- Other provider keys, such as `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, can be referenced from `settings.json` with `api_key_env`.
+- The Docker image copies `settings.json` and `AGENT.md` to `/opt/xiaoli/`, alongside `/opt/xiaoli/skills`.
 
 Skill support:
 

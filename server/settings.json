@@ -1,0 +1,38 @@
+{
+  "models": {
+    "llm": {
+      "default": "siliconflow:qwen3-8b",
+      "options": {
+        "siliconflow:qwen3-8b": {
+          "name": "Qwen3 8B",
+          "base_url": "https://api.siliconflow.cn/v1/chat/completions",
+          "model": "Qwen/Qwen3-8B",
+          "api_key_env": "SILICONFLOW_API_KEY"
+        }
+      }
+    },
+    "vision": {
+      "base_url": "https://api.siliconflow.cn/v1/chat/completions",
+      "model": "Qwen/Qwen3-VL-8B-Instruct",
+      "api_key_env": "SILICONFLOW_API_KEY"
+    },
+    "asr": {
+      "base_url": "https://api.siliconflow.cn/v1/audio/transcriptions",
+      "model": "FunAudioLLM/SenseVoiceSmall",
+      "api_key_env": "SILICONFLOW_API_KEY"
+    },
+    "tts": {
+      "base_url": "https://api.siliconflow.cn/v1/audio/speech",
+      "model": "FunAudioLLM/CosyVoice2-0.5B",
+      "voice": "FunAudioLLM/CosyVoice2-0.5B:anna",
+      "response_format": "opus",
+      "api_key_env": "SILICONFLOW_API_KEY"
+    }
+  },
+  "mcp_servers": [
+    {
+      "name": "CYEAM",
+      "url": "https://cyeam-wiki-mcp-production.up.railway.app/mcp"
+    }
+  ]
+}

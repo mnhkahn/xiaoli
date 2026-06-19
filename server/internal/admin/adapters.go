@@ -66,6 +66,7 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		LLMAPIKey:               cfg.GoLLMAPIKey,
 		LLMModel:                cfg.GoLLMModel,
 		LLMModels:               cfg.GoLLMModels,
+		LLMModelConfigs:         runtimeLLMModelConfigs(cfg.GoLLMModelConfigs),
 		LLMPrompt:               cfg.GoLLMPrompt,
 		LLMTimeout:              cfg.GoLLMTimeout,
 		VLLMModel:               cfg.GoVLLMModel,
@@ -82,6 +83,23 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		SkillExecMaxOutputBytes: cfg.SkillExecMaxOutputBytes,
 		SkillExecGlobalBinDirs:  cfg.SkillExecGlobalBinDirs,
 	})
+}
+
+func runtimeLLMModelConfigs(models map[string]LLMModelConfig) map[string]agentruntime.LLMModelConfig {
+	if len(models) == 0 {
+		return nil
+	}
+	out := make(map[string]agentruntime.LLMModelConfig, len(models))
+	for id, model := range models {
+		out[id] = agentruntime.LLMModelConfig{
+			ID:          model.ID,
+			DisplayName: model.DisplayName,
+			BaseURL:     model.BaseURL,
+			Model:       model.Model,
+			APIKey:      model.APIKey,
+		}
+	}
+	return out
 }
 
 func newRedisMemory(cfg Config) memoryReader {
