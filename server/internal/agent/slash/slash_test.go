@@ -43,6 +43,10 @@ func (fakeDeps) ListChannels(context.Context) ([]channel.Info, error) {
 	return []channel.Info{{ID: "lark:app:test", Type: channel.TypeLark}}, nil
 }
 
+func (fakeDeps) LLMStats() string {
+	return "test stats"
+}
+
 func TestParseRequiresLeadingSlash(t *testing.T) {
 	cmd, ok := Parse(" /skills  --verbose ")
 	if !ok {

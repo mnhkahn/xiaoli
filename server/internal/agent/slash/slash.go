@@ -35,6 +35,7 @@ type Dependencies interface {
 	ListModels(role model.Role) []ModelOption
 	UseModel(role model.Role, id string) error
 	ListChannels(ctx context.Context) ([]channel.Info, error)
+	LLMStats() string
 }
 
 type Handler struct {
@@ -75,6 +76,8 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 		return h.model(cmd.Args), true
 	case "channel":
 		return h.channels(ctx), true
+	case "status":
+		return h.deps.LLMStats(), true
 	case "help":
 		return helpText(), true
 	default:
@@ -208,5 +211,6 @@ func helpText() string {
 /skills     - 列出所有可用技能及其版本号
 /model      - 查看或切换 LLM 模型（/model list 查看可选模型，/model use <id> 切换）
 /channel    - 查看可用消息渠道
+/status     - 查看 LLM 调用统计
 /help       - 显示此帮助信息`
 }

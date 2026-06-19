@@ -35,6 +35,7 @@ type Agent struct {
 	extMCPs       []*agentmcp.Client
 	extToolSets   [][]tool.BaseTool
 	skillMW       adk.ChatModelAgentMiddleware
+	recorder      *Recorder
 }
 
 func NewAgent(cfg Config) *Agent {
@@ -48,6 +49,8 @@ func NewAgent(cfg Config) *Agent {
 	ctx := context.Background()
 	selector := newModelSelector(cfg)
 	memory := NewRedisMemory(cfg)
+
+	recorder := GlobalRecorder()
 
 	var extMCPs []*agentmcp.Client
 	var extToolSets [][]tool.BaseTool
@@ -105,7 +108,11 @@ func NewAgent(cfg Config) *Agent {
 	}
 
 	logger.Infof("eino agent ready: model=%s base=%s redis=%v extMCPs=%d skills=%v", cfg.LLMModel, baseURL, memory != nil, len(extMCPs), skillMW != nil)
-	return &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, skillMW: skillMW}
+	return &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, skillMW: skillMW, recorder: recorder}
+}
+
+func (a *Agent) Recorder() *Recorder {
+	return a.recorder
 }
 
 func newModelSelector(cfg Config) *agentmodel.Selector {
@@ -169,19 +176,19 @@ func (a *Agent) ListLLMModels() []agentmodel.Option {
 	return a.modelSelector.List(agentmodel.RoleLLM)
 }
 
-func (a *Agent) chatModel(ctx context.Context) (*openai.ChatModel, error) {
+func (a *Agent) chatModel(ctx context.Context) (*openai.ChatModel, string, error) {
 	modelID := a.CurrentLLMModel()
 	if strings.TrimSpace(modelID) == "" {
-		return nil, fmt.Errorf("LLM model is not configured")
+		return nil, "", fmt.Errorf("LLM model is not configured")
 	}
 	a.modelMu.Lock()
 	defer a.modelMu.Unlock()
 	if model := a.chatModels[modelID]; model != nil {
-		return model, nil
+		return model, modelID, nil
 	}
 	modelCfg := a.cfg.selectedLLMModelConfigFor(modelID)
 	if modelCfg.Model == "" || modelCfg.BaseURL == "" || modelCfg.APIKey == "" {
-		return nil, fmt.Errorf("LLM model %q is incomplete", modelID)
+		return nil, "", fmt.Errorf("LLM model %q is incomplete", modelID)
 	}
 	baseURL := strings.TrimSuffix(modelCfg.BaseURL, "/chat/completions")
 	baseURL = strings.TrimRight(baseURL, "/")
@@ -199,10 +206,10 @@ func (a *Agent) chatModel(ctx context.Context) (*openai.ChatModel, error) {
 		MaxTokens:   &maxTokens,
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	a.chatModels[modelID] = model
-	return model, nil
+	return model, modelID, nil
 }
 
 func (a *Agent) SetDeviceTools(hub DeviceTools) {
@@ -237,7 +244,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 
 	einoTools := a.toolsForChat(ctx, conversationID, deviceID)
 
-	chatModel, err := a.chatModel(ctx)
+	chatModel, modelID, err := a.chatModel(ctx)
 	if err != nil {
 		return "", fmt.Errorf("create chat model: %w", err)
 	}
@@ -271,7 +278,8 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		Agent: agent,
 	})
 
-	iter := runner.Run(ctx, msgs)
+	runCtx := a.recorder.WithContext(ctx, modelID)
+	iter := runner.Run(runCtx, msgs)
 
 	var result *schema.Message
 	eventCount := 0
@@ -316,7 +324,7 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 
 	einoTools := a.toolsForChat(ctx, "", "")
 
-	chatModel, err := a.chatModel(ctx)
+	chatModel, modelID, err := a.chatModel(ctx)
 	if err != nil {
 		return "", fmt.Errorf("create chat model: %w", err)
 	}
@@ -342,7 +350,8 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 	}
 
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
-	iter := runner.Run(ctx, msgs)
+	runCtx := a.recorder.WithContext(ctx, modelID)
+	iter := runner.Run(runCtx, msgs)
 
 	var result string
 	for {

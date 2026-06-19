@@ -289,6 +289,17 @@ func (d adminSlashDeps) ListChannels(ctx context.Context) ([]agentchannel.Info, 
 	return d.s.channels(ctx)
 }
 
+func (d adminSlashDeps) LLMStats() string {
+	if d.s.agent == nil {
+		return "LLM agent 未初始化。"
+	}
+	recorder := d.s.agent.Recorder()
+	if recorder == nil {
+		return "LLM 统计未启用。"
+	}
+	return recorder.Status()
+}
+
 func (s *AdminServer) deviceController() DeviceController {
 	if s.cfg.DirectDeviceServer && s.deviceHub != nil {
 		return s.deviceHub
