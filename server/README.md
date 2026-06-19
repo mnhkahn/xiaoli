@@ -74,8 +74,12 @@ when a reminder is needed.
 Deploy:
 
 ```bash
-fly deploy
+fly deploy --build-arg XIAOLI_SKILLS_CACHE_BUST=$(date +%Y%m%d%H%M%S)
 ```
+
+`XIAOLI_SKILLS` defaults to floating installs such as `mnhkahn/cyeam-cli`.
+Pass a fresh `XIAOLI_SKILLS_CACHE_BUST` value when deploying so Docker does not
+reuse an older skill install layer.
 
 Check health:
 

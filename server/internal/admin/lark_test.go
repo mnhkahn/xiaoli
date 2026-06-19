@@ -169,8 +169,8 @@ func TestLarkTextEventUsesSharedPipelineAndReplies(t *testing.T) {
 		t.Fatalf("auth body = %#v, want app_id and LARK_APP_TOKEN as app_secret", authBody)
 	}
 	replyBody := <-replyBodies
-	if !strings.Contains(replyBody, `"msg_type":"text"`) || !strings.Contains(replyBody, `收到：你好`) {
-		t.Fatalf("reply body = %s, want text reply with pipeline answer", replyBody)
+	if !strings.Contains(replyBody, `"msg_type":"post"`) || !strings.Contains(replyBody, `收到：你好`) {
+		t.Fatalf("reply body = %s, want post reply with pipeline answer", replyBody)
 	}
 }
 
@@ -258,4 +258,94 @@ func TestLarkTextEventLogsIngressWithoutMessageContent(t *testing.T) {
 			t.Fatalf("logs contain forbidden value %q\nlogs:\n%s", forbidden, output)
 		}
 	}
+}
+
+func TestLarkImageEventDownloadsAnalyzesAndReplies(t *testing.T) {
+	cfg := testConfig()
+	cfg.LarkAppID = "cli_test"
+	cfg.LarkAppToken = "token_test"
+	srv := NewServer(cfg)
+	vision := &capturingVisionAnalyzer{answer: "图里有一只杯子。"}
+	srv.deviceHub.vision = vision
+
+	replyBodies := make(chan string, 1)
+	srv.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "tenant_access_token": "tenant-token"}), nil
+		case "/open-apis/im/v1/messages/om_img/resources/img_key_1":
+			if req.Method != http.MethodGet {
+				t.Fatalf("download method = %s, want GET", req.Method)
+			}
+			if req.URL.Query().Get("type") != "image" {
+				t.Fatalf("download type = %q, want image", req.URL.Query().Get("type"))
+			}
+			if got := req.Header.Get("Authorization"); got != "Bearer tenant-token" {
+				t.Fatalf("download Authorization = %q, want bearer token", got)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"image/png"}},
+				Body:       io.NopCloser(strings.NewReader("png-bytes")),
+			}, nil
+		case "/open-apis/im/v1/messages/om_img/reply":
+			raw, _ := io.ReadAll(req.Body)
+			replyBodies <- string(raw)
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"message_id": "reply_img"}}), nil
+		default:
+			t.Fatalf("unexpected Lark request path: %s", req.URL.Path)
+			return nil, nil
+		}
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/lark/events", strings.NewReader(`{
+		"schema":"2.0",
+		"header":{
+			"event_id":"evt_img",
+			"event_type":"im.message.receive_v1",
+			"app_id":"cli_test",
+			"tenant_key":"tenant_1"
+		},
+		"event":{
+			"sender":{
+				"sender_type":"user",
+				"sender_id":{"open_id":"ou_user"}
+			},
+			"message":{
+				"message_id":"om_img",
+				"chat_id":"oc_chat",
+				"message_type":"image",
+				"content":"{\"image_key\":\"img_key_1\"}"
+			}
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if vision.question != "请描述这张图片里的内容。" || vision.contentType != "image/png" || string(vision.image) != "png-bytes" {
+		t.Fatalf("vision = question %q contentType %q image %q", vision.question, vision.contentType, string(vision.image))
+	}
+	replyBody := <-replyBodies
+	if !strings.Contains(replyBody, `图里有一只杯子。`) {
+		t.Fatalf("reply body = %s, want vision answer", replyBody)
+	}
+}
+
+type capturingVisionAnalyzer struct {
+	answer      string
+	question    string
+	contentType string
+	image       []byte
+}
+
+func (f *capturingVisionAnalyzer) Analyze(ctx context.Context, question string, contentType string, image []byte) (string, error) {
+	f.question = question
+	f.contentType = contentType
+	f.image = append([]byte(nil), image...)
+	return f.answer, nil
 }

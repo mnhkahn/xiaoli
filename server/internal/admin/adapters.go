@@ -615,6 +615,9 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 		logger.Infof("[lark] message ignored event_id=%s reason=bot_sender message=%s", callback.Header.EventID, event.Message.MessageID)
 		return nil
 	}
+	if event.Message.MessageType == "image" {
+		return s.handleLarkImageMessage(ctx, callback, event, senderID)
+	}
 	if event.Message.MessageType != "text" {
 		logger.Infof("[lark] message ignored event_id=%s reason=non_text message=%s message_type=%s", callback.Header.EventID, event.Message.MessageID, event.Message.MessageType)
 		return nil
@@ -669,6 +672,42 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 		return err
 	}
 	logger.Infof("[lark] message reply sent event_id=%s message=%s chat=%s", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID)
+	return nil
+}
+
+func (s *AdminServer) handleLarkImageMessage(ctx context.Context, callback larkCallback, event larkMessageEvent, senderID string) error {
+	if event.Message.ChatID == "" || senderID == "" || event.Message.MessageID == "" {
+		return fmt.Errorf("image message event missing chat, sender, or message id")
+	}
+	imageKey := event.ImageKey()
+	if imageKey == "" {
+		logger.Infof("[lark] image message ignored event_id=%s reason=missing_image_key message=%s", callback.Header.EventID, event.Message.MessageID)
+		return nil
+	}
+	if s.deviceHub == nil || s.deviceHub.vision == nil {
+		return fmt.Errorf("vision model is not configured")
+	}
+	lc := s.newLarkClient()
+	formatter := agentlark.NewReplyFormatter(lc, event.Message.MessageID)
+	contentType, body, err := lc.DownloadImage(ctx, event.Message.MessageID, imageKey)
+	if err != nil {
+		return err
+	}
+	if len(body) > 2*1024*1024 {
+		return fmt.Errorf("lark image too large: %d bytes", len(body))
+	}
+	answer, err := s.deviceHub.vision.Analyze(ctx, "请描述这张图片里的内容。", contentType, body)
+	if err != nil {
+		return fmt.Errorf("vision model failed: %w", err)
+	}
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		answer = "我没有看清这张图片。"
+	}
+	if err := formatter.Send(ctx, answer); err != nil {
+		return err
+	}
+	logger.Infof("[lark] image reply sent event_id=%s message=%s chat=%s bytes=%d", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID, len(body))
 	return nil
 }
 

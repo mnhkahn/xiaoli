@@ -81,6 +81,13 @@ func (e MessageEvent) Text() string {
 	return ExtractText(e.Message.Content)
 }
 
+func (e MessageEvent) ImageKey() string {
+	if e.Message.MessageType != "image" {
+		return ""
+	}
+	return ExtractImageKey(e.Message.Content)
+}
+
 type TextContent struct {
 	Text string `json:"text"`
 }
@@ -91,4 +98,16 @@ func ExtractText(content string) string {
 		return ""
 	}
 	return strings.TrimSpace(payload.Text)
+}
+
+type ImageContent struct {
+	ImageKey string `json:"image_key"`
+}
+
+func ExtractImageKey(content string) string {
+	var payload ImageContent
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.ImageKey)
 }

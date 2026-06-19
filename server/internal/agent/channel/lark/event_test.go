@@ -49,3 +49,18 @@ func TestMessageEventSenderIDAndText(t *testing.T) {
 		t.Fatalf("Text() = %q, want empty for non-text", got)
 	}
 }
+
+func TestMessageEventImageKey(t *testing.T) {
+	var event MessageEvent
+	event.Message.MessageType = "image"
+	event.Message.Content = `{"image_key":" img_v3_abc "}`
+
+	if got := event.ImageKey(); got != "img_v3_abc" {
+		t.Fatalf("ImageKey() = %q, want image key", got)
+	}
+
+	event.Message.MessageType = "text"
+	if got := event.ImageKey(); got != "" {
+		t.Fatalf("ImageKey() = %q, want empty for non-image", got)
+	}
+}

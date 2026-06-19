@@ -4,6 +4,7 @@ import "context"
 
 type ReplySender interface {
 	ReplyText(ctx context.Context, messageID string, text string) error
+	ReplyPost(ctx context.Context, messageID string, markdown string) error
 }
 
 type ReplyFormatter struct {
@@ -20,5 +21,5 @@ func (f ReplyFormatter) Instruction() string {
 }
 
 func (f ReplyFormatter) Send(ctx context.Context, reply string) error {
-	return f.sender.ReplyText(ctx, f.messageID, reply)
+	return f.sender.ReplyPost(ctx, f.messageID, reply)
 }
