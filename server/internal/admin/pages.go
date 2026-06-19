@@ -475,7 +475,7 @@ func memoryHTML(user map[string]any) string {
     .memory-picker .list { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); max-height: 220px; }
     .memory-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
     .panel { display: grid; gap: 10px; min-width: 0; }
-    .list { display: grid; gap: 8px; max-height: 72vh; overflow: auto; padding-right: 4px; }
+    .list { display: grid; gap: 8px; max-height: 72vh; overflow: auto; padding-right: 4px; min-width: 0; }
     .item { text-align: left; display: grid; gap: 4px; border-radius: 6px; }
     .item.active { border-color: #0f766e; box-shadow: 0 0 0 1px #0f766e inset; }
     .message { width: 100%; border: 1px solid #d9dee7; border-left-width: 4px; border-radius: 6px; padding: 10px 12px; display: block; text-align: left; overflow: hidden; color: #17202a; background: #fff; -webkit-appearance: none; appearance: none; }
@@ -483,7 +483,7 @@ func memoryHTML(user map[string]any) string {
     .message.assistant { border-left-color: #0f766e; background: #ecfdf5; }
     .message.tool { border-left-color: #9333ea; background: #faf5ff; }
     .message.active { outline: 2px solid #17202a; }
-    .message-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; width: 100%; gap: 8px; font-size: 12px; color: #667085; }
+    .message-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; width: 100%; gap: 8px; font-size: 12px; color: #667085; overflow: hidden; }
     .message-label, .message-finish { white-space: nowrap; }
     .message-preview { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #17202a; font-size: 13px; }
     .stats { display: flex; gap: 8px; flex-wrap: wrap; }
