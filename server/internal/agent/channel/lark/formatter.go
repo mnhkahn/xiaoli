@@ -33,7 +33,7 @@ func postTitle(userText string) string {
 	title = strings.ReplaceAll(title, "\n", " ")
 	title = strings.ReplaceAll(title, "\r", "")
 	title = strings.TrimSpace(title)
-	if title == "" {
+if title == "" {
 		return "小李回复"
 	}
 	if utf8.RuneCountInString(title) > 20 {

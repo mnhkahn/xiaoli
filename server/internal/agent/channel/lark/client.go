@@ -119,11 +119,9 @@ func markdownToPostContent(title string, markdown string) map[string]any {
 		content = append(content, parsePostLine(strings.TrimSpace(markdown)))
 	}
 	return map[string]any{
-		"post": map[string]any{
-			"zh_cn": map[string]any{
-				"title":   title,
-				"content": content,
-			},
+		"zh_cn": map[string]any{
+			"title":   title,
+			"content": content,
 		},
 	}
 }

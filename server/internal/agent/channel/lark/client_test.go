@@ -89,17 +89,15 @@ func TestReplyPostSendsLarkPostMessage(t *testing.T) {
 		t.Fatalf("content = %s, want post text items", contentRaw)
 	}
 	var parsed struct {
-		Post struct {
-			ZhCN struct {
-				Title string `json:"title"`
-			} `json:"zh_cn"`
-		} `json:"post"`
+		ZhCN struct {
+			Title string `json:"title"`
+		} `json:"zh_cn"`
 	}
 	if err := json.Unmarshal([]byte(contentRaw), &parsed); err != nil {
 		t.Fatalf("content is not valid post JSON: %v", err)
 	}
-	if parsed.Post.ZhCN.Title != "技能列表" {
-		t.Fatalf("title = %q, want 技能列表", parsed.Post.ZhCN.Title)
+	if parsed.ZhCN.Title != "技能列表" {
+		t.Fatalf("title = %q, want 技能列表", parsed.ZhCN.Title)
 	}
 }
 

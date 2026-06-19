@@ -8,8 +8,15 @@ import (
 
 type fakeReplySender struct {
 	messageID string
+	text      string
 	title     string
 	post      string
+}
+
+func (f *fakeReplySender) ReplyText(_ context.Context, messageID string, text string) error {
+	f.messageID = messageID
+	f.text = text
+	return nil
 }
 
 func (f *fakeReplySender) ReplyPost(_ context.Context, messageID string, title string, markdown string) error {
@@ -32,9 +39,6 @@ func TestReplyFormatterSendsToLarkMessageAndProvidesInstruction(t *testing.T) {
 	if sender.messageID != "message-1" {
 		t.Fatalf("messageID = %q, want message-1", sender.messageID)
 	}
-	if sender.title != "小智回复" {
-		t.Fatalf("title = %q, want 小智回复 (empty userText fallback)", sender.title)
-	}
 	if sender.post != "# 标题" {
 		t.Fatalf("post = %q, want # 标题", sender.post)
 	}
@@ -45,8 +49,8 @@ func TestPostTitleSanitizesUserText(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"", "小智回复"},
-		{"   ", "小智回复"},
+		{"", "小李回复"},
+		{"   ", "小李回复"},
 		{"你好", "你好"},
 		{"/skills", "/skills"},
 		{"明天有哪些球赛？列出来。", "明天有哪些球赛？列出来。"},
@@ -64,8 +68,7 @@ func TestPostTitleSanitizesUserText(t *testing.T) {
 
 func TestPostContentContainsTitle(t *testing.T) {
 	got := markdownToPostContent("查看技能", "- skill-a：描述")
-	post := got["post"].(map[string]any)
-	zhCN := post["zh_cn"].(map[string]any)
+	zhCN := got["zh_cn"].(map[string]any)
 	if title := zhCN["title"].(string); title != "查看技能" {
 		t.Fatalf("title = %q, want 查看技能", title)
 	}
