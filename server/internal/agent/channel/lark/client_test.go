@@ -75,7 +75,7 @@ func TestReplyPostSendsLarkPostMessage(t *testing.T) {
 		})},
 	})
 
-	if err := c.ReplyPost(context.Background(), "om_1", "可用 Skills：\n- architect：架构咨询\n- cnote：云端笔记"); err != nil {
+	if err := c.ReplyPost(context.Background(), "om_1", "技能列表", "可用 Skills：\n- architect：架构咨询\n- cnote：云端笔记"); err != nil {
 		t.Fatalf("ReplyPost() error = %v", err)
 	}
 	if reply["msg_type"] != "post" {
@@ -87,6 +87,48 @@ func TestReplyPostSendsLarkPostMessage(t *testing.T) {
 	}
 	if !strings.Contains(contentRaw, `"tag":"text"`) || !strings.Contains(contentRaw, `architect`) {
 		t.Fatalf("content = %s, want post text items", contentRaw)
+	}
+	var parsed struct {
+		Post struct {
+			ZhCN struct {
+				Title string `json:"title"`
+			} `json:"zh_cn"`
+		} `json:"post"`
+	}
+	if err := json.Unmarshal([]byte(contentRaw), &parsed); err != nil {
+		t.Fatalf("content is not valid post JSON: %v", err)
+	}
+	if parsed.Post.ZhCN.Title != "技能列表" {
+		t.Fatalf("title = %q, want 技能列表", parsed.Post.ZhCN.Title)
+	}
+}
+
+func TestParseInlineHandlesEdgeCases(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"这是 **未闭合加粗", "这是 **未闭合加粗"},
+		{"这是 **闭合加粗** 好了", "这是 闭合加粗 好了"},
+		{"看这个 [链接", "看这个 [链接"},
+		{"[正常链接](https://x.com) 文本", "正常链接(https://x.com) 文本"},
+		{"开头加粗**中间有**不完整**", "开头加粗中间有不完整**"},
+		{"空**加粗**结尾", "空加粗结尾"},
+	}
+	for _, tt := range tests {
+		items := parseInline(tt.input)
+		var got string
+		for _, item := range items {
+			if text, ok := item["text"]; ok {
+				got += text
+			}
+			if href, ok := item["href"]; ok {
+				got += "(" + href + ")"
+			}
+		}
+		if got != tt.want {
+			t.Errorf("parseInline(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 

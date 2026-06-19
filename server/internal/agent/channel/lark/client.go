@@ -43,8 +43,8 @@ func (c *Client) ReplyText(ctx context.Context, messageID string, text string) e
 	return c.reply(ctx, messageID, "text", string(content))
 }
 
-func (c *Client) ReplyPost(ctx context.Context, messageID string, markdown string) error {
-	content, err := json.Marshal(markdownToPostContent(markdown))
+func (c *Client) ReplyPost(ctx context.Context, messageID string, title string, markdown string) error {
+	content, err := json.Marshal(markdownToPostContent(title, markdown))
 	if err != nil {
 		return err
 	}
@@ -89,7 +89,10 @@ func (c *Client) reply(ctx context.Context, messageID string, msgType string, co
 	return nil
 }
 
-func markdownToPostContent(markdown string) map[string]any {
+func markdownToPostContent(title string, markdown string) map[string]any {
+	if title == "" {
+		title = "消息"
+	}
 	lines := strings.Split(strings.TrimSpace(markdown), "\n")
 	var content [][]map[string]string
 	for _, raw := range lines {
@@ -110,19 +113,81 @@ func markdownToPostContent(markdown string) map[string]any {
 		if text == "" {
 			continue
 		}
-		content = append(content, []map[string]string{{"tag": "text", "text": text}})
+		content = append(content, parsePostLine(text))
 	}
 	if len(content) == 0 {
-		content = append(content, []map[string]string{{"tag": "text", "text": strings.TrimSpace(markdown)}})
+		content = append(content, parsePostLine(strings.TrimSpace(markdown)))
 	}
 	return map[string]any{
 		"post": map[string]any{
 			"zh_cn": map[string]any{
-				"title":   "",
+				"title":   title,
 				"content": content,
 			},
 		},
 	}
+}
+
+func parsePostLine(text string) []map[string]string {
+	items := parseInline(text)
+	if len(items) > 0 {
+		return items
+	}
+	return []map[string]string{{"tag": "text", "text": text}}
+}
+
+func parseInline(text string) []map[string]string {
+	var items []map[string]string
+	pos := 0
+	for pos < len(text) {
+		// bold **text** → text tag only (Lark post doesn't support bold tag)
+		if strings.HasPrefix(text[pos:], "**") {
+			end := strings.Index(text[pos+2:], "**")
+			if end >= 0 {
+				content := text[pos+2 : pos+2+end]
+				if content != "" {
+					items = append(items, map[string]string{"tag": "text", "text": content})
+				}
+				pos += 2 + end + 2
+				continue
+			}
+			// unclosed ** → plain text
+			start := pos
+			pos += 2
+			items = append(items, map[string]string{"tag": "text", "text": text[start:pos]})
+			continue
+		}
+		// link [text](url)
+		if text[pos] == '[' {
+			closeB := strings.Index(text[pos+1:], "](")
+			if closeB >= 0 {
+				rest := text[pos+1+closeB+2:]
+				closeP := strings.Index(rest, ")")
+				if closeP >= 0 {
+					linkText := text[pos+1 : pos+1+closeB]
+					url := rest[:closeP]
+					if linkText != "" && url != "" {
+						items = append(items, map[string]string{"tag": "a", "text": linkText, "href": url})
+						pos += 1 + closeB + 2 + closeP + 1
+						continue
+					}
+				}
+			}
+		}
+		// plain text run
+		start := pos
+		for pos < len(text) && !strings.HasPrefix(text[pos:], "**") && text[pos] != '[' {
+			pos++
+		}
+		if pos > start {
+			items = append(items, map[string]string{"tag": "text", "text": text[start:pos]})
+		}
+		if pos == start {
+			items = append(items, map[string]string{"tag": "text", "text": text[pos : pos+1]})
+			pos++
+		}
+	}
+	return items
 }
 
 func (c *Client) DownloadImage(ctx context.Context, messageID string, imageKey string) (string, []byte, error) {

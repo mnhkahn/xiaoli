@@ -1,19 +1,23 @@
 package lark
 
-import "context"
+import (
+	"context"
+	"strings"
+	"unicode/utf8"
+)
 
 type ReplySender interface {
-	ReplyText(ctx context.Context, messageID string, text string) error
-	ReplyPost(ctx context.Context, messageID string, markdown string) error
+	ReplyPost(ctx context.Context, messageID string, title string, markdown string) error
 }
 
 type ReplyFormatter struct {
 	sender    ReplySender
 	messageID string
+	userText  string
 }
 
-func NewReplyFormatter(sender ReplySender, messageID string) ReplyFormatter {
-	return ReplyFormatter{sender: sender, messageID: messageID}
+func NewReplyFormatter(sender ReplySender, messageID string, userText string) ReplyFormatter {
+	return ReplyFormatter{sender: sender, messageID: messageID, userText: userText}
 }
 
 func (f ReplyFormatter) Instruction() string {
@@ -21,5 +25,19 @@ func (f ReplyFormatter) Instruction() string {
 }
 
 func (f ReplyFormatter) Send(ctx context.Context, reply string) error {
-	return f.sender.ReplyPost(ctx, f.messageID, reply)
+	return f.sender.ReplyPost(ctx, f.messageID, postTitle(f.userText), reply)
+}
+
+func postTitle(userText string) string {
+	title := strings.TrimSpace(userText)
+	title = strings.ReplaceAll(title, "\n", " ")
+	title = strings.ReplaceAll(title, "\r", "")
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "小李回复"
+	}
+	if utf8.RuneCountInString(title) > 20 {
+		title = string([]rune(title)[:20]) + "…"
+	}
+	return title
 }

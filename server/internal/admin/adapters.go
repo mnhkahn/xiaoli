@@ -631,7 +631,7 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 		return fmt.Errorf("message event missing chat, sender, or message id")
 	}
 	if reply, ok := s.handleBuiltinCommand(ctx, ChannelLarkText, text); ok {
-		formatter := agentlark.NewReplyFormatter(s.newLarkClient(), event.Message.MessageID)
+		formatter := agentlark.NewReplyFormatter(s.newLarkClient(), event.Message.MessageID, text)
 		if err := formatter.Send(ctx, reply); err != nil {
 			return err
 		}
@@ -643,7 +643,7 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 	}
 
 	lc := s.newLarkClient()
-	formatter := agentlark.NewReplyFormatter(lc, event.Message.MessageID)
+	formatter := agentlark.NewReplyFormatter(lc, event.Message.MessageID, text)
 	emojiType := pickLarkReaction()
 	reactionID, err := lc.AddReaction(ctx, event.Message.MessageID, emojiType)
 	if err != nil {
@@ -688,7 +688,7 @@ func (s *AdminServer) handleLarkImageMessage(ctx context.Context, callback larkC
 		return fmt.Errorf("vision model is not configured")
 	}
 	lc := s.newLarkClient()
-	formatter := agentlark.NewReplyFormatter(lc, event.Message.MessageID)
+	formatter := agentlark.NewReplyFormatter(lc, event.Message.MessageID, "")
 	contentType, body, err := lc.DownloadImage(ctx, event.Message.MessageID, imageKey)
 	if err != nil {
 		return err
