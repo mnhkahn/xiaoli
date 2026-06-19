@@ -8,6 +8,12 @@
           "base_url": "https://api.siliconflow.cn/v1/chat/completions",
           "model": "Qwen/Qwen3-8B",
           "api_key_env": "SILICONFLOW_API_KEY"
+        },
+        "nvidia:deepseek-v4-pro": {
+          "name": "NVIDIA DeepSeek V4 Pro",
+          "base_url": "https://integrate.api.nvidia.com/v1",
+          "model": "deepseek-ai/deepseek-v4-pro",
+          "api_key_env": "OPENAI_API_KEY"
         }
       }
     },
