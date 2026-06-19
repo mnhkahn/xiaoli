@@ -13,7 +13,7 @@
           "name": "NVIDIA DeepSeek V4 Pro",
           "base_url": "https://integrate.api.nvidia.com/v1",
           "model": "deepseek-ai/deepseek-v4-pro",
-          "api_key_env": "OPENAI_API_KEY"
+          "api_key_env": "NVIDIA_API_KEY"
         }
       }
     },
