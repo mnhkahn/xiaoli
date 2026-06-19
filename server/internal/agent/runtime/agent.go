@@ -99,6 +99,17 @@ func NewAgent(cfg Config) *Agent {
 				MaxOutputBytes: cfg.SkillExecMaxOutputBytes,
 				GlobalBinDirs:  cfg.SkillExecGlobalBinDirs,
 			})
+			if recorder != nil {
+				orig := buildSkillContent
+				buildSkillContent = func(ctx context.Context, skill einoskill.Skill, rawArgs string) (string, error) {
+					recorder.RecordToolCall("skill")
+					result, err := orig(ctx, skill, rawArgs)
+					if err != nil {
+						recorder.RecordToolError("skill")
+					}
+					return result, err
+				}
+			}
 			mw, err := einoskill.NewMiddleware(ctx, &einoskill.Config{
 				Backend:               backend,
 				UseChinese:            true,
@@ -454,15 +465,21 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 
 func (a *Agent) toolsForChat(_ context.Context, _ string, deviceID string) []tool.BaseTool {
 	var einoTools []tool.BaseTool
-	einoTools = append(einoTools, agentbuiltin.NewTools(a.cfg.BuiltinWebFetchEnabled)...)
-	einoTools = append(einoTools, agentbuiltin.NewWebSearchTool(""))
+	for _, t := range agentbuiltin.NewTools(a.cfg.BuiltinWebFetchEnabled) {
+		einoTools = append(einoTools, a.WrapTool(t, "builtin"))
+	}
+	einoTools = append(einoTools, a.WrapTool(agentbuiltin.NewWebSearchTool(""), "builtin"))
 	if a.hub != nil && deviceID != "" {
 		if rawTools, ok := a.hub.ToolSnapshot(deviceID); ok {
-			einoTools = append(einoTools, agentmcp.NewDeviceTools(deviceID, rawTools, a.hub)...)
+			for _, t := range agentmcp.NewDeviceTools(deviceID, rawTools, a.hub) {
+				einoTools = append(einoTools, a.WrapTool(t, "mcp"))
+			}
 		}
 	}
 	for _, tools := range a.extToolSets {
-		einoTools = append(einoTools, tools...)
+		for _, t := range tools {
+			einoTools = append(einoTools, a.WrapTool(t, "mcp"))
+		}
 	}
 	return einoTools
 }
