@@ -75,8 +75,8 @@ func (d adminSlashDeps) ListSkills(ctx context.Context) ([]slash.SkillInfo, erro
 
 func (d adminSlashDeps) ModelInfo() slash.ModelInfo {
 	llm := d.s.cfg.GoLLMModel
-	if d.s.agent != nil && d.s.agent.currentLLMModel() != "" {
-		llm = d.s.agent.currentLLMModel()
+	if d.s.agent != nil && d.s.agent.CurrentLLMModel() != "" {
+		llm = d.s.agent.CurrentLLMModel()
 	}
 	return slash.ModelInfo{
 		LLM:  llm,
@@ -94,7 +94,7 @@ func (d adminSlashDeps) ListModels(role agentmodel.Role) []slash.ModelOption {
 		}
 		return agentmodel.OptionsFromIDs(agentmodel.RoleLLM, models)
 	}
-	return d.s.agent.listLLMModels()
+	return d.s.agent.ListLLMModels()
 }
 
 func (d adminSlashDeps) UseModel(role agentmodel.Role, id string) error {
@@ -104,7 +104,7 @@ func (d adminSlashDeps) UseModel(role agentmodel.Role, id string) error {
 	if d.s.agent == nil {
 		return fmt.Errorf("LLM agent is not configured")
 	}
-	return d.s.agent.useLLMModel(id)
+	return d.s.agent.UseLLMModel(id)
 }
 
 func (d adminSlashDeps) ListChannels(ctx context.Context) ([]agentchannel.Info, error) {

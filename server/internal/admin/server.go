@@ -90,8 +90,8 @@ func NewServer(cfg Config) *AdminServer {
 	asr := newOpenAITranscriber(cfg)
 	agent := newEinoAgent(cfg)
 	var memory memoryReader
-	if agent != nil && agent.memory != nil {
-		memory = agent.memory
+	if agent != nil && agent.MemoryReader() != nil {
+		memory = agent.MemoryReader()
 	} else {
 		memory = newRedisMemory(cfg)
 	}
@@ -99,7 +99,7 @@ func NewServer(cfg Config) *AdminServer {
 	tts := newHTTPSpeechSynthesizer(cfg, nil)
 	deviceHub := NewDeviceHub(cfg, stream, audioStore, asr, agent, vision, tts)
 	if agent != nil {
-		agent.SetHub(deviceHub)
+		agent.SetDeviceTools(deviceHub)
 	}
 	conversation := newConversationPipeline(agent, deviceHub)
 	deviceHub.setConversation(conversation)

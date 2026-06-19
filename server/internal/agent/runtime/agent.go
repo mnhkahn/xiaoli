@@ -1,0 +1,354 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+
+	"github.com/cloudwego/eino-ext/components/model/openai"
+	"github.com/cloudwego/eino/adk"
+	einoskill "github.com/cloudwego/eino/adk/middlewares/skill"
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
+	"github.com/cloudwego/eino/schema"
+	"github.com/mnhkahn/gogogo/logger"
+
+	agentmodel "xiaoli/server/internal/agent/model"
+	agentmcp "xiaoli/server/internal/agent/tool/mcp"
+	agentskill "xiaoli/server/internal/agent/tool/skill"
+)
+
+type DeviceTools interface {
+	agentmcp.DeviceToolCaller
+	ToolSnapshot(deviceID string) ([]map[string]any, bool)
+}
+
+type Agent struct {
+	modelMu       sync.Mutex
+	chatModels    map[string]*openai.ChatModel
+	modelSelector *agentmodel.Selector
+	memory        *Memory
+	cfg           Config
+	hub           DeviceTools
+	extMCPs       []*agentmcp.Client
+	extToolSets   [][]tool.BaseTool
+	skillMW       adk.ChatModelAgentMiddleware
+}
+
+func NewAgent(cfg Config) *Agent {
+	if cfg.LLMAPIKey == "" {
+		return nil
+	}
+	baseURL := strings.TrimSuffix(cfg.LLMURL, "/chat/completions")
+	baseURL = strings.TrimRight(baseURL, "/")
+
+	ctx := context.Background()
+	selector := newModelSelector(cfg)
+	memory := NewRedisMemory(cfg)
+
+	var extMCPs []*agentmcp.Client
+	var extToolSets [][]tool.BaseTool
+	for _, mcpURL := range cfg.ExternalMCPURLs {
+		mcpURL = strings.TrimSpace(mcpURL)
+		if mcpURL == "" {
+			continue
+		}
+		client, err := agentmcp.NewClient(ctx, mcpURL)
+		if err != nil {
+			logger.Infof("ext MCP connect failed %s: %v", mcpURL, err)
+			continue
+		}
+		tools, err := client.ListTools(ctx)
+		if err != nil {
+			logger.Infof("ext MCP list tools failed %s: %v", mcpURL, err)
+			continue
+		}
+		extMCPs = append(extMCPs, client)
+		extToolSets = append(extToolSets, tools)
+		logger.Infof("ext MCP ready: %s tools=%d", mcpURL, len(tools))
+	}
+
+	var skillMW adk.ChatModelAgentMiddleware
+	if len(cfg.SkillRoots) > 0 {
+		backend, err := agentskill.NewFileBackend(agentskill.BackendConfig{
+			Roots:    cfg.SkillRoots,
+			Enabled:  cfg.EnabledSkills,
+			MaxBytes: cfg.SkillMaxBytes,
+		})
+		if err != nil {
+			logger.Infof("skill backend init failed: %v", err)
+		} else if backend.Count() > 0 {
+			buildSkillContent := agentskill.NewContentBuilder(agentskill.ExecConfig{
+				Timeout:        cfg.SkillExecTimeout,
+				MaxOutputBytes: cfg.SkillExecMaxOutputBytes,
+				GlobalBinDirs:  cfg.SkillExecGlobalBinDirs,
+			})
+			mw, err := einoskill.NewMiddleware(ctx, &einoskill.Config{
+				Backend:               backend,
+				UseChinese:            true,
+				CustomToolDescription: agentskill.BuildToolDescription,
+				CustomToolParams:      agentskill.BuildToolParams,
+				BuildContent:          buildSkillContent,
+			})
+			if err != nil {
+				logger.Infof("skill middleware init failed: %v", err)
+			} else {
+				skillMW = mw
+				logger.Infof("skill backend ready: roots=%v skills=%d exec_bins=%v", cfg.SkillRoots, backend.Count(), cfg.SkillExecGlobalBinDirs)
+			}
+		} else {
+			logger.Infof("skill backend empty: roots=%v", cfg.SkillRoots)
+		}
+	}
+
+	logger.Infof("eino agent ready: model=%s base=%s redis=%v extMCPs=%d skills=%v", cfg.LLMModel, baseURL, memory != nil, len(extMCPs), skillMW != nil)
+	return &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, skillMW: skillMW}
+}
+
+func newModelSelector(cfg Config) *agentmodel.Selector {
+	models := cfg.LLMModels
+	if len(models) == 0 {
+		models = []string{cfg.LLMModel}
+	}
+	return agentmodel.NewSelector(
+		map[agentmodel.Role]string{
+			agentmodel.RoleLLM:  cfg.LLMModel,
+			agentmodel.RoleVLLM: cfg.VLLMModel,
+			agentmodel.RoleASR:  cfg.ASRModel,
+			agentmodel.RoleTTS:  cfg.TTSModel,
+		},
+		map[agentmodel.Role][]agentmodel.Option{
+			agentmodel.RoleLLM: agentmodel.OptionsFromIDs(agentmodel.RoleLLM, models),
+		},
+	)
+}
+
+func (a *Agent) MemoryReader() MemoryReader {
+	if a == nil || a.memory == nil {
+		return nil
+	}
+	return a.memory
+}
+
+func (a *Agent) CurrentLLMModel() string {
+	if a == nil || a.modelSelector == nil {
+		return ""
+	}
+	return a.modelSelector.Current(agentmodel.RoleLLM)
+}
+
+func (a *Agent) UseLLMModel(id string) error {
+	if a == nil || a.modelSelector == nil {
+		return fmt.Errorf("model selector is not configured")
+	}
+	return a.modelSelector.Use(agentmodel.RoleLLM, id)
+}
+
+func (a *Agent) ListLLMModels() []agentmodel.Option {
+	if a == nil || a.modelSelector == nil {
+		return nil
+	}
+	return a.modelSelector.List(agentmodel.RoleLLM)
+}
+
+func (a *Agent) chatModel(ctx context.Context) (*openai.ChatModel, error) {
+	modelID := a.CurrentLLMModel()
+	if strings.TrimSpace(modelID) == "" {
+		return nil, fmt.Errorf("LLM model is not configured")
+	}
+	a.modelMu.Lock()
+	defer a.modelMu.Unlock()
+	if model := a.chatModels[modelID]; model != nil {
+		return model, nil
+	}
+	baseURL := strings.TrimSuffix(a.cfg.LLMURL, "/chat/completions")
+	baseURL = strings.TrimRight(baseURL, "/")
+	temp := float32(0.2)
+	maxTokens := 180
+	model, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+		BaseURL:     baseURL,
+		APIKey:      a.cfg.LLMAPIKey,
+		Model:       modelID,
+		Timeout:     a.cfg.LLMTimeout,
+		Temperature: &temp,
+		MaxTokens:   &maxTokens,
+	})
+	if err != nil {
+		return nil, err
+	}
+	a.chatModels[modelID] = model
+	return model, nil
+}
+
+func (a *Agent) SetDeviceTools(hub DeviceTools) {
+	a.hub = hub
+}
+
+func (a *Agent) Chat(ctx context.Context, deviceID string, userText string) (string, error) {
+	return a.ChatWithContext(ctx, deviceID, deviceID, userText)
+}
+
+type ChatOptions struct {
+	MaxIterations int
+}
+
+func (a *Agent) ChatWithContext(ctx context.Context, conversationID string, deviceID string, userText string) (string, error) {
+	return a.ChatWithContextOptions(ctx, conversationID, deviceID, userText, ChatOptions{})
+}
+
+func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID string, deviceID string, userText string, opts ChatOptions) (string, error) {
+	if conversationID == "" {
+		conversationID = deviceID
+	}
+	logger.Infof("Agent.Chat called: conversation=%s device=%s text=%q", conversationID, deviceID, userText)
+
+	history := a.memory.Load(ctx, conversationID)
+	msgs := make([]*schema.Message, 0, len(history)+2)
+	if a.cfg.LLMPrompt != "" {
+		msgs = append(msgs, schema.SystemMessage(a.cfg.LLMPrompt))
+	}
+	msgs = append(msgs, history...)
+	msgs = append(msgs, schema.UserMessage(userText))
+
+	var einoTools []tool.BaseTool
+	if a.hub != nil && deviceID != "" {
+		if rawTools, ok := a.hub.ToolSnapshot(deviceID); ok {
+			einoTools = agentmcp.NewDeviceTools(deviceID, rawTools, a.hub)
+		}
+	}
+	for _, tools := range a.extToolSets {
+		einoTools = append(einoTools, tools...)
+	}
+
+	chatModel, err := a.chatModel(ctx)
+	if err != nil {
+		return "", fmt.Errorf("create chat model: %w", err)
+	}
+	maxIterations := opts.MaxIterations
+	if maxIterations <= 0 {
+		maxIterations = 10
+	}
+	agentCfg := &adk.ChatModelAgentConfig{
+		Name:          "xiaoli",
+		Instruction:   "",
+		Model:         chatModel,
+		MaxIterations: maxIterations,
+	}
+	if a.skillMW != nil {
+		agentCfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
+	}
+	if len(einoTools) > 0 {
+		agentCfg.ToolsConfig = adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: einoTools,
+			},
+		}
+	}
+
+	agent, err := adk.NewChatModelAgent(ctx, agentCfg)
+	if err != nil {
+		return "", fmt.Errorf("create agent: %w", err)
+	}
+
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{
+		Agent: agent,
+	})
+
+	iter := runner.Run(ctx, msgs)
+
+	var result *schema.Message
+	eventCount := 0
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		eventCount++
+		if event.Err != nil {
+			logger.Infof("Agent.Chat event error: %v", event.Err)
+			return "", fmt.Errorf("agent error: %w", event.Err)
+		}
+		logger.Infof("Agent.Chat event[%d]: output=%v", eventCount, event.Output != nil)
+		if event.Output != nil && event.Output.MessageOutput != nil &&
+			event.Output.MessageOutput.Message != nil &&
+			event.Output.MessageOutput.Role == schema.Assistant {
+			result = event.Output.MessageOutput.Message
+			logger.Infof("Agent.Chat assistant: %q", result.Content)
+		}
+	}
+	logger.Infof("Agent.Chat done: events=%d hasResult=%v", eventCount, result != nil)
+	if result == nil || result.Content == "" {
+		return "", fmt.Errorf("agent returned empty response")
+	}
+
+	updated := append(history,
+		schema.UserMessage(userText),
+		result,
+	)
+	a.memory.Save(ctx, conversationID, updated)
+
+	return result.Content, nil
+}
+
+func (a *Agent) Generate(ctx context.Context, system, user string) (string, error) {
+	msgs := make([]*schema.Message, 0, 2)
+	if system != "" {
+		msgs = append(msgs, schema.SystemMessage(system))
+	}
+	msgs = append(msgs, schema.UserMessage(user))
+
+	var einoTools []tool.BaseTool
+	for _, tools := range a.extToolSets {
+		einoTools = append(einoTools, tools...)
+	}
+
+	chatModel, err := a.chatModel(ctx)
+	if err != nil {
+		return "", fmt.Errorf("create chat model: %w", err)
+	}
+	cfg := &adk.ChatModelAgentConfig{
+		Name:          "xiaoli",
+		Model:         chatModel,
+		MaxIterations: 10,
+	}
+	if a.skillMW != nil {
+		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
+	}
+	if len(einoTools) > 0 {
+		cfg.ToolsConfig = adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: einoTools,
+			},
+		}
+	}
+
+	agent, err := adk.NewChatModelAgent(ctx, cfg)
+	if err != nil {
+		return "", fmt.Errorf("create agent: %w", err)
+	}
+
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
+	iter := runner.Run(ctx, msgs)
+
+	var result string
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event.Err != nil {
+			logger.Infof("Agent.Generate event error: %v", event.Err)
+			return "", fmt.Errorf("agent error: %w", event.Err)
+		}
+		if event.Output != nil && event.Output.MessageOutput != nil &&
+			event.Output.MessageOutput.Message != nil &&
+			event.Output.MessageOutput.Role == schema.Assistant {
+			result = event.Output.MessageOutput.Message.Content
+		}
+	}
+	if result == "" {
+		return "", fmt.Errorf("agent returned empty response")
+	}
+	return result, nil
+}
