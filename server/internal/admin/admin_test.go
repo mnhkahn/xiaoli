@@ -35,7 +35,8 @@ func testConfig() Config {
 func TestLangSmithReferencesRemovedFromServerRuntime(t *testing.T) {
 	for _, path := range []string{
 		"config.go",
-		"direct_ai.go",
+		"adapters.go",
+		"../agent/runtime/agent.go",
 		"../../.env.example",
 		"../../fly.toml",
 		"../../README.md",
