@@ -14,6 +14,12 @@
           "base_url": "https://integrate.api.nvidia.com/v1",
           "model": "deepseek-ai/deepseek-v4-pro",
           "api_key_env": "NVIDIA_API_KEY"
+        },
+        "openrouter:nemotron-3-super-120b-free": {
+          "name": "OpenRouter Nemotron 3 Super 120B Free",
+          "base_url": "https://openrouter.ai/api/v1",
+          "model": "nvidia/nemotron-3-super-120b-a12b:free",
+          "api_key_env": "OPENROUTER_API_KEY"
         }
       }
     },
