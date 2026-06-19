@@ -17,6 +17,7 @@ type Config struct {
 	RedisKeyPrefix          string
 	MemoryTTL               time.Duration
 	ExternalMCPURLs         []string
+	BuiltinWebFetchEnabled  bool
 	SkillRoots              []string
 	EnabledSkills           []string
 	SkillMaxBytes           int64

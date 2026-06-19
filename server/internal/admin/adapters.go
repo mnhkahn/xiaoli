@@ -76,6 +76,7 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		RedisKeyPrefix:          cfg.RedisKeyPrefix,
 		MemoryTTL:               cfg.MemoryTTL,
 		ExternalMCPURLs:         cfg.ExternalMCPURLs,
+		BuiltinWebFetchEnabled:  cfg.BuiltinWebFetchEnabled,
 		SkillRoots:              cfg.SkillRoots,
 		EnabledSkills:           cfg.EnabledSkills,
 		SkillMaxBytes:           cfg.SkillMaxBytes,

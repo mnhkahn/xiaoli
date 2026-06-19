@@ -15,6 +15,7 @@ import (
 	"github.com/mnhkahn/gogogo/logger"
 
 	agentmodel "xiaoli/server/internal/agent/model"
+	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
 	agentmcp "xiaoli/server/internal/agent/tool/mcp"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
 )
@@ -231,15 +232,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	msgs = append(msgs, history...)
 	msgs = append(msgs, schema.UserMessage(userText))
 
-	var einoTools []tool.BaseTool
-	if a.hub != nil && deviceID != "" {
-		if rawTools, ok := a.hub.ToolSnapshot(deviceID); ok {
-			einoTools = agentmcp.NewDeviceTools(deviceID, rawTools, a.hub)
-		}
-	}
-	for _, tools := range a.extToolSets {
-		einoTools = append(einoTools, tools...)
-	}
+	einoTools := a.toolsForChat(ctx, conversationID, deviceID)
 
 	chatModel, err := a.chatModel(ctx)
 	if err != nil {
@@ -318,10 +311,7 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 	}
 	msgs = append(msgs, schema.UserMessage(user))
 
-	var einoTools []tool.BaseTool
-	for _, tools := range a.extToolSets {
-		einoTools = append(einoTools, tools...)
-	}
+	einoTools := a.toolsForChat(ctx, "", "")
 
 	chatModel, err := a.chatModel(ctx)
 	if err != nil {
@@ -371,4 +361,18 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 		return "", fmt.Errorf("agent returned empty response")
 	}
 	return result, nil
+}
+
+func (a *Agent) toolsForChat(_ context.Context, _ string, deviceID string) []tool.BaseTool {
+	var einoTools []tool.BaseTool
+	einoTools = append(einoTools, agentbuiltin.NewTools(a.cfg.BuiltinWebFetchEnabled)...)
+	if a.hub != nil && deviceID != "" {
+		if rawTools, ok := a.hub.ToolSnapshot(deviceID); ok {
+			einoTools = append(einoTools, agentmcp.NewDeviceTools(deviceID, rawTools, a.hub)...)
+		}
+	}
+	for _, tools := range a.extToolSets {
+		einoTools = append(einoTools, tools...)
+	}
+	return einoTools
 }

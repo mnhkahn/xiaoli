@@ -55,6 +55,7 @@ type Config struct {
 	GoTTSTimeout             time.Duration
 	ExternalMCPURLs          []string
 	MCPConfigPath            string
+	BuiltinWebFetchEnabled   bool
 	SkillRoots               []string
 	EnabledSkills            []string
 	SkillMaxBytes            int64
@@ -170,6 +171,7 @@ func LoadConfig() Config {
 		GoTTSTimeout:             time.Duration(envInt("XIAOLI_GO_TTS_TIMEOUT_SECONDS", 30)) * time.Second,
 		MCPConfigPath:            settingsPath,
 		ExternalMCPURLs:          settings.mcpURLs(),
+		BuiltinWebFetchEnabled:   settings.webFetchEnabled(),
 		SkillRoots:               csv(env("XIAOLI_SKILL_ROOTS", "/opt/xiaoli/skills")),
 		EnabledSkills:            csv(env("XIAOLI_ENABLED_SKILLS", "*")),
 		SkillMaxBytes:            int64(envInt("XIAOLI_SKILL_MAX_BYTES", int(agentskill.DefaultMaxBytes))),
@@ -214,6 +216,15 @@ func defaultSettingsPaths() []string {
 type settingsConfig struct {
 	Models     settingsModels      `json:"models"`
 	MCPServers []settingsMCPServer `json:"mcp_servers"`
+	Tools      settingsTools       `json:"tools"`
+}
+
+type settingsTools struct {
+	WebFetch settingsToolSwitch `json:"webfetch"`
+}
+
+type settingsToolSwitch struct {
+	Enabled *bool `json:"enabled"`
 }
 
 type settingsModels struct {
@@ -283,6 +294,13 @@ func (s settingsConfig) mcpURLs() []string {
 		}
 	}
 	return urls
+}
+
+func (s settingsConfig) webFetchEnabled() bool {
+	if s.Tools.WebFetch.Enabled == nil {
+		return true
+	}
+	return *s.Tools.WebFetch.Enabled
 }
 
 func settingsAPIKey(envName string) string {

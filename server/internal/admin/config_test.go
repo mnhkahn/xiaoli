@@ -171,6 +171,30 @@ func TestLoadConfigReadsModelAndMCPSettingsFromJSON(t *testing.T) {
 	}
 }
 
+func TestLoadConfigReadsBuiltinWebFetchSettings(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := LoadConfig()
+	if !cfg.BuiltinWebFetchEnabled {
+		t.Fatal("BuiltinWebFetchEnabled = false, want default true")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{
+		"tools": {
+			"webfetch": {"enabled": false}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg = LoadConfig()
+	if cfg.BuiltinWebFetchEnabled {
+		t.Fatal("BuiltinWebFetchEnabled = true, want configured false")
+	}
+}
+
 func TestLoadConfigReadsLLMPromptFromAgentMarkdown(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
