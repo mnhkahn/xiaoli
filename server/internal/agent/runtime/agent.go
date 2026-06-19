@@ -102,10 +102,14 @@ func NewAgent(cfg Config) *Agent {
 			if recorder != nil {
 				orig := buildSkillContent
 				buildSkillContent = func(ctx context.Context, skill einoskill.Skill, rawArgs string) (string, error) {
-					recorder.RecordToolCall("skill")
+					skillName := skill.Name
+					if skillName == "" {
+						skillName = "skill"
+					}
+					recorder.RecordToolCall(skillName)
 					result, err := orig(ctx, skill, rawArgs)
 					if err != nil {
-						recorder.RecordToolError("skill")
+						recorder.RecordToolError(skillName)
 					}
 					return result, err
 				}

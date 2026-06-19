@@ -29,12 +29,12 @@ type Recorder struct {
 	mu      sync.Mutex
 	buckets map[string]map[string]*minuteBucket
 
-	builtinCalls  int64
-	builtinErrors int64
-	mcpCalls      int64
-	mcpErrors     int64
-	skillCalls    int64
-	skillErrors   int64
+	toolStats map[string]*toolStatsEntry
+}
+
+type toolStatsEntry struct {
+	Calls  int64
+	Errors int64
 }
 
 var (
@@ -45,7 +45,8 @@ var (
 func GlobalRecorder() *Recorder {
 	registerOnce.Do(func() {
 		globalRec = &Recorder{
-			buckets: make(map[string]map[string]*minuteBucket),
+			buckets:   make(map[string]map[string]*minuteBucket),
+			toolStats: make(map[string]*toolStatsEntry),
 		}
 		callbacks.AppendGlobalHandlers(globalRec.buildHandler())
 		go globalRec.cleanupLoop()
@@ -184,14 +185,20 @@ func (r *Recorder) Status() string {
 		}
 	}
 
-	if r.builtinCalls > 0 || r.mcpCalls > 0 || r.skillCalls > 0 {
+	if len(r.toolStats) > 0 {
 		if b.Len() > 0 {
 			b.WriteByte('\n')
 		}
 		b.WriteString("━━━ 工具调用统计（累计）━━━\n")
-		writeToolLine(&b, "内置工具", r.builtinCalls, r.builtinErrors)
-		writeToolLine(&b, "MCP 工具", r.mcpCalls, r.mcpErrors)
-		writeToolLine(&b, "Skills", r.skillCalls, r.skillErrors)
+		names := make([]string, 0, len(r.toolStats))
+		for name := range r.toolStats {
+			names = append(names, name)
+		}
+		sortStrings(names)
+		for _, name := range names {
+			entry := r.toolStats[name]
+			writeToolLine(&b, name, entry.Calls, entry.Errors)
+		}
 	}
 
 	if b.Len() == 0 {
@@ -208,36 +215,47 @@ func writeToolLine(b *strings.Builder, name string, calls, errors int64) {
 	fmt.Fprintf(b, "%s  %d 次  %d 次失败  %s\n", name, calls, errors, rate)
 }
 
-func (r *Recorder) RecordToolCall(category string) {
+func (r *Recorder) RecordToolCall(toolName string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	switch category {
-	case "builtin":
-		r.builtinCalls++
-	case "mcp":
-		r.mcpCalls++
-	case "skill":
-		r.skillCalls++
+	if r.toolStats == nil {
+		r.toolStats = make(map[string]*toolStatsEntry)
 	}
+	entry := r.toolStats[toolName]
+	if entry == nil {
+		entry = &toolStatsEntry{}
+		r.toolStats[toolName] = entry
+	}
+	entry.Calls++
 }
 
-func (r *Recorder) RecordToolError(category string) {
+func (r *Recorder) RecordToolError(toolName string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	switch category {
-	case "builtin":
-		r.builtinErrors++
-	case "mcp":
-		r.mcpErrors++
-	case "skill":
-		r.skillErrors++
+	if r.toolStats == nil {
+		r.toolStats = make(map[string]*toolStatsEntry)
 	}
+	entry := r.toolStats[toolName]
+	if entry == nil {
+		entry = &toolStatsEntry{}
+		r.toolStats[toolName] = entry
+	}
+	entry.Errors++
 }
 
 type toolCounter struct {
 	inner    tool.InvokableTool
-	category string
+	toolName string
 	recorder *Recorder
+}
+
+func newToolCounter(inner tool.InvokableTool, recorder *Recorder) *toolCounter {
+	info, _ := inner.Info(context.Background())
+	toolName := "unknown"
+	if info != nil && info.Name != "" {
+		toolName = info.Name
+	}
+	return &toolCounter{inner: inner, toolName: toolName, recorder: recorder}
 }
 
 func (w *toolCounter) Info(ctx context.Context) (*schema.ToolInfo, error) {
@@ -245,10 +263,10 @@ func (w *toolCounter) Info(ctx context.Context) (*schema.ToolInfo, error) {
 }
 
 func (w *toolCounter) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
-	w.recorder.RecordToolCall(w.category)
+	w.recorder.RecordToolCall(w.toolName)
 	result, err := w.inner.InvokableRun(ctx, argumentsInJSON, opts...)
 	if err != nil {
-		w.recorder.RecordToolError(w.category)
+		w.recorder.RecordToolError(w.toolName)
 	}
 	return result, err
 }
@@ -258,11 +276,7 @@ func (a *Agent) WrapTool(t tool.BaseTool, category string) tool.BaseTool {
 		return t
 	}
 	if invokable, ok := t.(tool.InvokableTool); ok {
-		return &toolCounter{
-			inner:    invokable,
-			category: category,
-			recorder: a.recorder,
-		}
+		return newToolCounter(invokable, a.recorder)
 	}
 	return t
 }
