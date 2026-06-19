@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	agentskill "xiaoli/server/internal/agent/tool/skill"
@@ -57,5 +59,36 @@ func TestLoadConfigDefaultsLLMModelOptionsToCurrentModel(t *testing.T) {
 
 	if len(cfg.GoLLMModels) != 1 || cfg.GoLLMModels[0] != "model-a" {
 		t.Fatalf("GoLLMModels = %#v, want current model", cfg.GoLLMModels)
+	}
+}
+
+func TestLoadConfigReadsLLMPromptFromAgentMarkdown(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte("你是仓库里的小李。\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XIAOLI_GO_LLM_PROMPT", "env prompt should not be used")
+
+	cfg := LoadConfig()
+
+	if cfg.GoLLMPrompt != "你是仓库里的小李。" {
+		t.Fatalf("GoLLMPrompt = %q, want AGENT.md content", cfg.GoLLMPrompt)
+	}
+}
+
+func TestLoadAgentPromptCombinesAgentAndSoulMarkdown(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "AGENT.md"), []byte("agent rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SOUL.md"), []byte("soul voice\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := loadAgentPrompt([]string{dir})
+
+	if prompt != "agent rules\n\nsoul voice" {
+		t.Fatalf("prompt = %q, want AGENT and SOUL joined", prompt)
 	}
 }

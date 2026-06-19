@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"github.com/mnhkahn/gogogo/logger"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
 )
+
+const fallbackLLMPrompt = "你是一个叫小李的中文语音助手。回答要简短、自然、适合通过扬声器播放。"
 
 type Config struct {
 	Host                     string
@@ -90,6 +93,10 @@ func LoadConfig() Config {
 	if len(goLLMModels) == 0 && goLLMModel != "" {
 		goLLMModels = []string{goLLMModel}
 	}
+	goLLMPrompt := loadAgentPrompt(defaultAgentPromptRoots())
+	if goLLMPrompt == "" {
+		goLLMPrompt = fallbackLLMPrompt
+	}
 	cfg := Config{
 		Host:                     env("XIAOLI_ADMIN_HOST", "0.0.0.0"),
 		Port:                     envInt("XIAOLI_ADMIN_PORT", 8004),
@@ -116,7 +123,7 @@ func LoadConfig() Config {
 		GoLLMAPIKey:              env("XIAOLI_GO_LLM_API_KEY", firstNonEmptyEnv("SILICONFLOW_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY")),
 		GoLLMModel:               goLLMModel,
 		GoLLMModels:              goLLMModels,
-		GoLLMPrompt:              env("XIAOLI_GO_LLM_PROMPT", "你是一个叫小李的中文语音助手。回答要简短、自然、适合通过扬声器播放。"),
+		GoLLMPrompt:              goLLMPrompt,
 		GoLLMTimeout:             time.Duration(envInt("XIAOLI_GO_LLM_TIMEOUT_SECONDS", 120)) * time.Second,
 		GoVLLMURL:                env("XIAOLI_GO_VLLM_URL", "https://api.siliconflow.cn/v1/chat/completions"),
 		GoVLLMAPIKey:             env("XIAOLI_GO_VLLM_API_KEY", firstNonEmptyEnv("SILICONFLOW_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY")),
@@ -162,6 +169,42 @@ func LoadConfig() Config {
 		MemoryTTL:                time.Duration(envInt("XIAOLI_MEMORY_TTL_HOURS", 24)) * time.Hour,
 	}
 	return cfg
+}
+
+func defaultAgentPromptRoots() []string {
+	return []string{
+		".",
+		"../..",
+		"/opt/xiaoli",
+	}
+}
+
+func loadAgentPrompt(roots []string) string {
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		agent := readPromptMarkdown(filepath.Join(root, "AGENT.md"))
+		soul := readPromptMarkdown(filepath.Join(root, "SOUL.md"))
+		switch {
+		case agent != "" && soul != "":
+			return agent + "\n\n" + soul
+		case agent != "":
+			return agent
+		case soul != "":
+			return soul
+		}
+	}
+	return ""
+}
+
+func readPromptMarkdown(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func (c Config) LarkEnabled() bool {
