@@ -100,7 +100,7 @@ func NewMemoryForgetTool(backend MemoryBackend) *MemoryForgetTool {
 func (t *MemoryForgetTool) Info(context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: "memory_forget",
-		Desc: `删除一条已保存的用户记忆。当用户说"忘了""删除""不记得那个了"时调用。`,
+		Desc: `删除一条已保存的用户记忆。调用前先调 memory_list 查看已保存的记忆，确认 key 名后再删除。当用户说"忘了""删除""不记得那个了"时调用。`,
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"key": {
 				Type:     schema.String,

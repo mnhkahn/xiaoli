@@ -24,6 +24,7 @@ type Config struct {
 	SkillExecTimeout        time.Duration
 	SkillExecMaxOutputBytes int64
 	SkillExecGlobalBinDirs  []string
+	TaskAllowedRoots        []string
 }
 
 type LLMModelConfig struct {

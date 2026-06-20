@@ -44,6 +44,7 @@ type Agent struct {
 	sessionMgr    *agentsession.Manager
 	askData       map[string]*agentbuiltin.AskData
 	askDataMu     sync.Mutex
+	taskTool      *agentbuiltin.TaskTool
 }
 
 func NewAgent(cfg Config) *Agent {
@@ -135,8 +136,33 @@ func NewAgent(cfg Config) *Agent {
 		}
 	}
 
-	logger.Infof("eino agent ready: model=%s base=%s redis=%v extMCPs=%d skills=%v", cfg.LLMModel, baseURL, memory != nil, len(extMCPs), skillMW != nil)
-	return &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, skillMW: skillMW, recorder: recorder, sessionMgr: sessionMgr}
+	a := &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, skillMW: skillMW, recorder: recorder, sessionMgr: sessionMgr}
+
+	taskTool := agentbuiltin.NewTaskTool(
+		agentbuiltin.DefaultSubAgents(),
+		func(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt *agentbuiltin.SubAgentRuntime, prompt string) (string, error) {
+			return a.SubAgent(ctx, spec, *rt, prompt)
+		},
+	)
+	taskTool.SetInjectFn(func(ctx context.Context, taskID, state, content string) error {
+		job := a.taskTool.QueryJob(taskID)
+		if job == nil || job.ParentSession == "" || a.memory == nil {
+			return nil
+		}
+		injectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		history := a.memory.Load(injectCtx, job.ParentSession)
+		resultMsg := fmt.Sprintf("<task id=\"%s\" state=\"%s\">\n%s\n</task>", taskID, state, content)
+		updated := append(history, schema.SystemMessage(resultMsg))
+		return a.memory.Save(injectCtx, job.ParentSession, updated)
+	})
+	if len(cfg.TaskAllowedRoots) > 0 {
+		taskTool.SetAllowedRoots(cfg.TaskAllowedRoots)
+	}
+	a.taskTool = taskTool
+
+	logger.Infof("eino agent ready: model=%s base=%s redis=%v extMCPs=%d skills=%v taskTool=%v", cfg.LLMModel, baseURL, memory != nil, len(extMCPs), skillMW != nil, taskTool != nil)
+	return a
 }
 
 func (a *Agent) Recorder() *Recorder {
@@ -406,6 +432,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 
 	var askHolder *agentbuiltin.AskDataHolder
 	ctx, askHolder = agentbuiltin.NewAskDataHolder(ctx)
+	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, memoryID)
 
 	einoTools := a.toolsForChat(ctx, memoryID, deviceID, channelName)
 
@@ -550,8 +577,8 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		a.sessionMgr.UpdateAfterChat(ctx, memoryID, len(updated))
 	}
 
-	if askHolder != nil && askHolder.Data != nil {
-		a.storeAskData(conversationID, askHolder.Data)
+	if ask := askHolder.Get(); ask != nil {
+		a.storeAskData(conversationID, ask)
 	}
 
 	return result.Content, nil
@@ -610,18 +637,6 @@ func (a *Agent) loadMemories(ctx context.Context, channelName, deviceID string) 
 	}
 	backend := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
 	return agentbuiltin.LoadMemories(ctx, backend)
-}
-
-func (a *Agent) memoryTools(channelName, deviceID string) []tool.BaseTool {
-	if a.memory == nil || channelName == "" || deviceID == "" {
-		return nil
-	}
-	backend := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
-	return []tool.BaseTool{
-		a.WrapTool(agentbuiltin.NewMemorySaveTool(backend), "builtin"),
-		a.WrapTool(agentbuiltin.NewMemoryForgetTool(backend), "builtin"),
-		a.WrapTool(agentbuiltin.NewMemoryListTool(backend), "builtin"),
-	}
 }
 
 func (a *Agent) Generate(ctx context.Context, system, user string) (string, error) {
@@ -687,10 +702,22 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 	return result, nil
 }
 
-func (a *Agent) SubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, prompt string) (string, error) {
+func (a *Agent) SubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt agentbuiltin.SubAgentRuntime, prompt string) (string, error) {
 	msgs := make([]*schema.Message, 0, 2)
 	if spec.SystemPrompt != "" {
 		msgs = append(msgs, schema.SystemMessage(spec.SystemPrompt))
+	}
+	sessionKey := rt.SessionKey
+	if sessionKey == "" {
+		sessionKey = rt.TaskID
+	}
+	if sessionKey != "" && a.sessionMgr != nil && a.memory != nil {
+		subSession, _, err := a.sessionMgr.GetOrCreate(ctx, "subagent", sessionKey, a.CurrentLLMModel())
+		if err == nil {
+			if history := a.memory.Load(ctx, subSession); len(history) > 0 {
+				msgs = append(msgs, history...)
+			}
+		}
 	}
 	msgs = append(msgs, schema.UserMessage(prompt))
 
@@ -750,6 +777,17 @@ func (a *Agent) SubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, pr
 	if result == "" {
 		return "", fmt.Errorf("subagent returned empty response")
 	}
+
+	if sessionKey != "" && a.sessionMgr != nil && a.memory != nil {
+		subSession, _, _ := a.sessionMgr.GetOrCreate(ctx, "subagent", sessionKey, a.CurrentLLMModel())
+		if subSession != "" {
+			updated := a.memory.Load(ctx, subSession)
+			updated = append(updated, schema.UserMessage(prompt))
+			updated = append(updated, &schema.Message{Role: schema.Assistant, Content: result})
+			a.memory.Save(ctx, subSession, updated)
+		}
+	}
+
 	return result, nil
 }
 
@@ -757,11 +795,11 @@ func (a *Agent) subAgentTools(ctx context.Context, allowTools bool) []tool.BaseT
 	if !allowTools {
 		return nil
 	}
-	var einoTools []tool.BaseTool
-	for _, t := range agentbuiltin.NewTools(a.cfg.BuiltinWebFetchEnabled) {
-		einoTools = append(einoTools, a.WrapTool(t, "builtin"))
+	filter := agentbuiltin.ToolWebSearch
+	if a.cfg.BuiltinWebFetchEnabled {
+		filter |= agentbuiltin.ToolWebFetch
 	}
-	einoTools = append(einoTools, a.WrapTool(agentbuiltin.NewWebSearchTool(""), "builtin"))
+	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, agentbuiltin.ToolOptions{}))
 	for _, tools := range a.extToolSets {
 		for _, t := range tools {
 			einoTools = append(einoTools, a.WrapTool(t, "mcp"))
@@ -771,11 +809,11 @@ func (a *Agent) subAgentTools(ctx context.Context, allowTools bool) []tool.BaseT
 }
 
 func (a *Agent) generateTools(ctx context.Context) []tool.BaseTool {
-	var einoTools []tool.BaseTool
-	for _, t := range agentbuiltin.NewTools(a.cfg.BuiltinWebFetchEnabled) {
-		einoTools = append(einoTools, a.WrapTool(t, "builtin"))
+	filter := agentbuiltin.ToolWebSearch
+	if a.cfg.BuiltinWebFetchEnabled {
+		filter |= agentbuiltin.ToolWebFetch
 	}
-	einoTools = append(einoTools, a.WrapTool(agentbuiltin.NewWebSearchTool(""), "builtin"))
+	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, agentbuiltin.ToolOptions{}))
 	for _, tools := range a.extToolSets {
 		for _, t := range tools {
 			einoTools = append(einoTools, a.WrapTool(t, "mcp"))
@@ -784,12 +822,20 @@ func (a *Agent) generateTools(ctx context.Context) []tool.BaseTool {
 	return einoTools
 }
 
-func (a *Agent) toolsForChat(_ context.Context, _ string, deviceID string, channelName string) []tool.BaseTool {
-	var einoTools []tool.BaseTool
-	for _, t := range agentbuiltin.NewTools(a.cfg.BuiltinWebFetchEnabled) {
-		einoTools = append(einoTools, a.WrapTool(t, "builtin"))
+func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string, channelName string) []tool.BaseTool {
+	filter := agentbuiltin.ToolWebSearch | agentbuiltin.ToolAskUserQuestion
+	if a.cfg.BuiltinWebFetchEnabled {
+		filter |= agentbuiltin.ToolWebFetch
 	}
-	einoTools = append(einoTools, a.WrapTool(agentbuiltin.NewWebSearchTool(""), "builtin"))
+	opts := agentbuiltin.ToolOptions{}
+	if a.memory != nil && channelName != "" && deviceID != "" {
+		filter |= agentbuiltin.ToolMemorySave | agentbuiltin.ToolMemoryForget | agentbuiltin.ToolMemoryList
+		opts.MemoryBackend = agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
+	}
+	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, opts))
+	if a.taskTool != nil {
+		einoTools = append(einoTools, a.WrapTool(a.taskTool, "builtin"))
+	}
 	if a.hub != nil && deviceID != "" {
 		if rawTools, ok := a.hub.ToolSnapshot(deviceID); ok {
 			for _, t := range agentmcp.NewDeviceTools(deviceID, rawTools, a.hub) {
@@ -802,14 +848,13 @@ func (a *Agent) toolsForChat(_ context.Context, _ string, deviceID string, chann
 			einoTools = append(einoTools, a.WrapTool(t, "mcp"))
 		}
 	}
-	einoTools = append(einoTools, a.WrapTool(
-		agentbuiltin.NewTaskTool(
-			agentbuiltin.DefaultSubAgents(),
-			func(ctx context.Context, spec agentbuiltin.SubAgentSpec, prompt string) (string, error) {
-				return a.SubAgent(ctx, spec, prompt)
-			},
-		), "builtin"))
-	einoTools = append(einoTools, a.WrapTool(agentbuiltin.NewAskUserQuestionTool(), "builtin"))
-	einoTools = append(einoTools, a.memoryTools(channelName, deviceID)...)
 	return einoTools
+}
+
+func (a *Agent) wrapBuiltinTools(tools []tool.BaseTool) []tool.BaseTool {
+	wrapped := make([]tool.BaseTool, 0, len(tools))
+	for _, t := range tools {
+		wrapped = append(wrapped, a.WrapTool(t, "builtin"))
+	}
+	return wrapped
 }

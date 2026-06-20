@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
@@ -18,13 +20,61 @@ type SubAgentSpec struct {
 	AllowTools   bool
 }
 
-type TaskTool struct {
-	subAgents   map[string]SubAgentSpec
-	runSubAgent func(ctx context.Context, spec SubAgentSpec, prompt string) (string, error)
+type SubAgentRuntime struct {
+	TaskID     string
+	Background bool
+	SessionKey string
 }
 
-func NewTaskTool(subAgents map[string]SubAgentSpec, fn func(ctx context.Context, spec SubAgentSpec, prompt string) (string, error)) *TaskTool {
-	return &TaskTool{subAgents: subAgents, runSubAgent: fn}
+type BackgroundJob struct {
+	mu            sync.Mutex
+	ID            string
+	Status        string
+	Result        string
+	Error         string
+	Done          chan struct{}
+	CreatedAt     time.Time
+	ParentSession string
+}
+
+func (j *BackgroundJob) Snapshot() BackgroundJob {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return BackgroundJob{
+		ID: j.ID, Status: j.Status, Result: j.Result,
+		Error: j.Error, Done: j.Done, CreatedAt: j.CreatedAt,
+		ParentSession: j.ParentSession,
+	}
+}
+
+type TaskTool struct {
+	subAgents     map[string]SubAgentSpec
+	runSubAgent   func(ctx context.Context, spec SubAgentSpec, rt *SubAgentRuntime, prompt string) (string, error)
+	injectResult  func(ctx context.Context, taskID, state, content string) error
+	mu            sync.Mutex
+	jobs          map[string]*BackgroundJob
+	activeJobs    int32
+	maxConcurrent int32
+	jobIDCounter  uint64
+	resolveCfg    ResolveConfig
+}
+
+func NewTaskTool(subAgents map[string]SubAgentSpec, fn func(ctx context.Context, spec SubAgentSpec, rt *SubAgentRuntime, prompt string) (string, error)) *TaskTool {
+	return &TaskTool{
+		subAgents:     subAgents,
+		runSubAgent:   fn,
+		jobs:          make(map[string]*BackgroundJob),
+		maxConcurrent: 5,
+		resolveCfg:    ResolveConfig{AllowedRoots: nil, MaxFileBytes: 64 * 1024},
+	}
+}
+
+func (t *TaskTool) SetInjectFn(fn func(ctx context.Context, taskID, state, content string) error) {
+	t.injectResult = fn
+}
+
+func (t *TaskTool) SetAllowedRoots(roots []string) {
+	t.resolveCfg.AllowedRoots = roots
 }
 
 func DefaultSubAgents() map[string]SubAgentSpec {
@@ -46,6 +96,17 @@ func DefaultSubAgents() map[string]SubAgentSpec {
 	}
 }
 
+func (t *TaskTool) QueryJob(taskID string) *BackgroundJob {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	job := t.jobs[taskID]
+	if job == nil {
+		return nil
+	}
+	snap := job.Snapshot()
+	return &snap
+}
+
 func (t *TaskTool) Info(context.Context) (*schema.ToolInfo, error) {
 	typeNames := sortedKeys(t.subAgents)
 	desc := "创建一个子代理（subagent）来执行独立任务。当遇到多步骤、探索性或可并行的工作时，委托给子代理执行。\n\n可用的子代理类型："
@@ -62,19 +123,34 @@ func (t *TaskTool) Info(context.Context) (*schema.ToolInfo, error) {
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"description": {
 				Type:     schema.String,
-				Desc:     "任务的简要说明，用于在用户界面显示任务状态",
-				Required: true,
+				Desc:     "任务的简要说明，用于在用户界面显示任务状态。查任务状态时可不填。",
+				Required: false,
 			},
 			"prompt": {
 				Type:     schema.String,
-				Desc:     "子代理要执行的具体指令。可以包含详细信息、上下文和需要的输出格式",
-				Required: true,
+				Desc:     "子代理要执行的具体指令。查任务状态时可不填。",
+				Required: false,
 			},
 			"subagent_type": {
 				Type:     schema.String,
-				Desc:     "子代理类型，选择使用哪个子代理来执行任务",
-				Required: true,
+				Desc:     "子代理类型，选择使用哪个子代理来执行任务。查任务状态时可不填。",
+				Required: false,
 				Enum:     typeNames,
+			},
+			"task_id": {
+				Type:     schema.String,
+				Desc:     "已有任务 ID（之前返回的 task_id）。传入后复用该任务的子会话继续执行。不填则创建新任务。",
+				Required: false,
+			},
+			"background": {
+				Type:     schema.Boolean,
+				Desc:     "是否后台运行。true 时立即返回 task_id，之后可用此 id 查询状态或复用子会话。",
+				Required: false,
+			},
+			"task_status": {
+				Type:     schema.String,
+				Desc:     "查询指定 task_id 的当前状态。传入之前返回的 task_id，返回 running/completed/failed 及结果。",
+				Required: false,
 			},
 		}),
 	}, nil
@@ -85,10 +161,29 @@ func (t *TaskTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ .
 		Description  string `json:"description"`
 		Prompt       string `json:"prompt"`
 		SubAgentType string `json:"subagent_type"`
+		TaskID       string `json:"task_id,omitempty"`
+		Background   bool   `json:"background,omitempty"`
+		TaskStatus   string `json:"task_status,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return taskResult("error", "参数解析失败："+err.Error()), nil
 	}
+
+	if args.TaskStatus != "" {
+		job := t.QueryJob(args.TaskStatus)
+		if job == nil {
+			return taskResult("error", fmt.Sprintf("未找到任务 %q", args.TaskStatus)), nil
+		}
+		content := fmt.Sprintf("任务 %s 状态：%s", job.ID, job.Status)
+		if job.Result != "" {
+			content += "\n\n" + job.Result
+		}
+		if job.Error != "" {
+			content += "\n\n错误：" + job.Error
+		}
+		return taskResult(job.Status, content), nil
+	}
+
 	if args.Description == "" {
 		return taskResult("error", "参数 description 是必填的"), nil
 	}
@@ -104,7 +199,119 @@ func (t *TaskTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ .
 		return taskResult("error", fmt.Sprintf("未知的子代理类型 %q，可用：%s", args.SubAgentType, joinKeys(t.subAgents))), nil
 	}
 
-	result, err := t.runSubAgent(ctx, spec, args.Prompt)
+	resolvedPrompt, resolveErr := ResolvePromptRefs(ctx, args.Prompt, t.resolveCfg,
+		func(name string) (string, bool) {
+			s, ok := t.subAgents[name]
+			if !ok {
+				return "", false
+			}
+			return s.Description, true
+		},
+	)
+	if resolveErr != nil {
+		return taskResult("error", "指令解析失败："+resolveErr.Error()), nil
+	}
+	args.Prompt = resolvedPrompt
+
+	if args.Background {
+		t.mu.Lock()
+		if t.activeJobs >= t.maxConcurrent {
+			t.mu.Unlock()
+			return taskResult("error", fmt.Sprintf("后台任务已达上限（%d），请等待当前任务完成后再试", t.maxConcurrent)), nil
+		}
+		jobID := fmt.Sprintf("task_%d", t.jobIDCounter)
+		t.jobIDCounter++
+		effectiveTaskID := args.TaskID
+		if effectiveTaskID == "" {
+			effectiveTaskID = jobID
+		}
+		if existing, ok := t.jobs[effectiveTaskID]; ok {
+			snap := existing.Snapshot()
+			if snap.Status == "running" {
+				t.mu.Unlock()
+				return taskResult("error", fmt.Sprintf("任务 %s 正在运行中，不能重复启动", effectiveTaskID)), nil
+			}
+		}
+		t.activeJobs++
+		parentSession, _ := ctx.Value(SubAgentParentKey).(string)
+		job := &BackgroundJob{
+			ID:            effectiveTaskID,
+			Status:        "running",
+			Done:          make(chan struct{}),
+			CreatedAt:     time.Now(),
+			ParentSession: parentSession,
+		}
+		t.jobs[effectiveTaskID] = job
+		t.mu.Unlock()
+
+		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		go func() {
+			defer cancel()
+			defer func() {
+				if r := recover(); r != nil {
+					panicMsg := fmt.Sprintf("panic: %v", r)
+					job.mu.Lock()
+					job.Status = "failed"
+					job.Error = panicMsg
+					job.mu.Unlock()
+					if t.injectResult != nil {
+						t.injectResult(bgCtx, effectiveTaskID, "failed", panicMsg)
+					}
+					close(job.Done)
+					t.releaseSlot()
+					t.cleanupOldJobs()
+				}
+			}()
+
+			rt := &SubAgentRuntime{TaskID: effectiveTaskID, SessionKey: effectiveTaskID, Background: true}
+			if parentSession != "" {
+				rt.SessionKey = parentSession + ":" + effectiveTaskID
+			}
+			result, err := t.runSubAgent(bgCtx, spec, rt, args.Prompt)
+
+			job.mu.Lock()
+			if err != nil {
+				job.Status = "failed"
+				job.Error = err.Error()
+			} else if result == "" {
+				job.Status = "failed"
+				job.Error = "子代理返回空结果"
+			} else {
+				job.Status = "completed"
+				job.Result = result
+			}
+			state := job.Status
+			resultContent := job.Result
+			if state == "failed" {
+				resultContent = job.Error
+			}
+			job.mu.Unlock()
+
+			if t.injectResult != nil {
+				if injectErr := t.injectResult(bgCtx, effectiveTaskID, state, resultContent); injectErr != nil {
+					job.mu.Lock()
+					if job.Error != "" {
+						job.Error += "; "
+					}
+					job.Error += "inject failed: " + injectErr.Error()
+					job.mu.Unlock()
+				}
+			}
+
+			close(job.Done)
+			t.releaseSlot()
+			t.cleanupOldJobs()
+		}()
+
+		return taskResult("running", effectiveTaskID), nil
+	}
+
+	parentSession, _ := ctx.Value(SubAgentParentKey).(string)
+	rt := &SubAgentRuntime{TaskID: args.TaskID, SessionKey: args.TaskID}
+	if parentSession != "" && args.TaskID != "" {
+		rt.SessionKey = parentSession + ":" + args.TaskID
+	}
+	result, err := t.runSubAgent(ctx, spec, rt, args.Prompt)
 	if err != nil {
 		return taskResult("error", "子代理执行失败："+err.Error()), nil
 	}
@@ -113,6 +320,23 @@ func (t *TaskTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ .
 	}
 
 	return taskResult("completed", result), nil
+}
+
+func (t *TaskTool) releaseSlot() {
+	t.mu.Lock()
+	t.activeJobs--
+	t.mu.Unlock()
+}
+
+func (t *TaskTool) cleanupOldJobs() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	cutoff := time.Now().Add(-30 * time.Minute)
+	for id, job := range t.jobs {
+		if job.CreatedAt.Before(cutoff) {
+			delete(t.jobs, id)
+		}
+	}
 }
 
 func taskResult(state, content string) string {

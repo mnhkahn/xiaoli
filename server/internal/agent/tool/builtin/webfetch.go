@@ -65,6 +65,29 @@ func NewTools(webFetchEnabled bool) []tool.BaseTool {
 	return []tool.BaseTool{NewWebFetchTool(Config{})}
 }
 
+func NewFilteredTools(filters ToolFilter, opts ToolOptions) []tool.BaseTool {
+	var tools []tool.BaseTool
+	if filters&ToolWebFetch != 0 {
+		tools = append(tools, NewWebFetchTool(Config{}))
+	}
+	if filters&ToolWebSearch != 0 {
+		tools = append(tools, NewWebSearchTool(opts.WebSearchKey))
+	}
+	if filters&ToolAskUserQuestion != 0 {
+		tools = append(tools, NewAskUserQuestionTool())
+	}
+	if filters&ToolMemorySave != 0 && opts.MemoryBackend != nil {
+		tools = append(tools, NewMemorySaveTool(opts.MemoryBackend))
+	}
+	if filters&ToolMemoryForget != 0 && opts.MemoryBackend != nil {
+		tools = append(tools, NewMemoryForgetTool(opts.MemoryBackend))
+	}
+	if filters&ToolMemoryList != 0 && opts.MemoryBackend != nil {
+		tools = append(tools, NewMemoryListTool(opts.MemoryBackend))
+	}
+	return tools
+}
+
 func (t *WebFetchTool) Info(context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: "webfetch",

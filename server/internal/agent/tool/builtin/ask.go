@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
@@ -15,7 +16,20 @@ type askDataKeyType struct{}
 var AskDataKey = askDataKeyType{}
 
 type AskDataHolder struct {
+	mu   sync.Mutex
 	Data *AskData
+}
+
+func (h *AskDataHolder) Set(d *AskData) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.Data = d
+}
+
+func (h *AskDataHolder) Get() *AskData {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.Data
 }
 
 func NewAskDataHolder(ctx context.Context) (context.Context, *AskDataHolder) {
@@ -77,10 +91,10 @@ func (t *AskUserQuestionTool) InvokableRun(ctx context.Context, argumentsInJSON 
 	}
 
 	if holder, ok := ctx.Value(AskDataKey).(*AskDataHolder); ok {
-		holder.Data = &AskData{
+		holder.Set(&AskData{
 			Question: args.Question,
 			Options:  cleanOptions,
-		}
+		})
 	}
 
 	return fmt.Sprintf("已向用户提问：%s，等待用户选择", args.Question), nil

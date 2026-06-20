@@ -88,6 +88,7 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		SkillExecTimeout:        cfg.SkillExecTimeout,
 		SkillExecMaxOutputBytes: cfg.SkillExecMaxOutputBytes,
 		SkillExecGlobalBinDirs:  cfg.SkillExecGlobalBinDirs,
+		TaskAllowedRoots:        cfg.TaskAllowedRoots,
 	})
 }
 

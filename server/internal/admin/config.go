@@ -62,6 +62,7 @@ type Config struct {
 	SkillExecTimeout         time.Duration
 	SkillExecMaxOutputBytes  int64
 	SkillExecGlobalBinDirs   []string
+	TaskAllowedRoots         []string
 	StudyMonitorEnabled      bool
 	StudyMonitorTimezone     string
 	StudyMonitorStartHour    int
@@ -182,6 +183,7 @@ func LoadConfig() Config {
 		SkillExecTimeout:         time.Duration(envInt("XIAOLI_SKILL_EXEC_TIMEOUT_SECONDS", int(agentskill.DefaultExecTimeout/time.Second))) * time.Second,
 		SkillExecMaxOutputBytes:  int64(envInt("XIAOLI_SKILL_EXEC_MAX_OUTPUT_BYTES", agentskill.DefaultExecMaxOutputBytes)),
 		SkillExecGlobalBinDirs:   csv(env("XIAOLI_SKILL_EXEC_GLOBAL_BIN_DIRS", "/usr/local/bin")),
+		TaskAllowedRoots:         csv(env("XIAOLI_TASK_ALLOWED_ROOTS", "")),
 		StudyMonitorEnabled:      envBool("STUDY_MONITOR_ENABLED", false),
 		StudyMonitorTimezone:     env("STUDY_MONITOR_TIMEZONE", "Asia/Shanghai"),
 		StudyMonitorStartHour:    envInt("STUDY_MONITOR_START_HOUR", 17),
