@@ -341,10 +341,11 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		maxIterations = 10
 	}
 	agentCfg := &adk.ChatModelAgentConfig{
-		Name:          "xiaoli",
-		Instruction:   "",
-		Model:         chatModel,
-		MaxIterations: maxIterations,
+		Name:             "xiaoli",
+		Instruction:      "",
+		Model:            chatModel,
+		MaxIterations:    maxIterations,
+		ModelRetryConfig: newLLMRetryConfig(),
 	}
 	if a.skillMW != nil {
 		agentCfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
@@ -367,29 +368,23 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	})
 
 	runCtx := a.recorder.WithContext(ctx, modelID)
-	iter := runner.Run(runCtx, msgs)
+	events, err := runWithRetry(runCtx, runner, msgs)
+	if err != nil {
+		return "", fmt.Errorf("agent error: %w", err)
+	}
 
 	var result *schema.Message
-	eventCount := 0
-	for {
-		event, ok := iter.Next()
-		if !ok {
-			break
-		}
-		eventCount++
+	for _, event := range events {
 		if event.Err != nil {
 			logger.Infof("Agent.Chat event error: %v", event.Err)
 			return "", fmt.Errorf("agent error: %w", event.Err)
 		}
-		logger.Infof("Agent.Chat event[%d]: output=%v", eventCount, event.Output != nil)
 		if event.Output != nil && event.Output.MessageOutput != nil &&
 			event.Output.MessageOutput.Message != nil &&
 			event.Output.MessageOutput.Role == schema.Assistant {
 			result = event.Output.MessageOutput.Message
-			logger.Infof("Agent.Chat assistant: %q", result.Content)
 		}
 	}
-	logger.Infof("Agent.Chat done: events=%d hasResult=%v", eventCount, result != nil)
 	if result == nil || result.Content == "" {
 		return "", fmt.Errorf("agent returned empty response")
 	}
@@ -425,9 +420,10 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 		return "", fmt.Errorf("create chat model: %w", err)
 	}
 	cfg := &adk.ChatModelAgentConfig{
-		Name:          "xiaoli",
-		Model:         chatModel,
-		MaxIterations: 10,
+		Name:             "xiaoli",
+		Model:            chatModel,
+		MaxIterations:    10,
+		ModelRetryConfig: newLLMRetryConfig(),
 	}
 	if a.skillMW != nil {
 		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
@@ -447,14 +443,14 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
 	runCtx := a.recorder.WithContext(ctx, modelID)
-	iter := runner.Run(runCtx, msgs)
+
+	events, err := runWithRetry(runCtx, runner, msgs)
+	if err != nil {
+		return "", fmt.Errorf("agent error: %w", err)
+	}
 
 	var result string
-	for {
-		event, ok := iter.Next()
-		if !ok {
-			break
-		}
+	for _, event := range events {
 		if event.Err != nil {
 			logger.Infof("Agent.Generate event error: %v", event.Err)
 			return "", fmt.Errorf("agent error: %w", event.Err)
