@@ -67,6 +67,22 @@ func (fakeDeps) CompressSession(_ context.Context) string {
 	return "压缩完成"
 }
 
+func (fakeDeps) MemoryList(_ context.Context) string {
+	return "test memories"
+}
+
+func (fakeDeps) MemorySave(_ context.Context, _, _ string) string {
+	return "保存成功"
+}
+
+func (fakeDeps) MemoryForget(_ context.Context, _ string) string {
+	return "删除成功"
+}
+
+func (fakeDeps) MemoryClear(_ context.Context) string {
+	return "清空成功"
+}
+
 func TestParseRequiresLeadingSlash(t *testing.T) {
 	cmd, ok := Parse(" /skills  --verbose ")
 	if !ok {

@@ -16,6 +16,7 @@ type MemoryBackend interface {
 	Save(ctx context.Context, key, value string) error
 	Forget(ctx context.Context, key string) error
 	List(ctx context.Context) (map[string]string, error)
+	Clear(ctx context.Context) error
 }
 
 type redisMemoryBackend struct {
@@ -40,6 +41,10 @@ func (b *redisMemoryBackend) Forget(ctx context.Context, field string) error {
 
 func (b *redisMemoryBackend) List(ctx context.Context) (map[string]string, error) {
 	return b.client.HGetAll(ctx, b.key).Result()
+}
+
+func (b *redisMemoryBackend) Clear(ctx context.Context) error {
+	return b.client.Del(ctx, b.key).Err()
 }
 
 type MemorySaveTool struct {

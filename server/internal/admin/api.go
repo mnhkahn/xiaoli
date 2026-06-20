@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 	"time"
 	agentchannel "xiaoli/server/internal/agent/channel"
@@ -16,6 +17,7 @@ import (
 	agentmodel "xiaoli/server/internal/agent/model"
 	"xiaoli/server/internal/agent/provider"
 	"xiaoli/server/internal/agent/slash"
+	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
 	agentworkflow "xiaoli/server/internal/agent/workflow"
 	agentesp32 "xiaoli/server/internal/esp32"
@@ -447,6 +449,74 @@ func (d adminSlashDeps) CompressSession(ctx context.Context) string {
 		return "压缩失败：" + err.Error()
 	}
 	return "✅ " + result
+}
+
+func (d adminSlashDeps) memoryBackend(ctx context.Context) agentbuiltin.MemoryBackend {
+	deviceID := slash.DeviceIDFromContext(ctx)
+	channelName := slash.ChannelNameFromContext(ctx)
+	if deviceID == "" || channelName == "" || d.s.agent == nil || d.s.agent.MemoryReader() == nil {
+		return nil
+	}
+	mem := d.s.agent.MemoryReader()
+	return agentbuiltin.NewMemoryBackend(mem.Client(), mem.Prefix(), channelName, deviceID)
+}
+
+func (d adminSlashDeps) MemoryList(ctx context.Context) string {
+	b := d.memoryBackend(ctx)
+	if b == nil {
+		return "记忆功能未启用。"
+	}
+	data, err := b.List(ctx)
+	if err != nil {
+		return "读取记忆失败：" + err.Error()
+	}
+	if len(data) == 0 {
+		return "目前没有保存的记忆。"
+	}
+	var result strings.Builder
+	result.WriteString("已保存的记忆：")
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(&result, "\n- %s：%s", k, data[k])
+	}
+	return result.String()
+}
+
+func (d adminSlashDeps) MemorySave(ctx context.Context, key, value string) string {
+	b := d.memoryBackend(ctx)
+	if b == nil {
+		return "记忆功能未启用。"
+	}
+	if err := b.Save(ctx, key, value); err != nil {
+		return "保存失败：" + err.Error()
+	}
+	return fmt.Sprintf("已记住：%s → %s", key, value)
+}
+
+func (d adminSlashDeps) MemoryForget(ctx context.Context, key string) string {
+	b := d.memoryBackend(ctx)
+	if b == nil {
+		return "记忆功能未启用。"
+	}
+	if err := b.Forget(ctx, key); err != nil {
+		return "删除失败：" + err.Error()
+	}
+	return fmt.Sprintf("已忘记：%s", key)
+}
+
+func (d adminSlashDeps) MemoryClear(ctx context.Context) string {
+	b := d.memoryBackend(ctx)
+	if b == nil {
+		return "记忆功能未启用。"
+	}
+	if err := b.Clear(ctx); err != nil {
+		return "清空失败：" + err.Error()
+	}
+	return "已清空所有记忆。"
 }
 
 func (s *AdminServer) deviceController() DeviceController {

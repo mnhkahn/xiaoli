@@ -60,6 +60,10 @@ type Dependencies interface {
 	SessionContext(ctx context.Context, id string) string
 	CompressSession(ctx context.Context) string
 	ProviderBalances(ctx context.Context) map[string]string
+	MemoryList(ctx context.Context) string
+	MemorySave(ctx context.Context, key, value string) string
+	MemoryForget(ctx context.Context, key string) string
+	MemoryClear(ctx context.Context) string
 }
 
 type Handler struct {
@@ -110,6 +114,8 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 		return h.sessionContext(ctx, cmd.Args), true
 	case "compact":
 		return h.deps.CompressSession(ctx), true
+	case "memory":
+		return h.memory(ctx, cmd.Args), true
 	case "help":
 		return helpText(), true
 	default:
@@ -122,6 +128,29 @@ func (h Handler) sessionContext(ctx context.Context, id string) string {
 		return "用法：/session <id>"
 	}
 	return h.deps.SessionContext(ctx, id)
+}
+
+func (h Handler) memory(ctx context.Context, args string) string {
+	fields := strings.Fields(args)
+	if len(fields) == 0 || fields[0] == "list" {
+		return h.deps.MemoryList(ctx)
+	}
+	switch fields[0] {
+	case "save":
+		if len(fields) < 3 {
+			return "用法：/memory save <分类> <内容>"
+		}
+		return h.deps.MemorySave(ctx, fields[1], strings.Join(fields[2:], " "))
+	case "delete":
+		if len(fields) < 2 {
+			return "用法：/memory delete <分类>"
+		}
+		return h.deps.MemoryForget(ctx, fields[1])
+	case "clear":
+		return h.deps.MemoryClear(ctx)
+	default:
+		return "未知子命令，可用：list, save, delete, clear"
+	}
 }
 
 func (h Handler) skills(ctx context.Context) string {
@@ -290,6 +319,7 @@ func writeValue(b *strings.Builder, name, value string) {
 func helpText() string {
 	return `可用命令：
 /compact    - 手动压缩当前会话的历史消息为摘要，保留最近对话
+/memory     - 管理用户记忆（/memory list 查看, /memory save <分类> <内容> 记录, /memory delete <分类> 删除, /memory clear 清空）
 /skills     - 列出所有可用技能及其版本号
 /model      - 查看或切换 LLM 模型（/model list 查看可选模型，/model use <id> 切换）
 /channel    - 查看可用消息渠道

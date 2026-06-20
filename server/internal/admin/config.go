@@ -124,6 +124,8 @@ func LoadConfig() Config {
 	if goLLMModel == "" && len(goLLMModels) > 0 {
 		goLLMModel = goLLMModels[0]
 	}
+
+	refreshModelLimitsOnce(goLLMModelConfigs)
 	selectedLLM := goLLMModelConfigs[goLLMModel]
 	if selectedLLM.Model == "" {
 		selectedLLM.Model = goLLMModel

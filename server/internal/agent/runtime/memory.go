@@ -23,6 +23,7 @@ type Memory struct {
 type MemoryReader interface {
 	Enabled() bool
 	Prefix() string
+	Client() *redis.Client
 	List(ctx context.Context, limit int) ([]MemoryKeyInfo, error)
 	LoadRaw(ctx context.Context, conversationID string) (MemoryValue, error)
 }

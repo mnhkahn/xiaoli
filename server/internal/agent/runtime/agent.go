@@ -251,7 +251,7 @@ func (a *Agent) chatModel(ctx context.Context) (*openai.ChatModel, string, error
 	temp := float32(0.2)
 	maxTokens := modelCfg.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = 180
+		maxTokens = 4096
 	}
 	model, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		BaseURL:     baseURL,
