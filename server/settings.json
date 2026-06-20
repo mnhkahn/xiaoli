@@ -1,8 +1,15 @@
 {
   "models": {
     "llm": {
-      "default": "nvidia:deepseek-v4-pro",
+      "default": "ark:code-latest",
       "options": {
+        "ark:code-latest": {
+          "name": "ARK Code Latest",
+          "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+          "model": "ark-code-latest",
+          "api_key_env": "ARK_API_KEY",
+          "max_tokens": 4096
+        },
         "siliconflow:qwen3.5-4b": {
           "name": "Qwen3.5 4B",
           "base_url": "https://api.siliconflow.cn/v1/chat/completions",
