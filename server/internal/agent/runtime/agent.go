@@ -249,16 +249,20 @@ func (a *Agent) SessionManager() *agentsession.Manager {
 	return a.sessionMgr
 }
 
-func (a *Agent) NewSession(ctx context.Context, deviceID string) (string, error) {
+func (a *Agent) NewSession(ctx context.Context, channelName, deviceID string) (string, error) {
 	if a.sessionMgr == nil {
 		return "", fmt.Errorf("会话功能未启用")
 	}
-	sessionID, _, err := a.sessionMgr.Create(ctx, deviceID, a.CurrentLLMModel())
+	if channelName == "" || deviceID == "" {
+		return "", fmt.Errorf("channel 和 deviceID 不能为空")
+	}
+	sessionID, _, err := a.sessionMgr.Create(ctx, channelName, deviceID, a.CurrentLLMModel())
 	return sessionID, err
 }
 
 type ChatOptions struct {
 	MaxIterations int
+	Channel       string
 }
 
 func (a *Agent) ChatWithContext(ctx context.Context, conversationID string, deviceID string, userText string) (string, error) {
@@ -272,13 +276,17 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 
 	memoryID := conversationID
 	var isNewSession bool
-	if a.sessionMgr != nil && deviceID != "" {
-		sid, isNew, err := a.sessionMgr.GetOrCreate(ctx, deviceID, a.CurrentLLMModel())
+	var usingSession bool
+	channelUser := deviceID
+	channelName := opts.Channel
+	if a.sessionMgr != nil && channelName != "" && channelUser != "" {
+		sid, isNew, err := a.sessionMgr.GetOrCreate(ctx, channelName, channelUser, a.CurrentLLMModel())
 		if err != nil {
 			logger.Infof("session get/create failed: %v, fallback to conversationID", err)
 		} else {
 			memoryID = sid
 			isNewSession = isNew
+			usingSession = true
 		}
 		if isNewSession {
 			a.sessionMgr.SetTitle(ctx, memoryID, userText)
@@ -290,17 +298,12 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	history := a.memory.Load(ctx, memoryID)
 
 	var epochToday string
-	var epochSessionID string
-
-	if a.sessionMgr != nil {
+	if usingSession {
 		var loc, _ = time.LoadLocation("Asia/Shanghai")
 		now := time.Now().In(loc)
 		today := now.Format("2006-01-02")
-		switch a.sessionMgr.ReconcileEpoch(ctx, memoryID, today) {
-		case agentsession.EpochInitialized:
-			epochToday = today
-			epochSessionID = memoryID
-		case agentsession.EpochUpdated:
+		last := a.sessionMgr.GetEpoch(ctx, channelName, channelUser)
+		if last != "" && last != today {
 			timeMsg := fmt.Sprintf("当前北京时间：%s %s %02d:%02d", today, chineseWeekday[now.Weekday()], now.Hour(), now.Minute())
 			timeSysMsg := schema.SystemMessage(timeMsg)
 			replaced := false
@@ -314,8 +317,9 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 			if !replaced {
 				history = append(history, timeSysMsg)
 			}
+		}
+		if last != today {
 			epochToday = today
-			epochSessionID = memoryID
 		}
 	}
 
@@ -395,12 +399,12 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		result,
 	)
 	if err := a.memory.Save(ctx, memoryID, updated); err != nil {
-		logger.Infof("memory save failed, not committing epoch: %v", err)
+		logger.Infof("memory save failed, not updating epoch: %v", err)
 	} else if epochToday != "" {
-		a.sessionMgr.CommitEpoch(ctx, epochSessionID, epochToday)
+		a.sessionMgr.SetEpoch(ctx, channelName, channelUser, epochToday)
 	}
 
-	if a.sessionMgr != nil {
+	if usingSession {
 		a.sessionMgr.UpdateAfterChat(ctx, memoryID, len(updated))
 	}
 

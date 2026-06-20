@@ -12,10 +12,16 @@ import (
 type ctxKey string
 
 const CtxDeviceID ctxKey = "device_id"
+const CtxChannelName ctxKey = "channel_name"
 
 func DeviceIDFromContext(ctx context.Context) string {
 	id, _ := ctx.Value(CtxDeviceID).(string)
 	return id
+}
+
+func ChannelNameFromContext(ctx context.Context) string {
+	name, _ := ctx.Value(CtxChannelName).(string)
+	return name
 }
 
 type Command struct {

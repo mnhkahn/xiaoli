@@ -2,9 +2,11 @@ package session
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,14 +15,24 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const sessionTTL = 72 * time.Hour
+
 type Info struct {
-	ID        string `json:"id"`
-	Title     string `json:"title"`
-	Model     string `json:"model"`
-	UserID    string `json:"user_id"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
-	Count     int    `json:"count"`
+	ID          string `json:"id"`
+	ChannelName string `json:"channel_name"`
+	ChannelUser string `json:"channel_user"`
+	Title       string `json:"title"`
+	Model       string `json:"model"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	Count       int    `json:"count"`
+}
+
+type ChannelEntry struct {
+	ChannelName string `json:"channel_name"`
+	ChannelUser string `json:"channel_user"`
+	SessionID   string `json:"session_id"`
+	TTLSeconds  int64  `json:"ttl_seconds"`
 }
 
 type Manager struct {
@@ -32,46 +44,50 @@ func NewManager(client *redis.Client, prefix string) *Manager {
 	return &Manager{client: client, prefix: prefix}
 }
 
-func (m *Manager) activeKey(userID string) string {
-	return m.prefix + "active:" + userID
+func (m *Manager) channelKey(channelName, channelUser string) string {
+	return m.prefix + "channel:" + enc(channelName) + ":" + enc(channelUser)
 }
 
 func (m *Manager) sessionKey(sessionID string) string {
 	return m.prefix + "ses:" + sessionID
 }
 
-func (m *Manager) GetOrCreate(ctx context.Context, userID string, model string) (string, bool, error) {
-	sessionID, err := m.client.Get(ctx, m.activeKey(userID)).Result()
+func (m *Manager) metaKey(sessionID string) string {
+	return m.sessionKey(sessionID) + ":meta"
+}
+
+func (m *Manager) GetOrCreate(ctx context.Context, channelName, channelUser, model string) (string, bool, error) {
+	sessionID, err := m.client.Get(ctx, m.channelKey(channelName, channelUser)).Result()
 	if err == nil && sessionID != "" {
-		exists, _ := m.client.Exists(ctx, m.sessionKey(sessionID)).Result()
+		exists, _ := m.client.Exists(ctx, m.metaKey(sessionID)).Result()
 		if exists > 0 {
 			return sessionID, false, nil
 		}
 	}
-	return m.Create(ctx, userID, model)
+	return m.Create(ctx, channelName, channelUser, model)
 }
 
-func (m *Manager) Create(ctx context.Context, userID string, model string) (string, bool, error) {
+func (m *Manager) Create(ctx context.Context, channelName, channelUser, model string) (string, bool, error) {
 	sessionID := randomID()
 	now := time.Now().Format(time.RFC3339)
-	err := m.client.HSet(ctx, m.sessionKey(sessionID), map[string]any{
-		"title":      "新会话",
-		"model":      model,
-		"user_id":    userID,
-		"created_at": now,
-		"updated_at": now,
-		"count":      0,
-	}).Err()
-	if err != nil {
+	pipe := m.client.Pipeline()
+	pipe.HSet(ctx, m.metaKey(sessionID), map[string]any{
+		"id":           sessionID,
+		"channel_name": channelName,
+		"channel_user": channelUser,
+		"title":        "新会话",
+		"model":        model,
+		"created_at":   now,
+		"updated_at":   now,
+		"count":        0,
+	})
+	pipe.Expire(ctx, m.metaKey(sessionID), sessionTTL)
+	pipe.Set(ctx, m.channelKey(channelName, channelUser), sessionID, sessionTTL)
+	if _, err := pipe.Exec(ctx); err != nil {
 		logger.Infof("session create failed: %v", err)
 		return "", false, err
 	}
-	if err := m.client.Set(ctx, m.activeKey(userID), sessionID, 0).Err(); err != nil {
-		m.client.Del(ctx, m.sessionKey(sessionID))
-		logger.Infof("session active set failed: %v", err)
-		return "", false, err
-	}
-	logger.Infof("session created: %s for user=%s model=%s", sessionID, userID, model)
+	logger.Infof("session created: %s channel=%s user=%s model=%s", sessionID, channelName, channelUser, model)
 	return sessionID, true, nil
 }
 
@@ -84,11 +100,28 @@ func (m *Manager) SetTitle(ctx context.Context, sessionID, title string) {
 	if len(runes) > 20 {
 		title = string(runes[:20]) + "…"
 	}
-	m.client.HSet(ctx, m.sessionKey(sessionID), "title", title)
+	m.client.HSet(ctx, m.metaKey(sessionID), "title", title)
+	m.client.Expire(ctx, m.metaKey(sessionID), sessionTTL)
 }
 
-func (m *Manager) List(ctx context.Context, userID string) ([]Info, error) {
-	pattern := m.prefix + "ses:*"
+func (m *Manager) epochKey(channelName, channelUser string) string {
+	return m.prefix + "epoch:" + enc(channelName) + ":" + enc(channelUser)
+}
+
+func (m *Manager) GetEpoch(ctx context.Context, channelName, channelUser string) string {
+	val, err := m.client.Get(ctx, m.epochKey(channelName, channelUser)).Result()
+	if err != nil {
+		return ""
+	}
+	return val
+}
+
+func (m *Manager) SetEpoch(ctx context.Context, channelName, channelUser, day string) {
+	m.client.Set(ctx, m.epochKey(channelName, channelUser), day, sessionTTL)
+}
+
+func (m *Manager) ListByChannel(ctx context.Context, channelName, channelUser string) ([]Info, error) {
+	pattern := m.prefix + "ses:*:meta"
 	var cursor uint64
 	var sessions []Info
 	for {
@@ -101,7 +134,7 @@ func (m *Manager) List(ctx context.Context, userID string) ([]Info, error) {
 			if err != nil || len(data) == 0 {
 				continue
 			}
-			if data["user_id"] != userID {
+			if data["channel_name"] != channelName || data["channel_user"] != channelUser {
 				continue
 			}
 			sessions = append(sessions, infoFromHash(key, data))
@@ -111,62 +144,91 @@ func (m *Manager) List(ctx context.Context, userID string) ([]Info, error) {
 			break
 		}
 	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].UpdatedAt > sessions[j].UpdatedAt
+	})
 	return sessions, nil
 }
 
+func (m *Manager) ListChannels(ctx context.Context) ([]ChannelEntry, error) {
+	pattern := m.prefix + "channel:*"
+	var cursor uint64
+	var entries []ChannelEntry
+	for {
+		keys, next, err := m.client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return nil, err
+		}
+		for _, key := range keys {
+			sessionID, err := m.client.Get(ctx, key).Result()
+			if err != nil {
+				continue
+			}
+			rest := strings.TrimPrefix(key, m.prefix+"channel:")
+			parts := strings.SplitN(rest, ":", 2)
+			chName, chUser := "", ""
+			if len(parts) >= 1 {
+				chName = dec(parts[0])
+			}
+			if len(parts) >= 2 {
+				chUser = dec(parts[1])
+			}
+			ttl, _ := m.client.TTL(ctx, key).Result()
+			entries = append(entries, ChannelEntry{
+				ChannelName: chName,
+				ChannelUser: chUser,
+				SessionID:   sessionID,
+				TTLSeconds:  int64(ttl.Seconds()),
+			})
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].ChannelName != entries[j].ChannelName {
+			return entries[i].ChannelName < entries[j].ChannelName
+		}
+		return entries[i].ChannelUser < entries[j].ChannelUser
+	})
+	return entries, nil
+}
+
+func (m *Manager) GetChannelSession(ctx context.Context, channelName, channelUser string) string {
+	sessionID, err := m.client.Get(ctx, m.channelKey(channelName, channelUser)).Result()
+	if err != nil {
+		return ""
+	}
+	return sessionID
+}
+
 func (m *Manager) Get(ctx context.Context, sessionID string) (Info, error) {
-	key := m.sessionKey(sessionID)
-	data, err := m.client.HGetAll(ctx, key).Result()
+	data, err := m.client.HGetAll(ctx, m.metaKey(sessionID)).Result()
 	if err != nil {
 		return Info{}, err
 	}
 	if len(data) == 0 {
 		return Info{}, fmt.Errorf("session not found: %s", sessionID)
 	}
-	return infoFromHash(key, data), nil
+	return infoFromHash("", data), nil
 }
 
 func (m *Manager) UpdateAfterChat(ctx context.Context, sessionID string, count int) {
-	m.client.HSet(ctx, m.sessionKey(sessionID), map[string]any{
+	m.client.HSet(ctx, m.metaKey(sessionID), map[string]any{
 		"updated_at": time.Now().Format(time.RFC3339),
 		"count":      count,
 	})
-}
-
-type EpochResult int
-
-const (
-	EpochUnchanged EpochResult = iota
-	EpochInitialized
-	EpochUpdated
-)
-
-func (m *Manager) epochKey(sessionID string) string {
-	return m.sessionKey(sessionID) + ":epoch"
-}
-
-func (m *Manager) ReconcileEpoch(ctx context.Context, sessionID string, today string) EpochResult {
-	baseline, err := m.client.Get(ctx, m.epochKey(sessionID)).Result()
-	if err == redis.Nil || baseline == "" {
-		return EpochInitialized
+	m.client.Expire(ctx, m.metaKey(sessionID), sessionTTL)
+	data, err := m.client.HGetAll(ctx, m.metaKey(sessionID)).Result()
+	if err == nil && data["channel_name"] != "" && data["channel_user"] != "" {
+		m.client.Expire(ctx, m.channelKey(data["channel_name"], data["channel_user"]), sessionTTL)
+		m.client.Expire(ctx, m.epochKey(data["channel_name"], data["channel_user"]), sessionTTL)
 	}
-	if err != nil {
-		logger.Infof("epoch read failed: %v", err)
-		return EpochUnchanged
-	}
-	if baseline == today {
-		return EpochUnchanged
-	}
-	return EpochUpdated
-}
-
-func (m *Manager) CommitEpoch(ctx context.Context, sessionID string, today string) {
-	m.client.Set(ctx, m.epochKey(sessionID), today, 0)
 }
 
 func (m *Manager) LoadMessages(ctx context.Context, sessionID string) []*schema.Message {
-	key := m.prefix + sessionID
-	data, err := m.client.Get(ctx, key).Bytes()
+	data, err := m.client.Get(ctx, m.sessionKey(sessionID)).Bytes()
 	if err != nil {
 		return nil
 	}
@@ -178,18 +240,21 @@ func (m *Manager) LoadMessages(ctx context.Context, sessionID string) []*schema.
 }
 
 func infoFromHash(key string, data map[string]string) Info {
-	parts := strings.Split(key, ":")
-	id := parts[len(parts)-1]
+	id := data["id"]
+	if id == "" {
+		id = data["channel_user"]
+	}
 	count := 0
 	fmt.Sscanf(data["count"], "%d", &count)
 	return Info{
-		ID:        id,
-		Title:     data["title"],
-		Model:     data["model"],
-		UserID:    data["user_id"],
-		CreatedAt: data["created_at"],
-		UpdatedAt: data["updated_at"],
-		Count:     count,
+		ID:          id,
+		ChannelName: data["channel_name"],
+		ChannelUser: data["channel_user"],
+		Title:       data["title"],
+		Model:       data["model"],
+		CreatedAt:   data["created_at"],
+		UpdatedAt:   data["updated_at"],
+		Count:       count,
 	}
 }
 
@@ -200,4 +265,16 @@ func randomID() string {
 		b[i] = chars[rand.Intn(len(chars))]
 	}
 	return "ses_" + string(b)
+}
+
+func enc(s string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(s))
+}
+
+func dec(s string) string {
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return s
+	}
+	return string(b)
 }

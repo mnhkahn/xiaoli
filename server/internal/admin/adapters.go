@@ -453,7 +453,7 @@ func (p *ConversationPipeline) runDirect(ctx context.Context, turn ConversationT
 	if p.chat == nil {
 		return ConversationReply{Text: "我现在还没有配置语言模型。"}, nil
 	}
-	answer, err := p.chat.Chat(ctx, turn)
+	answer, err := p.chatWithChannel(ctx, turn)
 	if err != nil {
 		logger.Infof("conversation chat failed channel=%s conversation=%s device=%s: %v", turn.Channel, turn.ConversationID, turn.DeviceID, err)
 		return ConversationReply{Text: fmt.Sprintf("我现在回答不了。错误原因：%v。", err)}, nil
@@ -506,6 +506,13 @@ func (a conversationWorkflowAgent) Run(ctx context.Context, request agentworkflo
 	return agentworkflow.AgentResponse{Text: reply.Text, Finished: true}, nil
 }
 
+func (p *ConversationPipeline) chatWithChannel(ctx context.Context, turn ConversationTurn) (string, error) {
+	if chat, ok := p.chat.(conversationChatWithOptions); ok {
+		return chat.ChatWithOptions(ctx, turn, ChatOptions{Channel: string(turn.Channel)})
+	}
+	return p.chat.Chat(ctx, turn)
+}
+
 func (p *ConversationPipeline) runWorkflowStep(ctx context.Context, turn ConversationTurn, maxSteps int) (ConversationReply, error) {
 	if turn.UseDeviceTools && turn.DeviceID != "" && p.devices != nil && needsVision(turn.Text) {
 		return p.runDirect(ctx, turn)
@@ -514,7 +521,7 @@ func (p *ConversationPipeline) runWorkflowStep(ctx context.Context, turn Convers
 		return ConversationReply{Text: "我现在还没有配置语言模型。"}, nil
 	}
 	if chat, ok := p.chat.(conversationChatWithOptions); ok {
-		answer, err := chat.ChatWithOptions(ctx, turn, ChatOptions{MaxIterations: maxSteps})
+		answer, err := chat.ChatWithOptions(ctx, turn, ChatOptions{MaxIterations: maxSteps, Channel: string(turn.Channel)})
 		if err != nil {
 			return ConversationReply{}, err
 		}

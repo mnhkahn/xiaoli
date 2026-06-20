@@ -210,6 +210,9 @@ func (s *AdminServer) handleBuiltinCommand(ctx context.Context, source Conversat
 	if deviceID != "" {
 		ctx = context.WithValue(ctx, slash.CtxDeviceID, deviceID)
 	}
+	if source != "" {
+		ctx = context.WithValue(ctx, slash.CtxChannelName, string(source))
+	}
 	return slash.NewHandler(adminSlashDeps{s: s}).Handle(ctx, sourceType, text)
 }
 
@@ -311,7 +314,8 @@ func (d adminSlashDeps) NewSession(ctx context.Context) string {
 	if deviceID == "" {
 		return "无法识别用户。"
 	}
-	sessionID, err := d.s.agent.NewSession(ctx, deviceID)
+	channelName := slash.ChannelNameFromContext(ctx)
+	sessionID, err := d.s.agent.NewSession(ctx, channelName, deviceID)
 	if err != nil {
 		return "新建会话失败：" + err.Error()
 	}
@@ -327,10 +331,11 @@ func (d adminSlashDeps) ListSessions(ctx context.Context) string {
 		return "会话功能未启用（需要 Redis）。"
 	}
 	deviceID := slash.DeviceIDFromContext(ctx)
-	if deviceID == "" {
+	channelName := slash.ChannelNameFromContext(ctx)
+	if deviceID == "" || channelName == "" {
 		return "无法识别用户。"
 	}
-	sessions, err := sm.List(ctx, deviceID)
+	sessions, err := sm.ListByChannel(ctx, channelName, deviceID)
 	if err != nil {
 		return "读取失败：" + err.Error()
 	}
@@ -358,7 +363,7 @@ func (d adminSlashDeps) SessionContext(ctx context.Context, id string) string {
 		return "读取失败：" + err.Error()
 	}
 	deviceID := slash.DeviceIDFromContext(ctx)
-	if deviceID == "" || info.UserID != deviceID {
+	if deviceID == "" || info.ChannelUser != deviceID || info.ChannelName != slash.ChannelNameFromContext(ctx) {
 		return "无权访问该会话。"
 	}
 	msgs := sm.LoadMessages(ctx, id)

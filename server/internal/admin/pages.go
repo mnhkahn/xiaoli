@@ -489,6 +489,7 @@ func memoryHTML(user map[string]any) string {
     .stats { display: flex; gap: 8px; flex-wrap: wrap; }
     .pill { border-radius: 999px; padding: 2px 8px; font-size: 12px; background: #eef2f6; color: #667085; }
     .pill.ok { background: #dcfae6; color: #067647; }
+    .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     @media (max-width: 1100px) { .memory-grid { grid-template-columns: 1fr; } .toolbar { grid-template-columns: 1fr; } }
   </style>
 </head>
@@ -498,22 +499,20 @@ func memoryHTML(user map[string]any) string {
     <div class="row"><span class="muted">` + userLabel + `</span><a href="/admin/logout">退出</a></div>
   </header>
   <main>
-    <section>
+<section>
       <div class="toolbar">
-        <input id="memoryFilter" placeholder="过滤 device_id 或 Redis key">
-        <select id="memorySort" aria-label="消息排序">
-          <option value="newest" selected>近到远</option>
-          <option value="oldest">远到近</option>
+        <select id="channelSelect" aria-label="选择 Channel">
+          <option value="">加载中…</option>
         </select>
         <button id="refreshMemory" class="primary">刷新</button>
       </div>
-      <div id="memoryStatus" class="muted" style="margin-top:10px;">加载中...</div>
+      <div id="memoryStatus" class="muted" style="margin-top:10px;">加载中…</div>
       <div class="memory-picker">
         <div class="row">
-          <h2>设备 / Redis Key</h2>
-          <span class="muted">选择一个设备后查看下面的历史记录。</span>
+          <h2>会话列表</h2>
+          <span class="muted" id="sessionHint">选择一个 Channel 后查看会话。</span>
         </div>
-        <div id="memoryList" class="list"></div>
+        <div id="sessionList" class="list"></div>
       </div>
     </section>
     <section class="memory-grid">
@@ -522,15 +521,15 @@ func memoryHTML(user map[string]any) string {
         <div id="messageList" class="list"></div>
       </div>
       <div class="panel">
-        <h2>消息详情</h2>
-        <div id="memoryMeta" class="stats"></div>
+        <h2>会话信息</h2>
+        <div id="sessionMeta" class="stats"></div>
         <pre id="messageDetail">选择一条消息查看详情。</pre>
       </div>
     </section>
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
-    let memoryState = { memories: [], selectedDevice: "", detail: null, selectedIndex: null };
+    let state = { channels: [], channelName: "", channelUser: "", sessions: [], currentSessionID: "", selectedSessionID: "", detail: null, selectedIndex: null };
 
     async function api(url) {
       const res = await fetch(url, { credentials: "same-origin" });
@@ -542,155 +541,157 @@ func memoryHTML(user map[string]any) string {
     function clearNode(node) { while (node.firstChild) node.removeChild(node.firstChild); }
     function text(value) { return value === undefined || value === null ? "" : String(value); }
 
-    function filteredMemories() {
-      const query = $("memoryFilter").value.trim().toLowerCase();
-      if (!query) return memoryState.memories;
-      return memoryState.memories.filter(item =>
-        text(item.device_id).toLowerCase().includes(query) ||
-        text(item.key).toLowerCase().includes(query)
-      );
-    }
-
-    function renderMemoryList() {
-      const list = $("memoryList");
-      clearNode(list);
-      const memories = filteredMemories();
-      if (!memories.length) {
-        const empty = document.createElement("p");
-        empty.className = "muted";
-        empty.textContent = "没有匹配的 Redis 记忆 key。";
-        list.appendChild(empty);
+    async function loadChannels() {
+      setStatus("加载 Channel 列表…");
+      const data = await api("/admin/api/memory/channels");
+      const sel = $("channelSelect");
+      clearNode(sel);
+      if (!data.enabled || !data.channels.length) {
+        sel.appendChild(el("option", "暂无 Channel 数据"));
+        setStatus("没有找到 Channel 数据。");
         return;
       }
-      for (const item of memories) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "item" + (item.device_id === memoryState.selectedDevice ? " active" : "");
-        button.onclick = () => loadDetail(item.device_id);
-
-        const title = document.createElement("strong");
-        title.textContent = item.device_id || "(empty device)";
-        const key = document.createElement("span");
-        key.className = "muted";
-        key.textContent = item.key || "";
-        const meta = document.createElement("span");
-        meta.className = "muted";
-        meta.textContent = "TTL " + item.ttl_seconds + "s / " + item.bytes + " bytes" + (item.online ? " / online" : "");
-        button.appendChild(title);
-        button.appendChild(key);
-        button.appendChild(meta);
-        list.appendChild(button);
+      state.channels = data.channels;
+      const seen = {};
+      for (const ch of data.channels) {
+        const key = ch.channel_name + ":" + ch.channel_user;
+        if (seen[key]) continue;
+        seen[key] = true;
+        const opt = el("option", ch.channel_name + " — " + ch.channel_user, key);
+        sel.appendChild(opt);
       }
+      sel.value = sel.options[0] ? sel.options[0].value : "";
+      sel.onchange = () => selectChannel();
+      setStatus("已加载 " + data.channels.length + " 个 Channel 条目。");
+      selectChannel();
+    }
+
+    function selectChannel() {
+      const val = $("channelSelect").value;
+      if (!val) return;
+      const parts = val.split(":");
+      state.channelName = parts[0];
+      state.channelUser = parts.slice(1).join(":");
+      $("sessionHint").textContent = state.channelName + " / " + state.channelUser;
+      loadSessions();
+    }
+
+    async function loadSessions() {
+      setStatus("加载会话列表…");
+      const data = await api("/admin/api/memory/sessions?channel_name=" + encodeURIComponent(state.channelName) + "&channel_user=" + encodeURIComponent(state.channelUser));
+      state.sessions = data.sessions || [];
+      state.currentSessionID = data.current_session_id || "";
+      renderSessionList();
+      setStatus("共 " + state.sessions.length + " 个会话，当前：" + (state.currentSessionID || "无"));
+    }
+
+    function el(tag, textContent, value) {
+      const e = document.createElement(tag);
+      if (textContent !== undefined) e.textContent = textContent;
+      if (value !== undefined) e.value = value;
+      return e;
+    }
+
+    function renderSessionList() {
+      const list = $("sessionList");
+      clearNode(list);
+      if (!state.sessions.length) {
+        list.appendChild(el("p", "暂无会话。", "")).className = "muted";
+        return;
+      }
+      for (const s of state.sessions) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "item" + (s.id === state.selectedSessionID ? " active" : "");
+        btn.onclick = () => loadSession(s.id);
+
+        const title = el("strong", s.title || "无标题");
+        title.className = "truncate";
+        const id = el("span", s.id);
+        id.className = "muted truncate";
+        const meta = el("span", s.model + "  " + s.count + "条  " + (s.updated_at || "").slice(0, 16));
+        meta.className = "muted truncate";
+        if (s.id === state.currentSessionID) {
+          const tag = el("span", "当前");
+          tag.className = "pill ok";
+          btn.appendChild(tag);
+        }
+        btn.appendChild(title);
+        btn.appendChild(id);
+        btn.appendChild(meta);
+        list.appendChild(btn);
+      }
+    }
+
+    async function loadSession(sessionID) {
+      state.selectedSessionID = sessionID;
+      renderSessionList();
+      setStatus("加载会话…");
+      const data = await api("/admin/api/memory/session?id=" + encodeURIComponent(sessionID));
+      state.detail = data;
+      state.selectedIndex = null;
+      renderDetail();
+      setStatus("会话 " + sessionID + "，共 " + (data.messages || []).length + " 条消息。");
     }
 
     function renderDetail() {
       const list = $("messageList");
-      const meta = $("memoryMeta");
+      const meta = $("sessionMeta");
       clearNode(list);
       clearNode(meta);
       $("messageDetail").textContent = "选择一条消息查看详情。";
-      memoryState.selectedIndex = null;
-      const detail = memoryState.detail;
+      const detail = state.detail;
       if (!detail) return;
 
+      const info = detail.info || {};
       for (const item of [
-        "key: " + (detail.key || ""),
-        "messages: " + (detail.message_count || 0),
-        "ttl: " + (detail.ttl_seconds || 0) + "s",
-        "order: " + (detail.order || "")
-      ]) {
+        info.title || "无标题",
+        info.model || "",
+        "共 " + (detail.message_count || 0) + " 条",
+        info.channel_name + " / " + info.channel_user
+      ].filter(Boolean)) {
         const pill = document.createElement("span");
         pill.className = "pill";
         pill.textContent = item;
         meta.appendChild(pill);
       }
 
-      if (detail.parse_error) {
-        const warning = document.createElement("p");
-        warning.className = "muted";
-        warning.textContent = "JSON 解析失败：" + detail.parse_error;
-        list.appendChild(warning);
-        $("messageDetail").textContent = detail.raw_json || "";
-        return;
-      }
-
       for (const msg of detail.messages || []) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "message " + (msg.role || "");
-        button.onclick = () => selectMessage(msg);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "message " + (msg.role || "");
+        btn.onclick = () => selectMessage(msg);
 
         const head = document.createElement("span");
         head.className = "message-head";
-        const left = document.createElement("span");
+        const left = el("span", "#" + (msg.index !== undefined ? msg.index : "") + " " + (msg.role || ""));
         left.className = "message-label";
-        left.textContent = "#" + msg.index + " " + (msg.role || "");
-        const preview = document.createElement("span");
+        const preview = el("span", msg.content || msg.reasoning_content || "(no text)");
         preview.className = "message-preview";
-        preview.textContent = msg.content || msg.reasoning_content || "(no text content)";
-        const right = document.createElement("span");
+        const right = el("span", msg.finish_reason ? "finish: " + msg.finish_reason : "");
         right.className = "message-finish";
-        right.textContent = msg.finish_reason ? "finish: " + msg.finish_reason : "";
         head.appendChild(left);
         head.appendChild(preview);
         head.appendChild(right);
-        button.appendChild(head);
-        list.appendChild(button);
+        btn.appendChild(head);
+        list.appendChild(btn);
       }
       if (!(detail.messages || []).length) {
-        const empty = document.createElement("p");
-        empty.className = "muted";
-        empty.textContent = "这个 key 里没有消息。";
-        list.appendChild(empty);
+        list.appendChild(el("p", "这个会话没有消息。")).className = "muted";
       }
     }
 
     function selectMessage(msg) {
-      memoryState.selectedIndex = msg.index;
-      document.querySelectorAll(".message").forEach(node => node.classList.remove("active"));
-      for (const node of document.querySelectorAll(".message")) {
-        if (node.textContent.startsWith("#" + msg.index + " ")) node.classList.add("active");
+      state.selectedIndex = msg.index;
+      document.querySelectorAll(".message").forEach(n => n.classList.remove("active"));
+      for (const n of document.querySelectorAll(".message")) {
+        if (n.textContent.startsWith("#" + msg.index + " ")) n.classList.add("active");
       }
       $("messageDetail").textContent = JSON.stringify(msg, null, 2);
     }
 
-    async function loadList() {
-      setStatus("加载中...");
-      const data = await api("/admin/api/memory");
-      if (!data.enabled) {
-        memoryState.memories = [];
-        renderMemoryList();
-        renderDetail();
-        setStatus("Redis memory 未配置。当前 key 前缀：" + (data.prefix || ""));
-        return;
-      }
-      memoryState.memories = data.memories || [];
-      renderMemoryList();
-      const suffix = data.device_error ? "；在线设备读取失败：" + data.device_error : "";
-      setStatus("Redis key 前缀：" + (data.prefix || "") + "；记忆 key 数：" + memoryState.memories.length + suffix);
-      if (memoryState.memories.length) {
-        const keep = memoryState.memories.find(item => item.device_id === memoryState.selectedDevice);
-        await loadDetail((keep || memoryState.memories[0]).device_id);
-      } else {
-        memoryState.detail = null;
-        renderDetail();
-      }
-    }
-
-    async function loadDetail(deviceID) {
-      if (!deviceID) return;
-      memoryState.selectedDevice = deviceID;
-      renderMemoryList();
-      const order = $("memorySort").value || "newest";
-      const data = await api("/admin/api/memory/detail?device_id=" + encodeURIComponent(deviceID) + "&order=" + encodeURIComponent(order));
-      memoryState.detail = data;
-      renderDetail();
-    }
-
-    $("refreshMemory").onclick = () => loadList().catch(err => setStatus(String(err)));
-    $("memoryFilter").oninput = renderMemoryList;
-    $("memorySort").onchange = () => loadDetail(memoryState.selectedDevice).catch(err => setStatus(String(err)));
-    loadList().catch(err => setStatus(String(err)));
+    $("refreshMemory").onclick = () => loadChannels();
+    loadChannels();
   </script>
 </body>
 </html>`

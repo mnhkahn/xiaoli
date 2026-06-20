@@ -19,7 +19,7 @@ func testManager(t *testing.T) (*Manager, context.Context) {
 func TestCreateAndGet(t *testing.T) {
 	m, ctx := testManager(t)
 
-	sid, isNew, err := m.Create(ctx, "user1", "model-a")
+	sid, isNew, err := m.Create(ctx, "lark", "user1", "model-a")
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestCreateAndGet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
-	if info.Title != "新会话" || info.Model != "model-a" || info.UserID != "user1" {
+	if info.Title != "新会话" || info.Model != "model-a" || info.ChannelUser != "user1" || info.ChannelName != "lark" {
 		t.Fatalf("unexpected info: %+v", info)
 	}
 
@@ -44,12 +44,12 @@ func TestCreateAndGet(t *testing.T) {
 	}
 }
 
-func TestGetOrCreateReusesActive(t *testing.T) {
+func TestGetOrCreateReusesExisting(t *testing.T) {
 	m, ctx := testManager(t)
 
-	sid1, _, _ := m.Create(ctx, "user2", "model-b")
+	sid1, _, _ := m.Create(ctx, "lark", "user2", "model-b")
 
-	sid2, isNew, err := m.GetOrCreate(ctx, "user2", "model-c")
+	sid2, isNew, err := m.GetOrCreate(ctx, "lark", "user2", "model-c")
 	if err != nil {
 		t.Fatalf("GetOrCreate failed: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestGetOrCreateReusesActive(t *testing.T) {
 func TestGetOrCreateCreatesNew(t *testing.T) {
 	m, ctx := testManager(t)
 
-	sid, isNew, err := m.GetOrCreate(ctx, "user3", "model-d")
+	sid, isNew, err := m.GetOrCreate(ctx, "wechat", "user3", "model-d")
 	if err != nil {
 		t.Fatalf("GetOrCreate failed: %v", err)
 	}
@@ -77,47 +77,47 @@ func TestGetOrCreateCreatesNew(t *testing.T) {
 		t.Fatal("expected isNew=true")
 	}
 	info, _ := m.Get(ctx, sid)
-	if info.UserID != "user3" {
-		t.Fatalf("user_id = %q, want user3", info.UserID)
+	if info.ChannelName != "wechat" || info.ChannelUser != "user3" {
+		t.Fatalf("channel mismatch: %+v", info)
 	}
 }
 
-func TestListFiltersByUser(t *testing.T) {
+func TestListByChannel(t *testing.T) {
 	m, ctx := testManager(t)
 
-	m.Create(ctx, "user_a", "m1")
-	m.Create(ctx, "user_a", "m2")
-	m.Create(ctx, "user_b", "m3")
+	m.Create(ctx, "lark", "user_a", "m1")
+	m.Create(ctx, "lark", "user_a", "m2")
+	m.Create(ctx, "lark", "user_b", "m3")
 
-	sessions, err := m.List(ctx, "user_a")
+	sessions, err := m.ListByChannel(ctx, "lark", "user_a")
 	if err != nil {
-		t.Fatalf("List failed: %v", err)
+		t.Fatalf("ListByChannel failed: %v", err)
 	}
 	if len(sessions) != 2 {
-		t.Fatalf("user_a should have 2 sessions, got %d", len(sessions))
+		t.Fatalf("lark/user_a should have 2 sessions, got %d", len(sessions))
 	}
 
-	sessions, err = m.List(ctx, "user_b")
+	sessions, err = m.ListByChannel(ctx, "lark", "user_b")
 	if err != nil {
-		t.Fatalf("List failed: %v", err)
+		t.Fatalf("ListByChannel failed: %v", err)
 	}
 	if len(sessions) != 1 {
-		t.Fatalf("user_b should have 1 session, got %d", len(sessions))
+		t.Fatalf("lark/user_b should have 1 session, got %d", len(sessions))
 	}
 
-	sessions, err = m.List(ctx, "user_c")
+	sessions, err = m.ListByChannel(ctx, "lark", "user_c")
 	if err != nil {
-		t.Fatalf("List failed: %v", err)
+		t.Fatalf("ListByChannel failed: %v", err)
 	}
 	if len(sessions) != 0 {
-		t.Fatalf("user_c should have 0 sessions, got %d", len(sessions))
+		t.Fatalf("lark/user_c should have 0 sessions, got %d", len(sessions))
 	}
 }
 
 func TestSetTitle(t *testing.T) {
 	m, ctx := testManager(t)
 
-	sid, _, _ := m.Create(ctx, "user4", "m4")
+	sid, _, _ := m.Create(ctx, "lark", "user4", "m4")
 	m.SetTitle(ctx, sid, "我的第一个会话")
 
 	info, _ := m.Get(ctx, sid)
@@ -129,7 +129,7 @@ func TestSetTitle(t *testing.T) {
 func TestUpdateAfterChat(t *testing.T) {
 	m, ctx := testManager(t)
 
-	sid, _, _ := m.Create(ctx, "user5", "m5")
+	sid, _, _ := m.Create(ctx, "lark", "user5", "m5")
 	m.UpdateAfterChat(ctx, sid, 3)
 
 	info, _ := m.Get(ctx, sid)
@@ -138,47 +138,23 @@ func TestUpdateAfterChat(t *testing.T) {
 	}
 }
 
-func TestOwnerIsolation(t *testing.T) {
+func TestChannelIsolation(t *testing.T) {
 	m, ctx := testManager(t)
 
-	m.Create(ctx, "user6", "m6")
+	m.Create(ctx, "lark", "user_a", "m1")
+	m.Create(ctx, "wechat", "user_a", "m2")
 
-	sessions, _ := m.List(ctx, "user7")
+	sessions, _ := m.ListByChannel(ctx, "lark", "user_a")
 	for _, s := range sessions {
-		if s.UserID == "user7" {
-			t.Fatal("user7 should not see user6's sessions")
+		if s.ChannelName != "lark" {
+			t.Fatal("lark/user_a should only see lark sessions")
 		}
 	}
-}
 
-func TestCheckEpochInitializedOnFirstCall(t *testing.T) {
-	m, ctx := testManager(t)
-	sid, _, _ := m.Create(ctx, "u1", "m1")
-
-	r := m.ReconcileEpoch(ctx, sid, "2026-06-19")
-	if r != EpochInitialized {
-		t.Fatalf("first call should be Initialized, got %v", r)
-	}
-}
-
-func TestCheckEpochSameDay(t *testing.T) {
-	m, ctx := testManager(t)
-	sid, _, _ := m.Create(ctx, "u1", "m1")
-
-	m.CommitEpoch(ctx, sid, "2026-06-19")
-	r := m.ReconcileEpoch(ctx, sid, "2026-06-19")
-	if r != EpochUnchanged {
-		t.Fatalf("same day should be Unchanged, got %v", r)
-	}
-}
-
-func TestCheckEpochCrossDay(t *testing.T) {
-	m, ctx := testManager(t)
-	sid, _, _ := m.Create(ctx, "u1", "m1")
-
-	m.CommitEpoch(ctx, sid, "2026-06-19")
-	r := m.ReconcileEpoch(ctx, sid, "2026-06-20")
-	if r != EpochUpdated {
-		t.Fatalf("cross day should be Updated, got %v", r)
+	sessions, _ = m.ListByChannel(ctx, "wechat", "user_a")
+	for _, s := range sessions {
+		if s.ChannelName != "wechat" {
+			t.Fatal("wechat/user_a should only see wechat sessions")
+		}
 	}
 }

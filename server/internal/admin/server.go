@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
-	"github.com/redis/go-redis/v9"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -23,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"xiaoli/server/internal/agent/session"
 )
 
 const (
@@ -165,10 +166,12 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.withUser(w, r, s.handleCall)
 	case r.URL.Path == "/admin/api/schedules":
 		s.withUser(w, r, s.handleSchedules)
-	case r.URL.Path == "/admin/api/memory":
-		s.withUser(w, r, s.handleMemoryList)
-	case r.URL.Path == "/admin/api/memory/detail":
-		s.withUser(w, r, s.handleMemoryDetail)
+	case r.URL.Path == "/admin/api/memory/channels":
+		s.withUser(w, r, s.handleMemoryChannels)
+	case r.URL.Path == "/admin/api/memory/sessions":
+		s.withUser(w, r, s.handleMemorySessions)
+	case r.URL.Path == "/admin/api/memory/session":
+		s.withUser(w, r, s.handleMemorySessionByID)
 	case r.URL.Path == "/admin/api/speak":
 		s.withUser(w, r, s.handleSpeak)
 	case r.URL.Path == "/admin/api/speak/stop":
@@ -518,137 +521,123 @@ func (s *AdminServer) schedules() []map[string]any {
 	return out
 }
 
-type memoryListItem struct {
-	Key        string `json:"key"`
-	DeviceID   string `json:"device_id"`
-	TTLSeconds int64  `json:"ttl_seconds"`
-	Bytes      int    `json:"bytes"`
-	Online     bool   `json:"online"`
-}
-
-type memoryMessageSummary struct {
-	Index                int                `json:"index"`
-	Role                 string             `json:"role"`
-	Content              string             `json:"content"`
-	Name                 string             `json:"name,omitempty"`
-	ToolCalls            []schema.ToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID           string             `json:"tool_call_id,omitempty"`
-	ToolName             string             `json:"tool_name,omitempty"`
-	FinishReason         string             `json:"finish_reason,omitempty"`
-	Usage                *schema.TokenUsage `json:"usage,omitempty"`
-	ReasoningContent     string             `json:"reasoning_content,omitempty"`
-	MultiContentParts    int                `json:"multi_content_parts,omitempty"`
-	UserInputParts       int                `json:"user_input_parts,omitempty"`
-	AssistantOutputParts int                `json:"assistant_output_parts,omitempty"`
-	RawJSON              string             `json:"raw_json"`
-}
-
-func (s *AdminServer) handleMemoryList(w http.ResponseWriter, r *http.Request, user map[string]any) {
+func (s *AdminServer) handleMemoryChannels(w http.ResponseWriter, r *http.Request, user map[string]any) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 	prefix := s.memoryPrefix()
-	devices, deviceErr := s.deviceController().Devices(r.Context())
-	online := map[string]bool{}
-	for _, device := range devices {
-		online[device.DeviceID] = true
-	}
-	if s.memory == nil || !s.memory.Enabled() {
-		payload := map[string]any{
+	if s.agent == nil || s.agent.SessionManager() == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
 			"enabled":  false,
 			"prefix":   prefix,
-			"devices":  devices,
-			"memories": []memoryListItem{},
-		}
-		if deviceErr != nil {
-			payload["device_error"] = deviceErr.Error()
-		}
-		writeJSON(w, http.StatusOK, payload)
+			"channels": []session.ChannelEntry{},
+		})
 		return
 	}
-	keys, err := s.memory.List(r.Context(), 200)
+	entries, err := s.agent.SessionManager().ListChannels(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"enabled": true, "prefix": prefix, "error": err.Error()})
 		return
 	}
-	memories := make([]memoryListItem, 0, len(keys))
-	for _, key := range keys {
-		memories = append(memories, memoryListItem{
-			Key:        key.Key,
-			DeviceID:   key.DeviceID,
-			TTLSeconds: key.TTLSeconds,
-			Bytes:      key.Bytes,
-			Online:     online[key.DeviceID],
-		})
-	}
-	sort.Slice(memories, func(i, j int) bool {
-		if memories[i].DeviceID == memories[j].DeviceID {
-			return memories[i].Key < memories[j].Key
-		}
-		return memories[i].DeviceID < memories[j].DeviceID
-	})
-	payload := map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":  true,
 		"prefix":   prefix,
-		"devices":  devices,
-		"memories": memories,
-	}
-	if deviceErr != nil {
-		payload["device_error"] = deviceErr.Error()
-	}
-	writeJSON(w, http.StatusOK, payload)
+		"channels": entries,
+	})
 }
 
-func (s *AdminServer) handleMemoryDetail(w http.ResponseWriter, r *http.Request, user map[string]any) {
+func (s *AdminServer) handleMemorySessions(w http.ResponseWriter, r *http.Request, user map[string]any) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	deviceID := strings.TrimSpace(r.URL.Query().Get("device_id"))
-	if deviceID == "" {
-		http.Error(w, "device_id is required", http.StatusBadRequest)
+	chName := strings.TrimSpace(r.URL.Query().Get("channel_name"))
+	chUser := strings.TrimSpace(r.URL.Query().Get("channel_user"))
+	prefix := s.memoryPrefix()
+	if s.agent == nil || s.agent.SessionManager() == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "prefix": prefix})
+		return
+	}
+	sm := s.agent.SessionManager()
+
+	currentID := sm.GetChannelSession(r.Context(), chName, chUser)
+	sessions, err := sm.ListByChannel(r.Context(), chName, chUser)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"current_session_id": currentID,
+		"sessions":           sessions,
+	})
+}
+
+func (s *AdminServer) handleMemorySessionByID(w http.ResponseWriter, r *http.Request, user map[string]any) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	sessionID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if sessionID == "" {
+		http.Error(w, "id is required", http.StatusBadRequest)
 		return
 	}
 	order := normalizeMemoryOrder(r.URL.Query().Get("order"))
 	prefix := s.memoryPrefix()
-	if s.memory == nil || !s.memory.Enabled() {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"enabled":   false,
-			"prefix":    prefix,
-			"device_id": deviceID,
-			"order":     order,
-			"messages":  []memoryMessageSummary{},
-		})
+	if s.agent == nil || s.agent.SessionManager() == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "prefix": prefix})
 		return
 	}
-	value, err := s.memory.LoadRaw(r.Context(), deviceID)
+	sm := s.agent.SessionManager()
+
+	info, err := sm.Get(r.Context(), sessionID)
 	if err != nil {
-		if errors.Is(err, redis.Nil) || strings.TrimSpace(err.Error()) == "redis: nil" {
-			http.NotFound(w, r)
-			return
-		}
-		writeJSON(w, http.StatusBadGateway, map[string]any{"enabled": true, "prefix": prefix, "device_id": deviceID, "error": err.Error()})
+		http.NotFound(w, r)
 		return
 	}
-	messages, parseErr := summarizeMemoryMessages(value.Raw)
+
+	msgs := sm.LoadMessages(r.Context(), sessionID)
 	if order == "newest" {
-		reverseMemoryMessages(messages)
+		reverseMessages(msgs)
 	}
+
+	type msgItem struct {
+		Index            int                `json:"index"`
+		Role             string             `json:"role"`
+		Content          string             `json:"content"`
+		ReasoningContent string             `json:"reasoning_content,omitempty"`
+		ToolCalls        []schema.ToolCall  `json:"tool_calls,omitempty"`
+		ToolCallID       string             `json:"tool_call_id,omitempty"`
+		FinishReason     string             `json:"finish_reason,omitempty"`
+	}
+	items := make([]msgItem, 0, len(msgs))
+	for i, m := range msgs {
+		origIndex := i
+		if order == "newest" {
+			origIndex = len(msgs) - 1 - i
+		}
+		item := msgItem{
+			Index:            origIndex,
+			Role:             string(m.Role),
+			Content:          m.Content,
+			ReasoningContent: m.ReasoningContent,
+			ToolCalls:        m.ToolCalls,
+			ToolCallID:       m.ToolCallID,
+		}
+		if m.ResponseMeta != nil {
+			item.FinishReason = m.ResponseMeta.FinishReason
+		}
+		items = append(items, item)
+	}
+
 	payload := map[string]any{
 		"enabled":       true,
 		"prefix":        prefix,
-		"key":           value.Key,
-		"device_id":     value.DeviceID,
-		"ttl_seconds":   value.TTLSeconds,
-		"bytes":         value.Bytes,
-		"order":         order,
-		"message_count": len(messages),
-		"messages":      messages,
-		"raw_json":      string(value.Raw),
-	}
-	if parseErr != nil {
-		payload["parse_error"] = parseErr.Error()
+		"session_id":    sessionID,
+		"info":          info,
+		"message_count": len(items),
+		"messages":      items,
 	}
 	writeJSON(w, http.StatusOK, payload)
 }
@@ -667,45 +656,7 @@ func normalizeMemoryOrder(value string) string {
 	return "newest"
 }
 
-func summarizeMemoryMessages(raw []byte) ([]memoryMessageSummary, error) {
-	if len(raw) == 0 {
-		return []memoryMessageSummary{}, nil
-	}
-	var messages []*schema.Message
-	if err := json.Unmarshal(raw, &messages); err != nil {
-		return []memoryMessageSummary{}, err
-	}
-	summaries := make([]memoryMessageSummary, 0, len(messages))
-	for i, message := range messages {
-		if message == nil {
-			continue
-		}
-		item := memoryMessageSummary{
-			Index:                i,
-			Role:                 string(message.Role),
-			Content:              message.Content,
-			Name:                 message.Name,
-			ToolCalls:            message.ToolCalls,
-			ToolCallID:           message.ToolCallID,
-			ToolName:             message.ToolName,
-			ReasoningContent:     message.ReasoningContent,
-			MultiContentParts:    len(message.MultiContent),
-			UserInputParts:       len(message.UserInputMultiContent),
-			AssistantOutputParts: len(message.AssistantGenMultiContent),
-		}
-		if message.ResponseMeta != nil {
-			item.FinishReason = message.ResponseMeta.FinishReason
-			item.Usage = message.ResponseMeta.Usage
-		}
-		if encoded, err := json.Marshal(message); err == nil {
-			item.RawJSON = string(encoded)
-		}
-		summaries = append(summaries, item)
-	}
-	return summaries, nil
-}
-
-func reverseMemoryMessages(messages []memoryMessageSummary) {
+func reverseMessages(messages []*schema.Message) {
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
