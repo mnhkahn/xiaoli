@@ -17,10 +17,12 @@ const (
 )
 
 type Option struct {
-	ID          string
-	Role        Role
-	DisplayName string
-	Provider    string
+	ID            string
+	Role          Role
+	DisplayName   string
+	Provider      string
+	MaxTokens     int
+	ContextLength int
 }
 
 type Selector struct {

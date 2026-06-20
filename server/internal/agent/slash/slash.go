@@ -3,6 +3,7 @@ package slash
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"xiaoli/server/internal/agent/channel"
@@ -54,6 +55,7 @@ type Dependencies interface {
 	NewSession(ctx context.Context) string
 	ListSessions(ctx context.Context) string
 	SessionContext(ctx context.Context, id string) string
+	ProviderBalances(ctx context.Context) map[string]string
 }
 
 type Handler struct {
@@ -91,7 +93,7 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 	case "skills":
 		return h.skills(ctx), true
 	case "model":
-		return h.model(cmd.Args), true
+		return h.model(ctx, cmd.Args), true
 	case "channel":
 		return h.channels(ctx), true
 	case "status":
@@ -141,12 +143,12 @@ func (h Handler) skills(ctx context.Context) string {
 	return b.String()
 }
 
-func (h Handler) model(args string) string {
+func (h Handler) model(ctx context.Context, args string) string {
 	fields := strings.Fields(args)
 	if len(fields) > 0 {
 		switch fields[0] {
 		case "list":
-			return h.modelList()
+			return h.modelList(ctx)
 		case "use":
 			return h.modelUse(fields[1:])
 		}
@@ -161,7 +163,7 @@ func (h Handler) model(args string) string {
 	return b.String()
 }
 
-func (h Handler) modelList() string {
+func (h Handler) modelList(ctx context.Context) string {
 	options := h.deps.ListModels(model.RoleLLM)
 	current := h.deps.ModelInfo().LLM
 	if len(options) == 0 {
@@ -169,11 +171,31 @@ func (h Handler) modelList() string {
 	}
 	var b strings.Builder
 	b.WriteString("可选 LLM 模型：")
-	for _, option := range options {
-		b.WriteString("\n- ")
-		b.WriteString(option.ID)
+	for i, option := range options {
+		fmt.Fprintf(&b, "\n%d. %s", i+1, option.ID)
 		if option.ID == current {
 			b.WriteString(" 当前")
+		}
+		if option.MaxTokens > 0 || option.ContextLength > 0 {
+			b.WriteString(" |")
+			if option.ContextLength > 0 {
+				fmt.Fprintf(&b, " 上下文 %dK", option.ContextLength/1024)
+			}
+			if option.MaxTokens > 0 {
+				fmt.Fprintf(&b, " 输出 %d", option.MaxTokens)
+			}
+		}
+	}
+	balances := h.deps.ProviderBalances(ctx)
+	if len(balances) > 0 {
+		b.WriteString("\n\n套餐余额：")
+		providers := make([]string, 0, len(balances))
+		for name := range balances {
+			providers = append(providers, name)
+		}
+		sort.Strings(providers)
+		for _, name := range providers {
+			fmt.Fprintf(&b, "\n- %s: %s", name, balances[name])
 		}
 	}
 	return b.String()

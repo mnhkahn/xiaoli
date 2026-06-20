@@ -14,6 +14,7 @@ import (
 	agentlark "xiaoli/server/internal/agent/channel/lark"
 	agentwechat "xiaoli/server/internal/agent/channel/wechat"
 	agentmodel "xiaoli/server/internal/agent/model"
+	"xiaoli/server/internal/agent/provider"
 	"xiaoli/server/internal/agent/slash"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
 	agentworkflow "xiaoli/server/internal/agent/workflow"
@@ -348,6 +349,44 @@ func (d adminSlashDeps) ListSessions(ctx context.Context) string {
 		fmt.Fprintf(&b, "\n- %s  %s  [%s]  %d条", s.ID, s.Title, s.Model, s.Count)
 	}
 	return b.String()
+}
+
+func (d adminSlashDeps) ProviderBalances(ctx context.Context) map[string]string {
+	models := d.s.cfg.GoLLMModelConfigs
+	if models == nil {
+		return nil
+	}
+	keys := map[string]string{}
+	for _, m := range models {
+		idx := strings.Index(m.ID, ":")
+		if idx <= 0 {
+			continue
+		}
+		name := m.ID[:idx]
+		existing, ok := keys[name]
+		if !ok || (existing == "" && m.APIKey != "") {
+			keys[name] = m.APIKey
+		}
+	}
+	balances := map[string]string{}
+	for name, apiKey := range keys {
+		if apiKey == "" {
+			balances[name] = "未配置 API Key"
+			continue
+		}
+		p := provider.Get(name)
+		if p == nil {
+			balances[name] = "N/A"
+			continue
+		}
+		bal, err := p.CheckBalance(ctx, apiKey)
+		if err != nil {
+			balances[name] = "查询失败"
+			continue
+		}
+		balances[name] = bal
+	}
+	return balances
 }
 
 func (d adminSlashDeps) SessionContext(ctx context.Context, id string) string {

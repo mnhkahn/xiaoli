@@ -59,6 +59,10 @@ func (fakeDeps) SessionContext(_ context.Context, id string) string {
 	return "test session context " + id
 }
 
+func (fakeDeps) ProviderBalances(_ context.Context) map[string]string {
+	return map[string]string{"test-provider": "¥10.00", "free-provider": "N/A"}
+}
+
 func TestParseRequiresLeadingSlash(t *testing.T) {
 	cmd, ok := Parse(" /skills  --verbose ")
 	if !ok {

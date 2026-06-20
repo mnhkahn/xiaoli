@@ -150,9 +150,11 @@ func newModelSelector(cfg Config) *agentmodel.Selector {
 		llmOptions = make([]agentmodel.Option, 0, len(cfg.LLMModelConfigs))
 		for id, model := range cfg.LLMModelConfigs {
 			option := agentmodel.Option{
-				ID:          id,
-				Role:        agentmodel.RoleLLM,
-				DisplayName: model.DisplayName,
+				ID:            id,
+				Role:          agentmodel.RoleLLM,
+				DisplayName:   model.DisplayName,
+				MaxTokens:     model.MaxTokens,
+				ContextLength: model.ContextLength,
 			}
 			if idx := strings.Index(id, ":"); idx > 0 {
 				option.Provider = id[:idx]

@@ -27,12 +27,13 @@ type Config struct {
 }
 
 type LLMModelConfig struct {
-	ID          string
-	DisplayName string
-	BaseURL     string
-	Model       string
-	APIKey      string
-	MaxTokens   int
+	ID            string
+	DisplayName   string
+	BaseURL       string
+	Model         string
+	APIKey        string
+	MaxTokens     int
+	ContextLength int
 }
 
 func (c Config) selectedLLMModelConfig() LLMModelConfig {
