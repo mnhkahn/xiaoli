@@ -94,12 +94,13 @@ func runtimeLLMModelConfigs(models map[string]LLMModelConfig) map[string]agentru
 	out := make(map[string]agentruntime.LLMModelConfig, len(models))
 	for id, model := range models {
 		out[id] = agentruntime.LLMModelConfig{
-			ID:          model.ID,
-			DisplayName: model.DisplayName,
-			BaseURL:     model.BaseURL,
-			Model:       model.Model,
-			APIKey:      model.APIKey,
-			MaxTokens:   model.MaxTokens,
+			ID:            model.ID,
+			DisplayName:   model.DisplayName,
+			BaseURL:       model.BaseURL,
+			Model:         model.Model,
+			APIKey:        model.APIKey,
+			MaxTokens:     model.MaxTokens,
+			ContextLength: model.ContextLength,
 		}
 	}
 	return out

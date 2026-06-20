@@ -37,10 +37,12 @@ type SkillInfo struct {
 }
 
 type ModelInfo struct {
-	LLM  string
-	VLLM string
-	ASR  string
-	TTS  string
+	LLM           string
+	VLLM          string
+	ASR           string
+	TTS           string
+	ContextLength int
+	MaxTokens     int
 }
 
 type ModelOption = model.Option
@@ -97,7 +99,7 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 	case "channel":
 		return h.channels(ctx), true
 	case "status":
-		return h.deps.LLMStats(), true
+		return h.status(), true
 	case "new":
 		return h.deps.NewSession(ctx), true
 	case "sessions":
@@ -157,9 +159,31 @@ func (h Handler) model(ctx context.Context, args string) string {
 	var b strings.Builder
 	b.WriteString("当前模型配置：")
 	writeValue(&b, "LLM", info.LLM)
+	if info.ContextLength > 0 {
+		b.WriteString(fmt.Sprintf("  窗口 %dK", info.ContextLength/1024))
+		if info.MaxTokens > 0 {
+			b.WriteString(fmt.Sprintf(" | 输出 %d", info.MaxTokens))
+		}
+	}
 	writeValue(&b, "VLLM", info.VLLM)
 	writeValue(&b, "ASR", info.ASR)
 	writeValue(&b, "TTS", info.TTS)
+	return b.String()
+}
+
+func (h Handler) status() string {
+	info := h.deps.ModelInfo()
+	var b strings.Builder
+	b.WriteString("当前模型：")
+	b.WriteString(info.LLM)
+	if info.ContextLength > 0 {
+		fmt.Fprintf(&b, "\n窗口 %dK", info.ContextLength/1024)
+		if info.MaxTokens > 0 {
+			fmt.Fprintf(&b, " | 输出上限 %d", info.MaxTokens)
+		}
+	}
+	b.WriteString("\n\n")
+	b.WriteString(h.deps.LLMStats())
 	return b.String()
 }
 
@@ -179,7 +203,7 @@ func (h Handler) modelList(ctx context.Context) string {
 		if option.MaxTokens > 0 || option.ContextLength > 0 {
 			b.WriteString(" |")
 			if option.ContextLength > 0 {
-				fmt.Fprintf(&b, " 上下文 %dK", option.ContextLength/1024)
+				fmt.Fprintf(&b, " 窗口 %dK", option.ContextLength/1024)
 			}
 			if option.MaxTokens > 0 {
 				fmt.Fprintf(&b, " 输出 %d", option.MaxTokens)

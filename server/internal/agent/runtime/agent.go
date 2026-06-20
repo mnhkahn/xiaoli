@@ -338,6 +338,71 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	if err != nil {
 		return "", fmt.Errorf("create chat model: %w", err)
 	}
+
+	modelCfg := a.cfg.selectedLLMModelConfigFor(modelID)
+	if modelCfg.ContextLength > 0 {
+		reserve := 8000
+		threshold := modelCfg.ContextLength*75/100 - modelCfg.MaxTokens - reserve
+		if threshold < 2000 {
+			threshold = 2000
+		}
+		var histTokens int
+		for _, m := range history {
+			histTokens += len(m.Content) / 4
+		}
+		currentTokens := len(userText) / 4
+		if histTokens+currentTokens > threshold {
+			if currentTokens > modelCfg.ContextLength*40/100 {
+				return "", fmt.Errorf("输入过长（约 %d tokens），请分段发送", currentTokens)
+			}
+			if len(history) > 4 && histTokens > threshold/3 {
+				var oldPart, recentPart []*schema.Message
+				if len(history) > 12 {
+					recentPart = history[len(history)-10:]
+					oldPart = history[:len(history)-10]
+				} else {
+					recentPart = history[len(history)-4:]
+					oldPart = history[:len(history)-4]
+				}
+				if len(oldPart) >= 2 {
+					promptMsgs := []*schema.Message{
+						schema.SystemMessage("请用简洁的中文总结以下对话的核心内容，保留关键决策和事实。"),
+					}
+					promptMsgs = append(promptMsgs, oldPart...)
+					summary, sumErr := chatModel.Generate(ctx, promptMsgs)
+					if sumErr == nil && summary != nil && summary.Content != "" {
+						logger.Infof("history compressed: %d hist msgs → %d chars", len(oldPart), len(summary.Content))
+						history = append(
+							[]*schema.Message{schema.SystemMessage("以下是此前对话摘要：\n" + summary.Content)},
+							recentPart...,
+						)
+						histTokens = len(summary.Content) / 4
+						for _, m := range recentPart {
+							histTokens += len(m.Content) / 4
+						}
+					} else {
+						logger.Infof("history compression failed: %v", sumErr)
+					}
+				}
+			}
+			for histTokens+currentTokens > threshold && len(history) > 4 {
+				oldLen := len(history)
+				history = history[len(history)/2:]
+				histTokens = 0
+				for _, m := range history {
+					histTokens += len(m.Content) / 4
+				}
+				logger.Infof("history truncated: %d → %d messages", oldLen, len(history))
+			}
+			msgs = make([]*schema.Message, 0, len(history)+2)
+			if a.cfg.LLMPrompt != "" {
+				msgs = append(msgs, schema.SystemMessage(a.cfg.LLMPrompt))
+			}
+			msgs = append(msgs, history...)
+			msgs = append(msgs, schema.UserMessage(userText))
+		}
+	}
+
 	maxIterations := opts.MaxIterations
 	if maxIterations <= 0 {
 		maxIterations = 10

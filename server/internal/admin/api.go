@@ -263,11 +263,18 @@ func (d adminSlashDeps) ModelInfo() slash.ModelInfo {
 	if d.s.agent != nil && d.s.agent.CurrentLLMModel() != "" {
 		llm = d.s.agent.CurrentLLMModel()
 	}
+	ctxLen, maxTok := 0, 0
+	if cfg, ok := d.s.cfg.GoLLMModelConfigs[llm]; ok {
+		ctxLen = cfg.ContextLength
+		maxTok = cfg.MaxTokens
+	}
 	return slash.ModelInfo{
-		LLM:  llm,
-		VLLM: d.s.cfg.GoVLLMModel,
-		ASR:  d.s.cfg.GoASRModel,
-		TTS:  d.s.cfg.GoTTSModel,
+		LLM:           llm,
+		VLLM:          d.s.cfg.GoVLLMModel,
+		ASR:           d.s.cfg.GoASRModel,
+		TTS:           d.s.cfg.GoTTSModel,
+		ContextLength: ctxLen,
+		MaxTokens:     maxTok,
 	}
 }
 
