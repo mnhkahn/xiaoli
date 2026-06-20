@@ -158,3 +158,24 @@ func TestChannelIsolation(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadMessages(t *testing.T) {
+	m, ctx := testManager(t)
+
+	// Save messages to the key that Memory.Save uses (prefix + sessionID)
+	raw := `[{"role":"user","content":"你好"},{"role":"assistant","content":"你好！有什么可以帮助你的？"}]`
+	if err := m.client.Set(ctx, m.messageKey("ses_test123"), raw, 0).Err(); err != nil {
+		t.Fatalf("set failed: %v", err)
+	}
+
+	msgs := m.LoadMessages(ctx, "ses_test123")
+	if len(msgs) != 2 {
+		t.Fatalf("got %d messages, want 2", len(msgs))
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "你好" {
+		t.Fatalf("msg[0] = %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || msgs[1].Content != "你好！有什么可以帮助你的？" {
+		t.Fatalf("msg[1] = %+v", msgs[1])
+	}
+}

@@ -48,12 +48,12 @@ func (m *Manager) channelKey(channelName, channelUser string) string {
 	return m.prefix + "channel:" + enc(channelName) + ":" + enc(channelUser)
 }
 
-func (m *Manager) sessionKey(sessionID string) string {
-	return m.prefix + "ses:" + sessionID
+func (m *Manager) messageKey(sessionID string) string {
+	return m.prefix + sessionID
 }
 
 func (m *Manager) metaKey(sessionID string) string {
-	return m.sessionKey(sessionID) + ":meta"
+	return m.prefix + "ses:" + sessionID + ":meta"
 }
 
 func (m *Manager) GetOrCreate(ctx context.Context, channelName, channelUser, model string) (string, bool, error) {
@@ -228,7 +228,7 @@ func (m *Manager) UpdateAfterChat(ctx context.Context, sessionID string, count i
 }
 
 func (m *Manager) LoadMessages(ctx context.Context, sessionID string) []*schema.Message {
-	data, err := m.client.Get(ctx, m.sessionKey(sessionID)).Bytes()
+	data, err := m.client.Get(ctx, m.messageKey(sessionID)).Bytes()
 	if err != nil {
 		return nil
 	}
