@@ -18,77 +18,80 @@
 
   <line x1="450" y1="42" x2="450" y2="58" stroke="#555" stroke-width="1"/>
 
-  <rect x="120" y="58" width="660" height="62" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <rect x="120" y="58" width="660" height="55" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
   <text x="145" y="80" fill="#064e3b" font-size="13" font-weight="bold">入口点层</text>
   <text x="145" y="98" fill="#064e3b" font-size="11" opacity="0.85">cmd/xiaoli-admin/main.go → LoadConfig() → NewServer(cfg) → http.ListenAndServe</text>
-  <text x="145" y="112" fill="#064e3b" font-size="10" opacity="0.65">背景任务：StudyMonitor · Lark WS Client · WeChat 轮询</text>
+  <text x="145" y="110" fill="#064e3b" font-size="10" opacity="0.65">背景任务：StudyMonitor · Lark WS Client · WeChat 轮询</text>
 
-  <line x1="450" y1="120" x2="450" y2="140" stroke="#10b981" stroke-width="2"/>
+  <line x1="450" y1="113" x2="450" y2="128" stroke="#10b981" stroke-width="2"/>
 
-  <rect x="30" y="140" width="840" height="72" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="55" y="162" fill="#064e3b" font-size="13" font-weight="bold">HTTP 路由层</text>
-  <text x="55" y="182" fill="#064e3b" font-size="11" opacity="0.85">server.go — ServeHTTP 多路分发</text>
-  <text x="55" y="200" fill="#064e3b" font-size="10" opacity="0.65">/health · /xiaozhi/ota/ · /xiaozhi/v1/(WS) · /lark/events · /mcp/vision/ · /admin/*</text>
+  <rect x="30" y="128" width="840" height="55" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="55" y="150" fill="#064e3b" font-size="13" font-weight="bold">HTTP 路由层</text>
+  <text x="55" y="168" fill="#064e3b" font-size="11" opacity="0.85">server.go — ServeHTTP 多路分发</text>
+  <text x="55" y="180" fill="#064e3b" font-size="10" opacity="0.65">/health · /xiaozhi/ota/ · /xiaozhi/v1/(WS) · /lark/events · /mcp/vision/ · /admin/*</text>
 
-  <line x1="450" y1="212" x2="450" y2="232" stroke="#10b981" stroke-width="2"/>
+  <line x1="450" y1="183" x2="450" y2="198" stroke="#10b981" stroke-width="2"/>
 
-  <rect x="30" y="232" width="840" height="72" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="55" y="254" fill="#064e3b" font-size="13" font-weight="bold">渠道层</text>
-  <text x="55" y="274" fill="#064e3b" font-size="11" opacity="0.85">agent/channel · channel.go — Provider 注册 · ConversationPipeline</text>
-  <text x="55" y="292" fill="#064e3b" font-size="10" opacity="0.65">agent/channel/lark (WS) · agent/channel/wechat (轮询) · agent/esp32/hub (Device WS) · agent/slash (斜杠命令)</text>
+  <rect x="30" y="198" width="840" height="55" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="55" y="220" fill="#064e3b" font-size="13" font-weight="bold">渠道层</text>
+  <text x="55" y="238" fill="#064e3b" font-size="11" opacity="0.85">agent/channel · channel.go — Provider 注册 · ConversationPipeline</text>
+  <text x="55" y="250" fill="#064e3b" font-size="10" opacity="0.65">agent/channel/lark (WS) · agent/channel/wechat (轮询) · agent/esp32/hub (Device WS) · agent/slash (斜杠命令)</text>
 
-  <line x1="135" y1="304" x2="135" y2="324" stroke="#10b981" stroke-width="2"/>
-  <line x1="450" y1="304" x2="450" y2="324" stroke="#10b981" stroke-width="2"/>
-  <line x1="765" y1="304" x2="765" y2="324" stroke="#10b981" stroke-width="2"/>
+  <line x1="165" y1="253" x2="165" y2="268" stroke="#10b981" stroke-width="2"/>
+  <line x1="450" y1="253" x2="450" y2="268" stroke="#10b981" stroke-width="2"/>
+  <line x1="735" y1="253" x2="735" y2="268" stroke="#10b981" stroke-width="2"/>
 
-  <rect x="30" y="324" width="270" height="100" rx="8" fill="url(#in-progress)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="55" y="346" fill="#1a1b2e" font-size="12" font-weight="bold">编排层</text>
-  <text x="55" y="364" fill="#1a1b2e" font-size="10">direct_ai.go — EinoAgent</text>
-  <text x="55" y="380" fill="#1a1b2e" font-size="10">conversation.go — ConversationPipeline</text>
-  <text x="55" y="396" fill="#1a1b2e" font-size="9" opacity="0.65">Eino CloudWeGo 框架</text>
-  <text x="55" y="410" fill="#1a1b2e" font-size="9" opacity="0.65">ChatModelAgent · 工具循环 · 技能注入</text>
+  <rect x="30" y="268" width="270" height="115" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="55" y="290" fill="#064e3b" font-size="12" font-weight="bold">编排层</text>
+  <text x="55" y="308" fill="#064e3b" font-size="10">agent/runtime — Agent 运行时</text>
+  <text x="55" y="325" fill="#064e3b" font-size="10">agent/session — 会话管理</text>
+  <text x="55" y="342" fill="#064e3b" font-size="10">agent/slash — 斜杠命令</text>
+  <text x="55" y="360" fill="#064e3b" font-size="9" opacity="0.65">ChatModelAgent · 工具循环 · 上下文管理</text>
+  <text x="55" y="374" fill="#064e3b" font-size="9" opacity="0.65">窗口压缩 · 技能注入 · 429 重试</text>
 
-  <rect x="315" y="324" width="270" height="100" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="340" y="346" fill="#064e3b" font-size="12" font-weight="bold">AI 服务层</text>
-  <text x="340" y="364" fill="#064e3b" font-size="10">ASR: direct_ai.go — OpenAITranscriber</text>
-  <text x="340" y="380" fill="#064e3b" font-size="10">VLLM: direct_vision.go — GoVisionClient</text>
-  <text x="340" y="396" fill="#064e3b" font-size="10">TTS: direct_tts.go — HTTPSpeechSynthesizer</text>
-  <text x="340" y="410" fill="#064e3b" font-size="9" opacity="0.65">SiliconFlow / OpenRouter 多 provider</text>
+  <rect x="315" y="268" width="270" height="115" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="340" y="290" fill="#064e3b" font-size="12" font-weight="bold">AI 服务层</text>
+  <text x="340" y="308" fill="#064e3b" font-size="10">agent/provider — LLM Provider 层</text>
+  <text x="340" y="325" fill="#064e3b" font-size="10">ASR: OpenAITranscriber (direct_ai)</text>
+  <text x="340" y="342" fill="#064e3b" font-size="10">VLLM: GoVisionClient (direct_vision)</text>
+  <text x="340" y="360" fill="#064e3b" font-size="10">TTS: HTTPSpeechSynthesizer (direct_tts)</text>
+  <text x="340" y="374" fill="#064e3b" font-size="9" opacity="0.65">ARK · SiliconFlow · OpenRouter · NVIDIA</text>
 
-  <rect x="600" y="324" width="270" height="100" rx="8" fill="url(#in-progress)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="625" y="346" fill="#1a1b2e" font-size="12" font-weight="bold">工具层</text>
-  <text x="625" y="364" fill="#1a1b2e" font-size="10">agent/tool/skill — Skill 后端</text>
-  <text x="625" y="380" fill="#1a1b2e" font-size="10">agent/tool/mcp — MCP 客户端</text>
-  <text x="625" y="396" fill="#1a1b2e" font-size="9" opacity="0.65">skill CLI 执行 · MCP HTTP/SSE 连接</text>
-  <text x="625" y="410" fill="#1a1b2e" font-size="9" opacity="0.65">设备 MCP 桥接</text>
+  <rect x="600" y="268" width="270" height="115" rx="8" fill="url(#in-progress)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="625" y="290" fill="#1a1b2e" font-size="12" font-weight="bold">工具层</text>
+  <text x="625" y="308" fill="#1a1b2e" font-size="10">agent/tool/builtin — 内置工具</text>
+  <text x="625" y="325" fill="#1a1b2e" font-size="10">agent/tool/skill — Skill 后端</text>
+  <text x="625" y="342" fill="#1a1b2e" font-size="10">agent/tool/mcp — MCP 客户端</text>
+  <text x="625" y="360" fill="#1a1b2e" font-size="9" opacity="0.65">ask · memory · prompt · task · webfetch</text>
+  <text x="625" y="374" fill="#1a1b2e" font-size="9" opacity="0.65">skill CLI · MCP HTTP/SSE · 设备桥接</text>
 
-  <line x1="165" y1="424" x2="165" y2="448" stroke="#f59e0b" stroke-width="2"/>
-  <line x1="450" y1="424" x2="450" y2="448" stroke="#10b981" stroke-width="2"/>
-  <line x1="735" y1="424" x2="735" y2="448" stroke="#f59e0b" stroke-width="2"/>
-  <line x1="165" y1="448" x2="735" y2="448" stroke="#f59e0b" stroke-width="1.5"/>
-  <line x1="450" y1="448" x2="450" y2="468" stroke="#f59e0b" stroke-width="2"/>
+  <line x1="165" y1="383" x2="165" y2="398" stroke="#10b981" stroke-width="2"/>
+  <line x1="450" y1="383" x2="450" y2="398" stroke="#10b981" stroke-width="2"/>
+  <line x1="735" y1="383" x2="735" y2="398" stroke="#f59e0b" stroke-width="2"/>
+  <line x1="165" y1="393" x2="735" y2="393" stroke="#f59e0b" stroke-width="1.5"/>
+  <line x1="450" y1="393" x2="450" y2="398" stroke="#f59e0b" stroke-width="2"/>
 
-  <rect x="30" y="468" width="840" height="72" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="55" y="490" fill="#064e3b" font-size="13" font-weight="bold">基础设施层</text>
-  <text x="55" y="510" fill="#064e3b" font-size="11" opacity="0.85">Redis 记忆 (direct_ai.go) · Logto OIDC 认证 (server.go) · 配置管理 (config.go)</text>
-  <text x="55" y="528" fill="#064e3b" font-size="10" opacity="0.65">Stream Hub 摄像头帧转发 · HMAC Cookie 签名 · 设备认证 Token</text>
+  <rect x="30" y="398" width="840" height="65" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="55" y="420" fill="#064e3b" font-size="13" font-weight="bold">基础设施层</text>
+  <text x="55" y="440" fill="#064e3b" font-size="11" opacity="0.85">Redis 记忆 · 会话持久化 · Logto OIDC 认证 · 配置管理</text>
+  <text x="55" y="456" fill="#064e3b" font-size="10" opacity="0.65">LLM 调用统计 · 工具调用统计 · 重试策略 · Stream Hub 帧转发 · 设备 Token</text>
 
-  <line x1="450" y1="540" x2="450" y2="560" stroke="#10b981" stroke-width="2"/>
+  <line x1="450" y1="463" x2="450" y2="478" stroke="#10b981" stroke-width="2"/>
 
-  <rect x="30" y="560" width="840" height="65" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="55" y="582" fill="#064e3b" font-size="13" font-weight="bold">设备协议层</text>
-  <text x="55" y="600" fill="#064e3b" font-size="11" opacity="0.85">agent/esp32 — DeviceHub · 会话管理 · MCP 代理 · Voice 处理</text>
-  <text x="55" y="616" fill="#064e3b" font-size="10" opacity="0.65">agent/esp32/audio — Ogg Opus 编解码 · VadSilero 语音活动检测</text>
+  <rect x="30" y="478" width="840" height="55" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
+  <text x="55" y="500" fill="#064e3b" font-size="13" font-weight="bold">设备协议层</text>
+  <text x="55" y="518" fill="#064e3b" font-size="11" opacity="0.85">agent/esp32 — DeviceHub · 会话管理 · MCP 代理 · Voice 处理</text>
+  <text x="55" y="530" fill="#064e3b" font-size="10" opacity="0.65">agent/esp32/audio — Ogg Opus 编解码 · VadSilero 语音活动检测</text>
 
-  <line x1="450" y1="625" x2="450" y2="643" stroke="#10b981" stroke-width="2"/>
+  <line x1="450" y1="533" x2="450" y2="548" stroke="#10b981" stroke-width="2"/>
 
-  <rect x="100" y="643" width="700" height="50" rx="8" fill="#252640" opacity="0.9" stroke="#4b5563" stroke-width="1"/>
-  <text x="450" y="665" text-anchor="middle" fill="#9ca3af" font-size="11">外部依赖</text>
-  <text x="450" y="682" text-anchor="middle" fill="#6b7280" font-size="10">SiliconFlow (ASR/LLM/VLLM/TTS) · OpenRouter · Fly.io (nrt) · Redis · Logto · Lark · 微信</text>
+  <rect x="100" y="548" width="700" height="45" rx="8" fill="#252640" opacity="0.9" stroke="#4b5563" stroke-width="1"/>
+  <text x="450" y="568" text-anchor="middle" fill="#9ca3af" font-size="11">外部依赖</text>
+  <text x="450" y="584" text-anchor="middle" fill="#6b7280" font-size="10">SiliconFlow · OpenRouter · ARK · Fly.io (nrt) · Redis · Logto · Lark · 微信</text>
 
-  <rect x="300" y="708" width="300" height="32" rx="6" fill="#252640" opacity="0.9"/>
-  <rect x="315" y="718" width="14" height="14" rx="3" fill="url(#done)"/>
-  <text x="335" y="730" fill="#34d399" font-size="10">已实现</text>
-  <rect x="415" y="718" width="14" height="14" rx="3" fill="url(#in-progress)"/>
-  <text x="435" y="730" fill="#fbbf24" font-size="10">迭代中</text>
+  <rect x="300" y="610" width="300" height="32" rx="6" fill="#252640" opacity="0.9"/>
+  <rect x="315" y="620" width="14" height="14" rx="3" fill="url(#done)"/>
+  <text x="335" y="632" fill="#34d399" font-size="10">已实现</text>
+  <rect x="415" y="620" width="14" height="14" rx="3" fill="url(#in-progress)"/>
+  <text x="435" y="632" fill="#fbbf24" font-size="10">迭代中</text>
 </svg>
