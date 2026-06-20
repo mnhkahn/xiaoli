@@ -15,11 +15,12 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
 
+	agentchannel "xiaoli/server/internal/agent/channel"
 	agentmodel "xiaoli/server/internal/agent/model"
+	agentsession "xiaoli/server/internal/agent/session"
 	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
 	agentmcp "xiaoli/server/internal/agent/tool/mcp"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
-	agentsession "xiaoli/server/internal/agent/session"
 )
 
 type DeviceTools interface {
@@ -41,6 +42,8 @@ type Agent struct {
 	skillMW       adk.ChatModelAgentMiddleware
 	recorder      *Recorder
 	sessionMgr    *agentsession.Manager
+	askData       map[string]*agentbuiltin.AskData
+	askDataMu     sync.Mutex
 }
 
 func NewAgent(cfg Config) *Agent {
@@ -251,6 +254,70 @@ func (a *Agent) SessionManager() *agentsession.Manager {
 	return a.sessionMgr
 }
 
+func (a *Agent) storeAskData(conversationID string, d *agentbuiltin.AskData) {
+	if d == nil {
+		return
+	}
+	a.askDataMu.Lock()
+	defer a.askDataMu.Unlock()
+	if a.askData == nil {
+		a.askData = make(map[string]*agentbuiltin.AskData)
+	}
+	a.askData[conversationID] = d
+}
+
+func (a *Agent) ConsumeAskData(conversationID string) *agentbuiltin.AskData {
+	a.askDataMu.Lock()
+	defer a.askDataMu.Unlock()
+	d := a.askData[conversationID]
+	delete(a.askData, conversationID)
+	return d
+}
+
+func (a *Agent) CompressSession(ctx context.Context, memoryID string) (string, error) {
+	if a.memory == nil {
+		return "", fmt.Errorf("memory not configured")
+	}
+	history := a.memory.Load(ctx, memoryID)
+	if len(history) < 4 {
+		return "对话历史较短，无需压缩。", nil
+	}
+	chatModel, _, err := a.chatModel(ctx)
+	if err != nil {
+		return "", fmt.Errorf("get chat model: %w", err)
+	}
+	var oldPart, recentPart []*schema.Message
+	if len(history) > 12 {
+		recentPart = history[len(history)-10:]
+		oldPart = history[:len(history)-10]
+	} else {
+		recentPart = history[len(history)-4:]
+		oldPart = history[:len(history)-4]
+	}
+	if len(oldPart) < 2 {
+		return "对话历史较短，无需压缩。", nil
+	}
+	promptMsgs := []*schema.Message{
+		schema.SystemMessage("请用简洁的中文总结以下对话的核心内容，保留关键决策和事实。"),
+	}
+	promptMsgs = append(promptMsgs, oldPart...)
+	summary, sumErr := chatModel.Generate(ctx, promptMsgs)
+	if sumErr != nil {
+		return "", fmt.Errorf("压缩失败：%w", sumErr)
+	}
+	if summary == nil || summary.Content == "" {
+		return "", fmt.Errorf("压缩返回空结果")
+	}
+	updated := append(
+		[]*schema.Message{schema.SystemMessage("以下是此前对话摘要：\n" + summary.Content)},
+		recentPart...,
+	)
+	if err := a.memory.Save(ctx, memoryID, updated); err != nil {
+		return "", fmt.Errorf("保存压缩结果失败：%w", err)
+	}
+	return fmt.Sprintf("已压缩：%d 条消息 → 摘要 + %d 条原文", len(oldPart), len(recentPart)), nil
+}
+
 func (a *Agent) NewSession(ctx context.Context, channelName, deviceID string) (string, error) {
 	if a.sessionMgr == nil {
 		return "", fmt.Errorf("会话功能未启用")
@@ -325,14 +392,22 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		}
 	}
 
-	msgs := make([]*schema.Message, 0, len(history)+2)
+	msgs := make([]*schema.Message, 0, len(history)+4)
 	if a.cfg.LLMPrompt != "" {
 		msgs = append(msgs, schema.SystemMessage(a.cfg.LLMPrompt))
+	}
+	msgs = append(msgs, schema.SystemMessage(a.buildEnvContext(channelName, deviceID)))
+	msgs = append(msgs, schema.SystemMessage(a.toolGuide(true)))
+	if memories := a.loadMemories(ctx, channelName, deviceID); memories != "" {
+		msgs = append(msgs, schema.SystemMessage(memories))
 	}
 	msgs = append(msgs, history...)
 	msgs = append(msgs, schema.UserMessage(userText))
 
-	einoTools := a.toolsForChat(ctx, memoryID, deviceID)
+	var askHolder *agentbuiltin.AskDataHolder
+	ctx, askHolder = agentbuiltin.NewAskDataHolder(ctx)
+
+	einoTools := a.toolsForChat(ctx, memoryID, deviceID, channelName)
 
 	chatModel, modelID, err := a.chatModel(ctx)
 	if err != nil {
@@ -394,9 +469,14 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 				}
 				logger.Infof("history truncated: %d → %d messages", oldLen, len(history))
 			}
-			msgs = make([]*schema.Message, 0, len(history)+2)
+			msgs = make([]*schema.Message, 0, len(history)+4)
 			if a.cfg.LLMPrompt != "" {
 				msgs = append(msgs, schema.SystemMessage(a.cfg.LLMPrompt))
+			}
+			msgs = append(msgs, schema.SystemMessage(a.buildEnvContext(channelName, deviceID)))
+			msgs = append(msgs, schema.SystemMessage(a.toolGuide(true)))
+			if memories := a.loadMemories(ctx, channelName, deviceID); memories != "" {
+				msgs = append(msgs, schema.SystemMessage(memories))
 			}
 			msgs = append(msgs, history...)
 			msgs = append(msgs, schema.UserMessage(userText))
@@ -470,17 +550,90 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		a.sessionMgr.UpdateAfterChat(ctx, memoryID, len(updated))
 	}
 
+	if askHolder != nil && askHolder.Data != nil {
+		a.storeAskData(conversationID, askHolder.Data)
+	}
+
 	return result.Content, nil
 }
 
+func (a *Agent) toolGuide(interactive bool) string {
+	current := a.CurrentLLMModel()
+	var b strings.Builder
+	b.WriteString(`=== 工具使用指引 ===
+根据任务场景选择最合适的工具：
+
+• webfetch — 获取网页内容。用于读取 URL、查看网页、获取公开信息。支持 markdown/text/html 格式。不支持需要登录的页面。
+• websearch — 搜索网络。用于查询实时信息、最新新闻、事件和知识。`)
+	if interactive {
+		b.WriteString(`
+• ask_user_question — 向用户提问。需要用户选择、确认或补充信息时使用。问题以按钮（飞书）或文字列表展示。不会阻塞等待用户回答。
+• memory_save — 记住用户信息。仅在用户明确说"记一下""记住""以后按这个来"时调用。
+• memory_forget — 删除一条用户记忆。
+• memory_list — 列出所有用户记忆。
+• task — 子代理任务。将复杂、多步骤或独立的工作委托给子代理执行。子代理当前使用的模型是 ` + current + `，有独立的会话和工具集。
+• device tools — 设备端工具（如拍照），用于需要摄像头或硬件交互的场景。仅在 ESP32 设备可用。`)
+	}
+	b.WriteString(`
+• MCP tools — 外部 MCP 协议工具，按需调用。`)
+	return b.String()
+}
+
+func (a *Agent) buildEnvContext(channelName, deviceID string) string {
+	loc, _ := time.LoadLocation("Asia/Shanghai")
+	now := time.Now().In(loc)
+	var b strings.Builder
+	b.WriteString("=== 环境信息 ===")
+	fmt.Fprintf(&b, "\n当前时间：%s %s %02d:%02d", now.Format("2006-01-02"), chineseWeekday[now.Weekday()], now.Hour(), now.Minute())
+	if deviceID != "" {
+		fmt.Fprintf(&b, "\n用户标识：%s", deviceID)
+	}
+	if channelName != "" {
+		switch channelName {
+		case string(agentchannel.TypeLark):
+			b.WriteString("\n渠道：飞书")
+		case string(agentchannel.TypeWechat):
+			b.WriteString("\n渠道：微信")
+		case string(agentchannel.TypeESP32):
+			b.WriteString("\n渠道：语音设备")
+		default:
+			fmt.Fprintf(&b, "\n渠道：%s", channelName)
+		}
+	}
+	fmt.Fprintf(&b, "\n模型：%s", a.CurrentLLMModel())
+	return b.String()
+}
+
+func (a *Agent) loadMemories(ctx context.Context, channelName, deviceID string) string {
+	if a.memory == nil || channelName == "" || deviceID == "" {
+		return ""
+	}
+	backend := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
+	return agentbuiltin.LoadMemories(ctx, backend)
+}
+
+func (a *Agent) memoryTools(channelName, deviceID string) []tool.BaseTool {
+	if a.memory == nil || channelName == "" || deviceID == "" {
+		return nil
+	}
+	backend := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
+	return []tool.BaseTool{
+		a.WrapTool(agentbuiltin.NewMemorySaveTool(backend), "builtin"),
+		a.WrapTool(agentbuiltin.NewMemoryForgetTool(backend), "builtin"),
+		a.WrapTool(agentbuiltin.NewMemoryListTool(backend), "builtin"),
+	}
+}
+
 func (a *Agent) Generate(ctx context.Context, system, user string) (string, error) {
-	msgs := make([]*schema.Message, 0, 2)
+	msgs := make([]*schema.Message, 0, 4)
 	if system != "" {
 		msgs = append(msgs, schema.SystemMessage(system))
 	}
+	msgs = append(msgs, schema.SystemMessage(a.buildEnvContext("", "")))
+	msgs = append(msgs, schema.SystemMessage(a.toolGuide(false)))
 	msgs = append(msgs, schema.UserMessage(user))
 
-	einoTools := a.toolsForChat(ctx, "", "")
+	einoTools := a.generateTools(ctx)
 
 	chatModel, modelID, err := a.chatModel(ctx)
 	if err != nil {
@@ -534,7 +687,104 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 	return result, nil
 }
 
-func (a *Agent) toolsForChat(_ context.Context, _ string, deviceID string) []tool.BaseTool {
+func (a *Agent) SubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, prompt string) (string, error) {
+	msgs := make([]*schema.Message, 0, 2)
+	if spec.SystemPrompt != "" {
+		msgs = append(msgs, schema.SystemMessage(spec.SystemPrompt))
+	}
+	msgs = append(msgs, schema.UserMessage(prompt))
+
+	einoTools := a.subAgentTools(ctx, spec.AllowTools)
+
+	chatModel, modelID, err := a.chatModel(ctx)
+	if err != nil {
+		return "", fmt.Errorf("create chat model: %w", err)
+	}
+
+	maxSteps := spec.MaxSteps
+	if maxSteps <= 0 {
+		maxSteps = 10
+	}
+	cfg := &adk.ChatModelAgentConfig{
+		Name:             spec.Name,
+		Model:            chatModel,
+		MaxIterations:    maxSteps,
+		ModelRetryConfig: newLLMRetryConfig(),
+	}
+	if a.skillMW != nil {
+		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
+	}
+	if len(einoTools) > 0 {
+		cfg.ToolsConfig = adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: einoTools,
+			},
+		}
+	}
+
+	agent, err := adk.NewChatModelAgent(ctx, cfg)
+	if err != nil {
+		return "", fmt.Errorf("create subagent: %w", err)
+	}
+
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
+	runCtx := a.recorder.WithContext(ctx, modelID)
+
+	events, err := runWithRetry(runCtx, runner, msgs)
+	if err != nil {
+		return "", fmt.Errorf("subagent error: %w", err)
+	}
+
+	var result string
+	for _, event := range events {
+		if event.Err != nil {
+			logger.Infof("SubAgent event error: %v", event.Err)
+			return "", fmt.Errorf("subagent error: %w", event.Err)
+		}
+		if event.Output != nil && event.Output.MessageOutput != nil &&
+			event.Output.MessageOutput.Message != nil &&
+			event.Output.MessageOutput.Role == schema.Assistant {
+			result = event.Output.MessageOutput.Message.Content
+		}
+	}
+	if result == "" {
+		return "", fmt.Errorf("subagent returned empty response")
+	}
+	return result, nil
+}
+
+func (a *Agent) subAgentTools(ctx context.Context, allowTools bool) []tool.BaseTool {
+	if !allowTools {
+		return nil
+	}
+	var einoTools []tool.BaseTool
+	for _, t := range agentbuiltin.NewTools(a.cfg.BuiltinWebFetchEnabled) {
+		einoTools = append(einoTools, a.WrapTool(t, "builtin"))
+	}
+	einoTools = append(einoTools, a.WrapTool(agentbuiltin.NewWebSearchTool(""), "builtin"))
+	for _, tools := range a.extToolSets {
+		for _, t := range tools {
+			einoTools = append(einoTools, a.WrapTool(t, "mcp"))
+		}
+	}
+	return einoTools
+}
+
+func (a *Agent) generateTools(ctx context.Context) []tool.BaseTool {
+	var einoTools []tool.BaseTool
+	for _, t := range agentbuiltin.NewTools(a.cfg.BuiltinWebFetchEnabled) {
+		einoTools = append(einoTools, a.WrapTool(t, "builtin"))
+	}
+	einoTools = append(einoTools, a.WrapTool(agentbuiltin.NewWebSearchTool(""), "builtin"))
+	for _, tools := range a.extToolSets {
+		for _, t := range tools {
+			einoTools = append(einoTools, a.WrapTool(t, "mcp"))
+		}
+	}
+	return einoTools
+}
+
+func (a *Agent) toolsForChat(_ context.Context, _ string, deviceID string, channelName string) []tool.BaseTool {
 	var einoTools []tool.BaseTool
 	for _, t := range agentbuiltin.NewTools(a.cfg.BuiltinWebFetchEnabled) {
 		einoTools = append(einoTools, a.WrapTool(t, "builtin"))
@@ -552,5 +802,14 @@ func (a *Agent) toolsForChat(_ context.Context, _ string, deviceID string) []too
 			einoTools = append(einoTools, a.WrapTool(t, "mcp"))
 		}
 	}
+	einoTools = append(einoTools, a.WrapTool(
+		agentbuiltin.NewTaskTool(
+			agentbuiltin.DefaultSubAgents(),
+			func(ctx context.Context, spec agentbuiltin.SubAgentSpec, prompt string) (string, error) {
+				return a.SubAgent(ctx, spec, prompt)
+			},
+		), "builtin"))
+	einoTools = append(einoTools, a.WrapTool(agentbuiltin.NewAskUserQuestionTool(), "builtin"))
+	einoTools = append(einoTools, a.memoryTools(channelName, deviceID)...)
 	return einoTools
 }

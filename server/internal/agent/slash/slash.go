@@ -2,6 +2,7 @@ package slash
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -57,6 +58,7 @@ type Dependencies interface {
 	NewSession(ctx context.Context) string
 	ListSessions(ctx context.Context) string
 	SessionContext(ctx context.Context, id string) string
+	CompressSession(ctx context.Context) string
 	ProviderBalances(ctx context.Context) map[string]string
 }
 
@@ -106,6 +108,8 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 		return h.deps.ListSessions(ctx), true
 	case "session":
 		return h.sessionContext(ctx, cmd.Args), true
+	case "compact":
+		return h.deps.CompressSession(ctx), true
 	case "help":
 		return helpText(), true
 	default:
@@ -285,6 +289,7 @@ func writeValue(b *strings.Builder, name, value string) {
 
 func helpText() string {
 	return `可用命令：
+/compact    - 手动压缩当前会话的历史消息为摘要，保留最近对话
 /skills     - 列出所有可用技能及其版本号
 /model      - 查看或切换 LLM 模型（/model list 查看可选模型，/model use <id> 切换）
 /channel    - 查看可用消息渠道
@@ -293,4 +298,55 @@ func helpText() string {
 /session    - 查看会话上下文，/session <id>
 /new        - 新建会话
 /help       - 显示此帮助信息`
+}
+
+func AskLarkCard(question string, options []string) string {
+	actions := make([]map[string]any, 0, len(options))
+	for _, opt := range options {
+		actions = append(actions, map[string]any{
+			"tag": "button",
+			"text": map[string]any{
+				"tag":     "plain_text",
+				"content": opt,
+			},
+			"value": map[string]any{
+				"ask_value": opt,
+			},
+			"type": "default",
+		})
+	}
+
+	card := map[string]any{
+		"_lark_card": true,
+		"config":     map[string]any{"wide_screen_mode": true},
+		"header": map[string]any{
+			"title": map[string]any{
+				"tag":     "plain_text",
+				"content": "请选择",
+			},
+		},
+		"elements": []map[string]any{
+			{
+				"tag":  "div",
+				"text": map[string]any{"tag": "lark_md", "content": question},
+			},
+			{
+				"tag":     "action",
+				"actions": actions,
+			},
+		},
+	}
+
+	data, _ := json.Marshal(card)
+	return string(data)
+}
+
+func AskText(question string, options []string) string {
+	var b strings.Builder
+	b.WriteString(question)
+	b.WriteString("\n\n请回复：")
+	for i, opt := range options {
+		fmt.Fprintf(&b, "\n%d. %s", i+1, opt)
+	}
+	return b.String()
 }

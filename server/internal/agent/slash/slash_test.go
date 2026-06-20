@@ -63,6 +63,10 @@ func (fakeDeps) ProviderBalances(_ context.Context) map[string]string {
 	return map[string]string{"test-provider": "¥10.00", "free-provider": "N/A"}
 }
 
+func (fakeDeps) CompressSession(_ context.Context) string {
+	return "压缩完成"
+}
+
 func TestParseRequiresLeadingSlash(t *testing.T) {
 	cmd, ok := Parse(" /skills  --verbose ")
 	if !ok {

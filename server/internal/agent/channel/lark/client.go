@@ -35,6 +35,14 @@ func NewClient(cfg ClientConfig) *Client {
 	}
 }
 
+func (c *Client) ReplyCard(ctx context.Context, messageID string, card map[string]any) error {
+	content, err := json.Marshal(card)
+	if err != nil {
+		return err
+	}
+	return c.reply(ctx, messageID, "interactive", string(content))
+}
+
 func (c *Client) ReplyText(ctx context.Context, messageID string, text string) error {
 	content, err := json.Marshal(map[string]string{"text": text})
 	if err != nil {

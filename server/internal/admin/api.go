@@ -425,6 +425,30 @@ func (d adminSlashDeps) SessionContext(ctx context.Context, id string) string {
 	return b.String()
 }
 
+func (d adminSlashDeps) CompressSession(ctx context.Context) string {
+	if d.s.agent == nil {
+		return "LLM agent 未初始化。"
+	}
+	deviceID := slash.DeviceIDFromContext(ctx)
+	if deviceID == "" {
+		return "无法识别用户。"
+	}
+	channelName := slash.ChannelNameFromContext(ctx)
+	sm := d.s.agent.SessionManager()
+	if sm == nil {
+		return "会话功能未启用（需要 Redis）。"
+	}
+	sid, _, err := sm.GetOrCreate(ctx, channelName, deviceID, d.s.agent.CurrentLLMModel())
+	if err != nil {
+		return "获取会话失败：" + err.Error()
+	}
+	result, err := d.s.agent.CompressSession(ctx, sid)
+	if err != nil {
+		return "压缩失败：" + err.Error()
+	}
+	return "✅ " + result
+}
+
 func (s *AdminServer) deviceController() DeviceController {
 	if s.cfg.DirectDeviceServer && s.deviceHub != nil {
 		return s.deviceHub

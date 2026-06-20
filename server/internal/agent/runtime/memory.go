@@ -73,6 +73,13 @@ func (m *Memory) Prefix() string {
 	return m.prefix
 }
 
+func (m *Memory) Client() *redis.Client {
+	if m == nil {
+		return nil
+	}
+	return m.client
+}
+
 func (m *Memory) List(ctx context.Context, limit int) ([]MemoryKeyInfo, error) {
 	if !m.Enabled() {
 		return nil, errors.New("redis memory is not configured")

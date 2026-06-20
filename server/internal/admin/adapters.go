@@ -6,12 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	lark "github.com/larksuite/oapi-sdk-go/v3"
-	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
-	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
-	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
-	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
-	"github.com/mnhkahn/gogogo/logger"
 	"io"
 	"math/rand"
 	"mime/multipart"
@@ -19,11 +13,21 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	lark "github.com/larksuite/oapi-sdk-go/v3"
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
+	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
+	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
+	"github.com/mnhkahn/gogogo/logger"
+
 	agentchannel "xiaoli/server/internal/agent/channel"
 	agentlark "xiaoli/server/internal/agent/channel/lark"
 	agentwechat "xiaoli/server/internal/agent/channel/wechat"
 	agentmedia "xiaoli/server/internal/agent/media"
 	agentruntime "xiaoli/server/internal/agent/runtime"
+	agentslash "xiaoli/server/internal/agent/slash"
+	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
 	agentworkflow "xiaoli/server/internal/agent/workflow"
 	agentesp32 "xiaoli/server/internal/esp32"
 	esp32audio "xiaoli/server/internal/esp32/audio"
@@ -319,7 +323,8 @@ type ConversationTurn struct {
 }
 
 type ConversationReply struct {
-	Text string
+	Text    string
+	AskData *agentbuiltin.AskData
 }
 
 type DeviceVoiceFactory struct{}
@@ -383,6 +388,7 @@ func (f conversationChatFunc) Chat(ctx context.Context, turn ConversationTurn) (
 
 type ConversationPipeline struct {
 	chat     conversationChat
+	agent    *EinoAgent
 	devices  DeviceController
 	workflow *agentworkflow.Runner
 }
@@ -392,7 +398,7 @@ func newConversationPipeline(agent *EinoAgent, devices DeviceController) *Conver
 	if agent != nil {
 		chat = einoConversationChat{agent: agent}
 	}
-	pipeline := &ConversationPipeline{chat: chat, devices: devices}
+	pipeline := &ConversationPipeline{chat: chat, agent: agent, devices: devices}
 	registry, err := agentworkflow.NewRegistry(DefinitionChatReact())
 	if err == nil {
 		pipeline.workflow = agentworkflow.NewRunner(agentworkflow.RunnerConfig{
@@ -425,11 +431,22 @@ func (p *ConversationPipeline) Run(ctx context.Context, turn ConversationTurn) (
 			if text == "" {
 				text = "我现在还没想好怎么回答。"
 			}
-			return ConversationReply{Text: text}, nil
+			reply := ConversationReply{Text: text}
+			return p.withAskData(reply, turn.ConversationID), nil
 		}
-		return ConversationReply{Text: fmt.Sprintf("我现在回答不了。错误原因：%v。", err)}, nil
+		reply := ConversationReply{Text: fmt.Sprintf("我现在回答不了。错误原因：%v。", err)}
+		return p.withAskData(reply, turn.ConversationID), nil
 	}
 	return p.runDirect(ctx, turn)
+}
+
+func (p *ConversationPipeline) withAskData(reply ConversationReply, conversationID string) ConversationReply {
+	if p.agent != nil {
+		if ask := p.agent.ConsumeAskData(conversationID); ask != nil {
+			reply.AskData = ask
+		}
+	}
+	return reply
 }
 
 func (p *ConversationPipeline) runDirect(ctx context.Context, turn ConversationTurn) (ConversationReply, error) {
@@ -463,7 +480,7 @@ func (p *ConversationPipeline) runDirect(ctx context.Context, turn ConversationT
 	if answer == "" {
 		answer = "我现在还没想好怎么回答。"
 	}
-	return ConversationReply{Text: answer}, nil
+	return p.withAskData(ConversationReply{Text: answer}, turn.ConversationID), nil
 }
 
 func DefinitionChatReact() agentworkflow.Definition {
@@ -603,6 +620,10 @@ func (s *AdminServer) handleLarkEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case agentlark.EventTypeCardActionTrigger:
+		if err := s.handleLarkCardAction(r.Context(), w, callback); err != nil {
+			logger.Infof("[lark] card action failed event_id=%s: %v", callback.Header.EventID, err)
+		}
 	default:
 		logger.Infof("[lark] event ignored type=%s event_id=%s", eventType, callback.Header.EventID)
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "ignored": true})
@@ -642,7 +663,35 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 		return fmt.Errorf("message event missing chat, sender, or message id")
 	}
 	if reply, ok := s.handleBuiltinCommand(ctx, ChannelLarkText, senderID, text); ok {
-		formatter := agentlark.NewReplyFormatter(s.newLarkClient(), event.Message.MessageID, text)
+		lc := s.newLarkClient()
+		var cardBody map[string]any
+		if json.Unmarshal([]byte(reply), &cardBody) == nil {
+			if _, ok := cardBody["_lark_card"]; ok {
+				delete(cardBody, "_lark_card")
+				if elements, ok := cardBody["elements"].([]any); ok {
+					for _, elem := range elements {
+						if m, ok := elem.(map[string]any); ok && m["tag"] == "action" {
+							if actions, ok := m["actions"].([]any); ok {
+								for _, act := range actions {
+									if a, ok := act.(map[string]any); ok {
+										if v, ok := a["value"].(map[string]any); ok {
+											v["_chat_id"] = event.Message.ChatID
+											v["_sender_id"] = senderID
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				if err := lc.ReplyCard(ctx, event.Message.MessageID, cardBody); err != nil {
+					return err
+				}
+				logger.Infof("[lark] builtin command card reply sent event_id=%s message=%s chat=%s", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID)
+				return nil
+			}
+		}
+		formatter := agentlark.NewReplyFormatter(lc, event.Message.MessageID, text)
 		if err := formatter.Send(ctx, reply); err != nil {
 			return err
 		}
@@ -679,10 +728,106 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 	if reply.Text == "" {
 		return fmt.Errorf("lark conversation returned empty reply")
 	}
+
+	if askData := reply.AskData; askData != nil {
+		card := agentslash.AskLarkCard(askData.Question, askData.Options)
+		var cardBody map[string]any
+		if json.Unmarshal([]byte(card), &cardBody) == nil {
+			delete(cardBody, "_lark_card")
+			if elements, ok := cardBody["elements"].([]any); ok {
+				for _, elem := range elements {
+					if m, ok := elem.(map[string]any); ok && m["tag"] == "action" {
+						if actions, ok := m["actions"].([]any); ok {
+							for _, act := range actions {
+								if a, ok := act.(map[string]any); ok {
+									if v, ok := a["value"].(map[string]any); ok {
+										v["_chat_id"] = event.Message.ChatID
+										v["_sender_id"] = senderID
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+			if err := lc.ReplyCard(ctx, event.Message.MessageID, cardBody); err != nil {
+				logger.Infof("[lark] ask card send failed: %v", err)
+			}
+		}
+	}
+
 	if err := formatter.Send(ctx, reply.Text); err != nil {
 		return err
 	}
 	logger.Infof("[lark] message reply sent event_id=%s message=%s chat=%s", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID)
+	return nil
+}
+
+func (s *AdminServer) handleLarkCardAction(ctx context.Context, w http.ResponseWriter, callback larkCallback) error {
+	actionEvent, err := agentlark.ExtractCardAction(callback.Event)
+	if err != nil {
+		logger.Infof("[lark] card action decode failed event_id=%s: %v", callback.Header.EventID, err)
+		writeJSON(w, http.StatusOK, map[string]any{"code": 0})
+		return nil
+	}
+	selected := actionEvent.Action.Value["ask_value"]
+	if selected == "" {
+		logger.Infof("[lark] card action missing ask_value event_id=%s action=%v", callback.Header.EventID, actionEvent.Action)
+		writeJSON(w, http.StatusOK, map[string]any{"code": 0})
+		return nil
+	}
+	chatID := actionEvent.Action.Value["_chat_id"]
+	senderID := actionEvent.Action.Value["_sender_id"]
+	logger.Infof("[lark] card action received event_id=%s open_id=%s chat=%s sender=%s selected=%q", callback.Header.EventID, actionEvent.OpenID, chatID, senderID, selected)
+
+	lc := s.newLarkClient()
+	if err := lc.ReplyText(ctx, actionEvent.OpenMessageID, selected); err != nil {
+		logger.Infof("[lark] card action reply failed event_id=%s: %v", callback.Header.EventID, err)
+	}
+
+	if chatID != "" && senderID != "" && s.conversation != nil {
+		formatter := agentlark.NewReplyFormatter(lc, actionEvent.OpenMessageID, selected)
+		turn := LarkTextFactory{}.Build(chatID, senderID, selected)
+		turn.Formatter = formatter
+		reply, err := s.conversation.Run(ctx, turn)
+		if err != nil {
+			logger.Infof("[lark] card action conversation error: %v", err)
+		} else if reply.Text != "" {
+			if reply.AskData != nil {
+				card := agentslash.AskLarkCard(reply.AskData.Question, reply.AskData.Options)
+				var cardBody map[string]any
+				if json.Unmarshal([]byte(card), &cardBody) == nil {
+					delete(cardBody, "_lark_card")
+					if elements, ok := cardBody["elements"].([]any); ok {
+						for _, elem := range elements {
+							if m, ok := elem.(map[string]any); ok && m["tag"] == "action" {
+								if actions, ok := m["actions"].([]any); ok {
+									for _, act := range actions {
+										if a, ok := act.(map[string]any); ok {
+											if v, ok := a["value"].(map[string]any); ok {
+												v["_chat_id"] = chatID
+												v["_sender_id"] = senderID
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+					if err := lc.ReplyCard(ctx, actionEvent.OpenMessageID, cardBody); err != nil {
+						logger.Infof("[lark] card action ask card send failed: %v", err)
+					}
+				}
+			}
+			if err := formatter.Send(ctx, reply.Text); err != nil {
+				logger.Infof("[lark] card action conversation reply send failed: %v", err)
+			} else {
+				logger.Infof("[lark] card action conversation reply sent event_id=%s", callback.Header.EventID)
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"code": 0})
 	return nil
 }
 
@@ -886,6 +1031,15 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 	}
 	if reply.Text == "" {
 		reply = ConversationReply{Text: "抱歉，我暂时无法回答。"}
+	}
+
+	if askData := reply.AskData; askData != nil {
+		textReply := agentslash.AskText(askData.Question, askData.Options)
+		if err := formatter.Send(ctx, textReply); err != nil {
+			logger.Infof("[wechat] ask text send error: %v", err)
+		} else {
+			logger.Infof("[wechat] ask text sent to=%s", msg.FromUserID)
+		}
 	}
 
 	if err := formatter.Send(ctx, reply.Text); err != nil {

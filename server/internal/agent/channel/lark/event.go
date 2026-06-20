@@ -6,8 +6,9 @@ import (
 )
 
 const (
-	EventTypeURLVerification = "url_verification"
-	EventTypeMessageReceive  = "im.message.receive_v1"
+	EventTypeURLVerification   = "url_verification"
+	EventTypeMessageReceive    = "im.message.receive_v1"
+	EventTypeCardActionTrigger = "card.action.trigger"
 )
 
 type Callback struct {
@@ -110,4 +111,23 @@ func ExtractImageKey(content string) string {
 		return ""
 	}
 	return strings.TrimSpace(payload.ImageKey)
+}
+
+type CardActionEvent struct {
+	OpenID        string     `json:"open_id"`
+	OpenMessageID string     `json:"open_message_id"`
+	Action        CardAction `json:"action"`
+}
+
+type CardAction struct {
+	Value map[string]string `json:"value"`
+	Tag   string            `json:"tag"`
+}
+
+func ExtractCardAction(event json.RawMessage) (CardActionEvent, error) {
+	var e CardActionEvent
+	if err := json.Unmarshal(event, &e); err != nil {
+		return e, err
+	}
+	return e, nil
 }
