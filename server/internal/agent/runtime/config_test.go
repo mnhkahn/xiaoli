@@ -23,4 +23,3 @@ func TestSelectedLLMModelConfigUsesConfiguredModelDetails(t *testing.T) {
 		t.Fatalf("model = %#v, want configured endpoint", model)
 	}
 }
-

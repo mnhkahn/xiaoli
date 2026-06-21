@@ -115,7 +115,7 @@ func main() {
 	)
 	pcmBuf := make([]int16, samplesPerFrame60ms)
 
-	readLoop:
+readLoop:
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		mt, data, err := conn.ReadMessage()

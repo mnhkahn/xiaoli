@@ -144,8 +144,8 @@ func TestE2ETTSCaptureFromGoServer(t *testing.T) {
 		t.Fatalf("opus decoder: %v", err)
 	}
 	var (
-		allPCM   []int16
-		binTimes []int64
+		allPCM      []int16
+		binTimes    []int64
 		binaryCount int
 		textEvents  []event
 		rawFrames   [][]byte // raw 18 Opus packets, for the Mac client e2e test

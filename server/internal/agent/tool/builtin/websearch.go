@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	anySearchURL         = "https://api.anysearch.com/mcp"
-	anySearchTimeout     = 25 * time.Second
-	defaultMaxResults    = 8
-	anySearchMaxResults  = 10
+	anySearchURL        = "https://api.anysearch.com/mcp"
+	anySearchTimeout    = 25 * time.Second
+	defaultMaxResults   = 8
+	anySearchMaxResults = 10
 )
 
 type WebSearchResult struct {
@@ -55,8 +55,8 @@ func (t *WebSearchTool) Info(context.Context) (*schema.ToolInfo, error) {
 				Required: true,
 			},
 			"count": {
-				Type:    schema.Integer,
-				Desc:    "Number of search results to return (default 8, max 10)",
+				Type: schema.Integer,
+				Desc: "Number of search results to return (default 8, max 10)",
 			},
 		}),
 	}, nil

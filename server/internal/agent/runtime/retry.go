@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	llmRetryMax     = 2
-	llmBackoffBase  = 500 * time.Millisecond
-	llmBackoffCap   = 10 * time.Second
-	agentRetryMax   = 1
+	llmRetryMax      = 2
+	llmBackoffBase   = 500 * time.Millisecond
+	llmBackoffCap    = 10 * time.Second
+	agentRetryMax    = 1
 	agentBackoffBase = 2 * time.Second
 	agentBackoffCap  = 30 * time.Second
 )
@@ -105,9 +105,9 @@ func llmBackoffFunc(ctx context.Context, attempt int) time.Duration {
 
 func newLLMRetryConfig() *adk.ModelRetryConfig {
 	return &adk.ModelRetryConfig{
-		MaxRetries:   llmRetryMax,
-		ShouldRetry:  llmShouldRetry,
-		BackoffFunc:  llmBackoffFunc,
+		MaxRetries:  llmRetryMax,
+		ShouldRetry: llmShouldRetry,
+		BackoffFunc: llmBackoffFunc,
 	}
 }
 
