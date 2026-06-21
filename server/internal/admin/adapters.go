@@ -1112,36 +1112,27 @@ func (s *AdminServer) StartBackground(ctx context.Context) {
 	go s.startWorkflowCronScheduler(ctx)
 }
 
-func (s *AdminServer) studyMonitorSlot(checkedAt time.Time) *int64 {
-	return agentworkflow.CronSlot(s.studyMonitorCronSpec(), checkedAt)
-}
-
-func (s *AdminServer) inStudyMonitorWindow(checkedAt time.Time) bool {
-	return agentworkflow.InWindow(s.studyMonitorCronSpec(), checkedAt)
-}
-
-func (s *AdminServer) morningGreetingSlot(checkedAt time.Time) *int64 {
-	return agentworkflow.CronSlot(s.morningGreetingCronSpec(), checkedAt)
-}
-
 func (s *AdminServer) startWorkflowCronScheduler(ctx context.Context) {
+	handlers := map[string]func(context.Context, agentworkflow.Definition, time.Time) error{
+		"study_monitor":    s.runStudyMonitorOnce,
+		"morning_greeting": s.runMorningGreetingOnce,
+	}
+
 	jobs := []agentworkflow.CronJob{}
 	for _, def := range s.workflowDefinitions() {
-		switch def.ID {
-		case "study_monitor":
-			jobs = append(jobs, agentworkflow.CronJob{Definition: def, Run: s.runStudyMonitorOnce})
-		case "morning_greeting":
-			jobs = append(jobs, agentworkflow.CronJob{
-				Definition: def,
-				Run: func(ctx context.Context, scheduledAt time.Time) error {
-					if err := s.runMorningGreetingOnce(ctx, scheduledAt); err != nil {
-						logger.Infof("morning greeting failed: %v", err)
-						return err
-					}
-					return nil
-				},
-			})
+		handler, ok := handlers[def.ID]
+		if !ok {
+			logger.Infof("[cron] %q: no registered handler, skipping", def.ID)
+			continue
 		}
+		jobDef := def
+		jobHandler := handler
+		jobs = append(jobs, agentworkflow.CronJob{
+			Definition: def,
+			Run: func(ctx context.Context, scheduledAt time.Time) error {
+				return jobHandler(ctx, jobDef, scheduledAt)
+			},
+		})
 	}
 	if len(jobs) == 0 {
 		return
@@ -1153,40 +1144,22 @@ func (s *AdminServer) startWorkflowCronScheduler(ctx context.Context) {
 	}).Start(ctx)
 }
 
-func (s *AdminServer) studyMonitorCronSpec() agentworkflow.CronSpec {
-	return agentworkflow.CronSpec{
-		Every:     s.cfg.StudyMonitorInterval,
-		Timezone:  s.cfg.StudyMonitorTimezone,
-		StartHour: s.cfg.StudyMonitorStartHour,
-		EndHour:   s.cfg.StudyMonitorEndHour,
-	}
-}
-
-func (s *AdminServer) morningGreetingCronSpec() agentworkflow.CronSpec {
-	hour := clampInt(s.cfg.MorningGreetingHour, 0, 23, 8)
-	minute := clampInt(s.cfg.MorningGreetingMinute, 0, 59, 0)
-	return agentworkflow.CronSpec{
-		Timezone: s.cfg.MorningGreetingTimezone,
-		AtHour:   &hour,
-		AtMinute: &minute,
-	}
-}
-
-func (s *AdminServer) runMorningGreetingOnce(ctx context.Context, checkedAt time.Time) error {
+func (s *AdminServer) runMorningGreetingOnce(ctx context.Context, def agentworkflow.Definition, checkedAt time.Time) error {
 	controller := s.deviceController()
 	devices, err := controller.Devices(ctx)
 	if err != nil {
 		return err
 	}
-	deviceID := pickOnlineDevice(devices, s.cfg.MorningGreetingDeviceIDs)
+	deviceIDs := metadataCSV(def.Metadata, "device_ids", nil)
+	deviceID := pickOnlineDevice(devices, deviceIDs)
 	if deviceID == "" {
-		logger.Infof("morning greeting skipped at %s: no eligible device (allowlist=%v, online=%d)", checkedAt.Format(time.RFC3339), s.cfg.MorningGreetingDeviceIDs, len(devices))
+		logger.Infof("morning greeting skipped at %s: no eligible device (allowlist=%v, online=%d)", checkedAt.Format(time.RFC3339), deviceIDs, len(devices))
 		return nil
 	}
 
 	text := s.dailyEncouragement(ctx)
 	if text == "" {
-		text = strings.TrimSpace(s.cfg.MorningGreetingText)
+		text = metadataString(def.Metadata, "text", "早上好。")
 	}
 	if text == "" {
 		text = "早上好。"
@@ -1296,28 +1269,31 @@ func pickOnlineDevice(devices []Device, allowlist []string) string {
 	return ""
 }
 
-func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, checkedAt time.Time) error {
+func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, def agentworkflow.Definition, checkedAt time.Time) error {
 	controller := s.deviceController()
 	devices, err := controller.Devices(ctx)
 	if err != nil {
 		return err
 	}
-	deviceID := pickOnlineDevice(devices, s.cfg.StudyMonitorDeviceIDs)
+	deviceIDs := metadataCSV(def.Metadata, "device_ids", nil)
+	deviceID := pickOnlineDevice(devices, deviceIDs)
 	if deviceID == "" {
-		logger.Infof("study monitor skipped at %s: no eligible device (allowlist=%v, online=%d)", checkedAt.Format(time.RFC3339), s.cfg.StudyMonitorDeviceIDs, len(devices))
+		logger.Infof("study monitor skipped at %s: no eligible device (allowlist=%v, online=%d)", checkedAt.Format(time.RFC3339), deviceIDs, len(devices))
 		return nil
 	}
+	cameraTool := metadataString(def.Metadata, "camera_tool", "self.camera.take_photo")
+	toolTimeout := metadataDuration(def.Metadata, "tool_timeout", 120*time.Second)
 	started := s.cfg.now()
 	result, err := controller.Call(ctx, BridgeCallRequest{
 		DeviceID:  deviceID,
-		Tool:      s.cfg.StudyMonitorCameraTool,
+		Tool:      cameraTool,
 		Arguments: map[string]any{"question": studyMonitorPrompt},
-		Timeout:   int(s.cfg.StudyMonitorToolTimeout.Seconds()),
+		Timeout:   int(toolTimeout.Seconds()),
 	})
 	if err != nil {
 		return err
 	}
-	decision := s.parseStudyDecision(result.Result)
+	decision := s.parseStudyDecision(result.Result, metadataString(def.Metadata, "reminder_text", "请坐直，认真学习。"))
 	reminderResult := ""
 	if decision.NeedReminder {
 		if response, err := controller.Speak(ctx, deviceID, decision.ReminderText); err == nil {
@@ -1350,7 +1326,7 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, checkedAt time.Ti
 	})
 }
 
-func (s *AdminServer) parseStudyDecision(value any) studyDecision {
+func (s *AdminServer) parseStudyDecision(value any, reminderFallback string) studyDecision {
 	parsed := s.extractStudyDecisionPayload(value)
 	if payload, ok := parsed.(map[string]any); ok {
 		var textParts []string
@@ -1379,7 +1355,7 @@ func (s *AdminServer) parseStudyDecision(value any) studyDecision {
 			reminderText = strings.TrimSpace(stringValue(payload["reminder"]))
 		}
 		if reminderText == "" || reminderText == "<nil>" {
-			reminderText = s.cfg.StudyMonitorReminder
+			reminderText = reminderFallback
 		}
 		return studyDecision{NeedReminder: needReminder, AnalysisText: analysisText, ReminderText: reminderText}
 	}
@@ -1387,7 +1363,7 @@ func (s *AdminServer) parseStudyDecision(value any) studyDecision {
 	return studyDecision{
 		NeedReminder: studyTextNeedsReminder(analysisText),
 		AnalysisText: analysisText,
-		ReminderText: s.cfg.StudyMonitorReminder,
+		ReminderText: reminderFallback,
 	}
 }
 

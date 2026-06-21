@@ -13,8 +13,8 @@ const (
 )
 
 type ToolOptions struct {
-	MemoryBackend MemoryBackend
-	WebSearchKey  string
+	MemoryBackends *MemoryBackends
+	WebSearchKey   string
 }
 
 type subAgentParentKeyType struct{}

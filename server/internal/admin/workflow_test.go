@@ -4,8 +4,20 @@ import "testing"
 
 func TestWorkflowDefinitionsIncludeChatAndCronJobs(t *testing.T) {
 	cfg := testConfig()
-	cfg.StudyMonitorEnabled = true
-	cfg.MorningGreetingEnabled = true
+	hour := 8
+	minute := 0
+	cfg.Workflows = parseWorkflows(map[string]settingsWorkflowDef{
+		"study_monitor": {
+			Name: "学习状态监控", Enabled: true,
+			Trigger: settingsWorkflowTrigger{Every: "10m", Timezone: "Asia/Shanghai", StartHour: 17, EndHour: 21},
+			Agent:   settingsWorkflowAgent{Name: "dispatch_agent", Mode: "react", MaxSteps: 6, Timeout: "150s"},
+		},
+		"morning_greeting": {
+			Name: "早安问候", Enabled: true,
+			Trigger: settingsWorkflowTrigger{Timezone: "Asia/Shanghai", AtHour: &hour, AtMinute: &minute},
+			Agent:   settingsWorkflowAgent{Name: "dispatch_agent", Mode: "react", MaxSteps: 4, Timeout: "120s"},
+		},
+	})
 	srv := NewServer(cfg)
 
 	defs := srv.workflowDefinitions()
@@ -25,8 +37,20 @@ func TestWorkflowDefinitionsIncludeChatAndCronJobs(t *testing.T) {
 
 func TestSchedulesUseCronWorkflowDefinitions(t *testing.T) {
 	cfg := testConfig()
-	cfg.StudyMonitorEnabled = true
-	cfg.MorningGreetingEnabled = true
+	hour := 8
+	minute := 0
+	cfg.Workflows = parseWorkflows(map[string]settingsWorkflowDef{
+		"study_monitor": {
+			Name: "学习状态监控", Enabled: true,
+			Trigger: settingsWorkflowTrigger{Every: "10m", Timezone: "Asia/Shanghai", StartHour: 17, EndHour: 21},
+			Agent:   settingsWorkflowAgent{Name: "dispatch_agent", Mode: "react", MaxSteps: 6, Timeout: "150s"},
+		},
+		"morning_greeting": {
+			Name: "早安问候", Enabled: true,
+			Trigger: settingsWorkflowTrigger{Timezone: "Asia/Shanghai", AtHour: &hour, AtMinute: &minute},
+			Agent:   settingsWorkflowAgent{Name: "dispatch_agent", Mode: "react", MaxSteps: 4, Timeout: "120s"},
+		},
+	})
 	srv := NewServer(cfg)
 
 	schedules := srv.schedules()

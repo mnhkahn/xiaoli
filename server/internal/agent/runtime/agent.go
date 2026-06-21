@@ -635,8 +635,9 @@ func (a *Agent) loadMemories(ctx context.Context, channelName, deviceID string) 
 	if a.memory == nil || channelName == "" || deviceID == "" {
 		return ""
 	}
-	backend := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
-	return agentbuiltin.LoadMemories(ctx, backend)
+	globalB := agentbuiltin.NewMemoryBackendScoped(a.memory.Client(), a.memory.Prefix(), channelName, deviceID, "global")
+	channelB := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
+	return agentbuiltin.LoadMemories(ctx, &agentbuiltin.MemoryBackends{Global: globalB, Channel: channelB})
 }
 
 func (a *Agent) Generate(ctx context.Context, system, user string) (string, error) {
@@ -830,7 +831,9 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 	opts := agentbuiltin.ToolOptions{}
 	if a.memory != nil && channelName != "" && deviceID != "" {
 		filter |= agentbuiltin.ToolMemorySave | agentbuiltin.ToolMemoryForget | agentbuiltin.ToolMemoryList
-		opts.MemoryBackend = agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
+		globalB := agentbuiltin.NewMemoryBackendScoped(a.memory.Client(), a.memory.Prefix(), channelName, deviceID, "global")
+		channelB := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
+		opts.MemoryBackends = &agentbuiltin.MemoryBackends{Global: globalB, Channel: channelB}
 	}
 	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, opts))
 	if a.taskTool != nil {

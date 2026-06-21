@@ -511,10 +511,20 @@ func (s *AdminServer) schedules() []map[string]any {
 			"max_steps":   def.Agent.MaxSteps,
 		}
 		if def.Trigger.Cron != nil {
-			item["timezone"] = def.Trigger.Cron.Timezone
+			spec := def.Trigger.Cron
+			item["timezone"] = spec.Timezone
+			if spec.Every > 0 {
+				item["interval_seconds"] = int(spec.Every.Seconds())
+				item["window"] = fmt.Sprintf("%02d:00-%02d:00", spec.StartHour, spec.EndHour)
+			}
+			if spec.AtHour != nil && spec.AtMinute != nil {
+				item["time"] = fmt.Sprintf("%02d:%02d", *spec.AtHour, *spec.AtMinute)
+			}
 		}
 		for key, value := range def.Metadata {
-			item[key] = value
+			if _, exists := item[key]; !exists {
+				item[key] = value
+			}
 		}
 		out = append(out, item)
 	}
@@ -603,13 +613,13 @@ func (s *AdminServer) handleMemorySessionByID(w http.ResponseWriter, r *http.Req
 	}
 
 	type msgItem struct {
-		Index            int                `json:"index"`
-		Role             string             `json:"role"`
-		Content          string             `json:"content"`
-		ReasoningContent string             `json:"reasoning_content,omitempty"`
-		ToolCalls        []schema.ToolCall  `json:"tool_calls,omitempty"`
-		ToolCallID       string             `json:"tool_call_id,omitempty"`
-		FinishReason     string             `json:"finish_reason,omitempty"`
+		Index            int               `json:"index"`
+		Role             string            `json:"role"`
+		Content          string            `json:"content"`
+		ReasoningContent string            `json:"reasoning_content,omitempty"`
+		ToolCalls        []schema.ToolCall `json:"tool_calls,omitempty"`
+		ToolCallID       string            `json:"tool_call_id,omitempty"`
+		FinishReason     string            `json:"finish_reason,omitempty"`
 	}
 	items := make([]msgItem, 0, len(msgs))
 	for i, m := range msgs {

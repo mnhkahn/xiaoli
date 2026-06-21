@@ -65,5 +65,50 @@
     "webfetch": {
       "enabled": true
     }
+  },
+  "cron": {
+    "study_monitor": {
+      "name": "学习状态监控",
+      "description": "在设定时间窗内定时调用摄像头检查学习状态，并按需发送语音提醒和飞书通知。",
+      "enabled": false,
+      "trigger": {
+        "every": "5m",
+        "timezone": "Asia/Shanghai",
+        "start_hour": 17,
+        "end_hour": 21
+      },
+      "agent": {
+        "name": "dispatch_agent",
+        "mode": "react",
+        "max_steps": 6,
+        "timeout": "150s"
+      },
+      "metadata": {
+        "camera_tool": "self.camera.take_photo",
+        "reminder_text": "请坐直，认真学习。",
+        "tool_timeout": "120s",
+        "device_ids": ""
+      }
+    },
+    "morning_greeting": {
+      "name": "早安问候",
+      "description": "每天早上固定时间向在线设备播放问候语；没有在线设备时跳过，不补播。",
+      "enabled": true,
+      "trigger": {
+        "at_hour": 8,
+        "at_minute": 0,
+        "timezone": "Asia/Shanghai"
+      },
+      "agent": {
+        "name": "dispatch_agent",
+        "mode": "react",
+        "max_steps": 4,
+        "timeout": "120s"
+      },
+      "metadata": {
+        "text": "早上好。",
+        "device_ids": ""
+      }
+    }
   }
 }

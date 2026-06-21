@@ -83,6 +83,14 @@ func (fakeDeps) MemoryClear(_ context.Context) string {
 	return "清空成功"
 }
 
+func (fakeDeps) WorkflowList(_ context.Context) string {
+	return "test workflows"
+}
+
+func (fakeDeps) WorkflowRun(_ context.Context, id string) string {
+	return "已执行：" + id
+}
+
 func TestParseRequiresLeadingSlash(t *testing.T) {
 	cmd, ok := Parse(" /skills  --verbose ")
 	if !ok {

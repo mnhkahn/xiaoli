@@ -19,6 +19,11 @@ type MemoryBackend interface {
 	Clear(ctx context.Context) error
 }
 
+type MemoryBackends struct {
+	Global  MemoryBackend
+	Channel MemoryBackend
+}
+
 type redisMemoryBackend struct {
 	client *redis.Client
 	key    string
@@ -29,6 +34,16 @@ func NewMemoryBackend(client *redis.Client, prefix, channel, user string) Memory
 		client: client,
 		key:    prefix + "memory:" + channel + ":" + user,
 	}
+}
+
+func NewMemoryBackendScoped(client *redis.Client, prefix, channel, user, scope string) MemoryBackend {
+	if scope == "global" {
+		return &redisMemoryBackend{
+			client: client,
+			key:    prefix + "memory:global:" + user,
+		}
+	}
+	return NewMemoryBackend(client, prefix, channel, user)
 }
 
 func (b *redisMemoryBackend) Save(ctx context.Context, field, value string) error {
@@ -48,11 +63,11 @@ func (b *redisMemoryBackend) Clear(ctx context.Context) error {
 }
 
 type MemorySaveTool struct {
-	backend MemoryBackend
+	backends *MemoryBackends
 }
 
-func NewMemorySaveTool(backend MemoryBackend) *MemorySaveTool {
-	return &MemorySaveTool{backend: backend}
+func NewMemorySaveTool(backends *MemoryBackends) *MemorySaveTool {
+	return &MemorySaveTool{backends: backends}
 }
 
 func (t *MemorySaveTool) Info(context.Context) (*schema.ToolInfo, error) {
@@ -70,6 +85,10 @@ func (t *MemorySaveTool) Info(context.Context) (*schema.ToolInfo, error) {
 				Desc:     "记忆的具体内容，描述要完整清晰",
 				Required: true,
 			},
+			"scope": {
+				Type: schema.String,
+				Desc: `记忆的作用域："global" 表示全局记忆（所有设备/频道可见），"channel" 表示仅当前频道可见。默认为 "global"。`,
+			},
 		}),
 	}, nil
 }
@@ -78,6 +97,7 @@ func (t *MemorySaveTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 	var args struct {
 		Key   string `json:"key"`
 		Value string `json:"value"`
+		Scope string `json:"scope"`
 	}
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", fmt.Errorf("参数解析失败：%v", err)
@@ -87,19 +107,33 @@ func (t *MemorySaveTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 	if args.Key == "" || args.Value == "" {
 		return "", fmt.Errorf("key 和 value 都是必填参数")
 	}
-
-	if err := t.backend.Save(ctx, args.Key, args.Value); err != nil {
+	backend := t.selectBackend(args.Scope)
+	if err := backend.Save(ctx, args.Key, args.Value); err != nil {
 		return "", fmt.Errorf("保存失败：%v", err)
 	}
-	return fmt.Sprintf("已记住：%s → %s", args.Key, args.Value), nil
+	scopeLabel := "全局"
+	if args.Scope == "channel" {
+		scopeLabel = "当前频道"
+	}
+	return fmt.Sprintf("已记住（%s）：%s → %s", scopeLabel, args.Key, args.Value), nil
+}
+
+func (t *MemorySaveTool) selectBackend(scope string) MemoryBackend {
+	if scope == "channel" && t.backends.Channel != nil {
+		return t.backends.Channel
+	}
+	if t.backends.Global != nil {
+		return t.backends.Global
+	}
+	return t.backends.Channel
 }
 
 type MemoryForgetTool struct {
-	backend MemoryBackend
+	backends *MemoryBackends
 }
 
-func NewMemoryForgetTool(backend MemoryBackend) *MemoryForgetTool {
-	return &MemoryForgetTool{backend: backend}
+func NewMemoryForgetTool(backends *MemoryBackends) *MemoryForgetTool {
+	return &MemoryForgetTool{backends: backends}
 }
 
 func (t *MemoryForgetTool) Info(context.Context) (*schema.ToolInfo, error) {
@@ -112,13 +146,18 @@ func (t *MemoryForgetTool) Info(context.Context) (*schema.ToolInfo, error) {
 				Desc:     "要删除的记忆标签名",
 				Required: true,
 			},
+			"scope": {
+				Type: schema.String,
+				Desc: `记忆的作用域："global" 表示全局记忆（所有设备/频道可见），"channel" 表示仅当前频道可见。默认为 "global"。`,
+			},
 		}),
 	}, nil
 }
 
 func (t *MemoryForgetTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
 	var args struct {
-		Key string `json:"key"`
+		Key   string `json:"key"`
+		Scope string `json:"scope"`
 	}
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", fmt.Errorf("参数解析失败：%v", err)
@@ -127,33 +166,58 @@ func (t *MemoryForgetTool) InvokableRun(ctx context.Context, argumentsInJSON str
 	if args.Key == "" {
 		return "", fmt.Errorf("key 是必填参数")
 	}
-
-	if err := t.backend.Forget(ctx, args.Key); err != nil {
+	backend := t.selectBackend(args.Scope)
+	if err := backend.Forget(ctx, args.Key); err != nil {
 		return "", fmt.Errorf("删除失败：%v", err)
 	}
-	return fmt.Sprintf("已忘记：%s", args.Key), nil
+	scopeLabel := "全局"
+	if args.Scope == "channel" {
+		scopeLabel = "当前频道"
+	}
+	return fmt.Sprintf("已从 %s 记忆中删除：%s", scopeLabel, args.Key), nil
+}
+
+func (t *MemoryForgetTool) selectBackend(scope string) MemoryBackend {
+	if scope == "channel" && t.backends.Channel != nil {
+		return t.backends.Channel
+	}
+	if t.backends.Global != nil {
+		return t.backends.Global
+	}
+	return t.backends.Channel
 }
 
 type MemoryListTool struct {
-	backend MemoryBackend
+	backends *MemoryBackends
 }
 
-func NewMemoryListTool(backend MemoryBackend) *MemoryListTool {
-	return &MemoryListTool{backend: backend}
+func NewMemoryListTool(backends *MemoryBackends) *MemoryListTool {
+	return &MemoryListTool{backends: backends}
 }
 
 func (t *MemoryListTool) Info(context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
-		Name:        "memory_list",
-		Desc:        `列出所有已保存的用户记忆。当用户问"你记得我什么""我告诉过你什么"时调用。`,
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
+		Name: "memory_list",
+		Desc: `列出所有已保存的用户记忆。当用户问"你记得我什么""我告诉过你什么"时调用。`,
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"scope": {
+				Type: schema.String,
+				Desc: `查询范围："global" 仅全局记忆，"channel" 仅当前频道，"all" 两者合并。默认为 "all"。`,
+			},
+		}),
 	}, nil
 }
 
 func (t *MemoryListTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	data, err := t.backend.List(ctx)
+	var args struct {
+		Scope string `json:"scope"`
+	}
+	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
+		return "", fmt.Errorf("参数解析失败：%v", err)
+	}
+	data, err := t.collectMemories(ctx, args.Scope)
 	if err != nil {
-		return "", fmt.Errorf("读取失败：%v", err)
+		return "", err
 	}
 	if len(data) == 0 {
 		return "目前没有保存的记忆。", nil
@@ -166,25 +230,97 @@ func (t *MemoryListTool) InvokableRun(ctx context.Context, argumentsInJSON strin
 	var b strings.Builder
 	b.WriteString("已保存的记忆：")
 	for _, k := range keys {
-		fmt.Fprintf(&b, "\n- %s：%s", k, data[k])
+		b.WriteString("\n- ")
+		b.WriteString(k)
+		b.WriteString("：")
+		b.WriteString(data[k])
 	}
 	return b.String(), nil
 }
 
-func LoadMemories(ctx context.Context, backend MemoryBackend) string {
-	data, err := backend.List(ctx)
-	if err != nil || len(data) == 0 {
+func (t *MemoryListTool) collectMemories(ctx context.Context, scope string) (map[string]string, error) {
+	result := make(map[string]string)
+	switch scope {
+	case "global":
+		if t.backends.Global != nil {
+			data, err := t.backends.Global.List(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("读取全局记忆失败：%v", err)
+			}
+			for k, v := range data {
+				result[k] = v
+			}
+		}
+	case "channel":
+		if t.backends.Channel != nil {
+			data, err := t.backends.Channel.List(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("读取频道记忆失败：%v", err)
+			}
+			for k, v := range data {
+				result[k] = v
+			}
+		}
+	default:
+		if t.backends.Global != nil {
+			data, err := t.backends.Global.List(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("读取全局记忆失败：%v", err)
+			}
+			for k, v := range data {
+				result[k] = v
+			}
+		}
+		if t.backends.Channel != nil {
+			data, err := t.backends.Channel.List(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("读取频道记忆失败：%v", err)
+			}
+			for k, v := range data {
+				if _, exists := result[k]; exists {
+					result[k+" (channel)"] = v
+				} else {
+					result[k] = v
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
+func LoadMemories(ctx context.Context, backends *MemoryBackends) string {
+	if backends == nil {
 		return ""
 	}
-	keys := make([]string, 0, len(data))
-	for k := range data {
+	result := make(map[string]string)
+	if backends.Global != nil {
+		data, err := backends.Global.List(ctx)
+		if err == nil {
+			for k, v := range data {
+				result[k] = v
+			}
+		}
+	}
+	if backends.Channel != nil {
+		data, err := backends.Channel.List(ctx)
+		if err == nil {
+			for k, v := range data {
+				result[k] = v
+			}
+		}
+	}
+	if len(result) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(result))
+	for k := range result {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	var b strings.Builder
 	b.WriteString("=== 用户记忆 ===")
 	for _, k := range keys {
-		fmt.Fprintf(&b, "\n- %s：%s", k, data[k])
+		fmt.Fprintf(&b, "\n- %s：%s", k, result[k])
 	}
 	return b.String()
 }

@@ -451,72 +451,170 @@ func (d adminSlashDeps) CompressSession(ctx context.Context) string {
 	return "✅ " + result
 }
 
-func (d adminSlashDeps) memoryBackend(ctx context.Context) agentbuiltin.MemoryBackend {
+func (d adminSlashDeps) memoryBackends(ctx context.Context) *agentbuiltin.MemoryBackends {
 	deviceID := slash.DeviceIDFromContext(ctx)
 	channelName := slash.ChannelNameFromContext(ctx)
 	if deviceID == "" || channelName == "" || d.s.agent == nil || d.s.agent.MemoryReader() == nil {
 		return nil
 	}
 	mem := d.s.agent.MemoryReader()
-	return agentbuiltin.NewMemoryBackend(mem.Client(), mem.Prefix(), channelName, deviceID)
+	globalB := agentbuiltin.NewMemoryBackendScoped(mem.Client(), mem.Prefix(), channelName, deviceID, "global")
+	channelB := agentbuiltin.NewMemoryBackend(mem.Client(), mem.Prefix(), channelName, deviceID)
+	return &agentbuiltin.MemoryBackends{Global: globalB, Channel: channelB}
 }
 
 func (d adminSlashDeps) MemoryList(ctx context.Context) string {
-	b := d.memoryBackend(ctx)
+	b := d.memoryBackends(ctx)
 	if b == nil {
 		return "记忆功能未启用。"
 	}
-	data, err := b.List(ctx)
-	if err != nil {
-		return "读取记忆失败：" + err.Error()
+	result := make(map[string]string)
+	if b.Global != nil {
+		data, err := b.Global.List(ctx)
+		if err != nil {
+			return "读取记忆失败：" + err.Error()
+		}
+		for k, v := range data {
+			result["[全局] "+k] = v
+		}
 	}
-	if len(data) == 0 {
+	if b.Channel != nil {
+		data, err := b.Channel.List(ctx)
+		if err != nil {
+			return "读取记忆失败：" + err.Error()
+		}
+		for k, v := range data {
+			result["[频道] "+k] = v
+		}
+	}
+	if len(result) == 0 {
 		return "目前没有保存的记忆。"
 	}
-	var result strings.Builder
-	result.WriteString("已保存的记忆：")
-	keys := make([]string, 0, len(data))
-	for k := range data {
+	keys := make([]string, 0, len(result))
+	for k := range result {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	var buf strings.Builder
+	buf.WriteString("已保存的记忆：")
 	for _, k := range keys {
-		fmt.Fprintf(&result, "\n- %s：%s", k, data[k])
+		fmt.Fprintf(&buf, "\n- %s：%s", k, result[k])
 	}
-	return result.String()
+	return buf.String()
 }
 
 func (d adminSlashDeps) MemorySave(ctx context.Context, key, value string) string {
-	b := d.memoryBackend(ctx)
+	b := d.memoryBackends(ctx)
 	if b == nil {
 		return "记忆功能未启用。"
 	}
-	if err := b.Save(ctx, key, value); err != nil {
+	backend := b.Global
+	if backend == nil {
+		return "记忆功能未启用。"
+	}
+	if err := backend.Save(ctx, key, value); err != nil {
 		return "保存失败：" + err.Error()
 	}
-	return fmt.Sprintf("已记住：%s → %s", key, value)
+	return fmt.Sprintf("已记住（全局）：%s → %s", key, value)
 }
 
 func (d adminSlashDeps) MemoryForget(ctx context.Context, key string) string {
-	b := d.memoryBackend(ctx)
+	b := d.memoryBackends(ctx)
 	if b == nil {
 		return "记忆功能未启用。"
 	}
-	if err := b.Forget(ctx, key); err != nil {
-		return "删除失败：" + err.Error()
+	if b.Global != nil {
+		if err := b.Global.Forget(ctx, key); err != nil {
+			return "删除失败：" + err.Error()
+		}
+	}
+	if b.Channel != nil {
+		_ = b.Channel.Forget(ctx, key)
 	}
 	return fmt.Sprintf("已忘记：%s", key)
 }
 
 func (d adminSlashDeps) MemoryClear(ctx context.Context) string {
-	b := d.memoryBackend(ctx)
+	b := d.memoryBackends(ctx)
 	if b == nil {
 		return "记忆功能未启用。"
 	}
-	if err := b.Clear(ctx); err != nil {
-		return "清空失败：" + err.Error()
+	var errs []string
+	if b.Global != nil {
+		if err := b.Global.Clear(ctx); err != nil {
+			errs = append(errs, "全局："+err.Error())
+		}
+	}
+	if b.Channel != nil {
+		if err := b.Channel.Clear(ctx); err != nil {
+			errs = append(errs, "频道："+err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return "部分清空失败：" + strings.Join(errs, "; ")
 	}
 	return "已清空所有记忆。"
+}
+
+func (d adminSlashDeps) WorkflowList(ctx context.Context) string {
+	defs := d.s.workflowDefinitions()
+	var b strings.Builder
+	for _, def := range defs {
+		if def.Trigger.Kind != agentworkflow.TriggerCron || def.Trigger.Cron == nil {
+			continue
+		}
+		if b.Len() == 0 {
+			b.WriteString("定时任务：")
+		}
+		status := "启用"
+		if !def.Enabled {
+			status = "禁用"
+		}
+		spec := def.Trigger.Cron
+		var schedule string
+		if spec.Every > 0 {
+			window := fmt.Sprintf("%02d:00-%02d:00", spec.StartHour, spec.EndHour)
+			schedule = fmt.Sprintf("每 %s（%s %s）", spec.Every, spec.Timezone, window)
+		} else if spec.AtHour != nil && spec.AtMinute != nil {
+			schedule = fmt.Sprintf("每天 %02d:%02d（%s）", *spec.AtHour, *spec.AtMinute, spec.Timezone)
+		}
+		fmt.Fprintf(&b, "\n- %s [%s] %s", def.ID, status, schedule)
+	}
+	if b.Len() == 0 {
+		return "没有配置的定时任务。"
+	}
+	return b.String()
+}
+
+func (d adminSlashDeps) WorkflowRun(ctx context.Context, id string) string {
+	if d.s.agent == nil {
+		return "LLM agent 未初始化。"
+	}
+	def := d.s.workflowByID(id)
+	if def == nil {
+		return fmt.Sprintf("未找到定时任务：%s", id)
+	}
+	if !def.Enabled {
+		return fmt.Sprintf("定时任务 %s 已禁用，请先启用。", id)
+	}
+	defCopy := *def
+	err := d.s.dispatchAgentRun(ctx, defCopy)
+	if err != nil {
+		return fmt.Sprintf("执行失败：%v", err)
+	}
+	return fmt.Sprintf("已执行：%s", id)
+}
+
+func (s *AdminServer) dispatchAgentRun(ctx context.Context, def agentworkflow.Definition) error {
+	handlers := map[string]func(context.Context, agentworkflow.Definition, time.Time) error{
+		"study_monitor":    s.runStudyMonitorOnce,
+		"morning_greeting": s.runMorningGreetingOnce,
+	}
+	handler, ok := handlers[def.ID]
+	if !ok {
+		return fmt.Errorf("no handler registered for %q", def.ID)
+	}
+	return handler(ctx, def, s.cfg.now())
 }
 
 func (s *AdminServer) deviceController() DeviceController {
@@ -635,63 +733,17 @@ func (s *AdminServer) handleVisionExplain(w http.ResponseWriter, r *http.Request
 
 func (s *AdminServer) workflowDefinitions() []agentworkflow.Definition {
 	defs := []agentworkflow.Definition{DefinitionChatReact()}
-
-	studyMeta := map[string]any{
-		"window":           fmt.Sprintf("%02d:00-%02d:00", s.cfg.StudyMonitorStartHour, s.cfg.StudyMonitorEndHour),
-		"interval_seconds": int(defaultDuration(s.cfg.StudyMonitorInterval, 10*time.Minute).Seconds()),
-		"camera_tool":      s.cfg.StudyMonitorCameraTool,
-		"reminder_text":    s.cfg.StudyMonitorReminder,
-		"device_ids":       s.cfg.StudyMonitorDeviceIDs,
-	}
-	defs = append(defs, agentworkflow.Definition{
-		ID:          "study_monitor",
-		Name:        "学习状态监控",
-		Description: "在设定时间窗内定时调用摄像头检查学习状态，并按需发送语音提醒和飞书通知。",
-		Enabled:     s.cfg.StudyMonitorEnabled,
-		Trigger: agentworkflow.Trigger{
-			Kind: agentworkflow.TriggerCron,
-			Cron: &agentworkflow.CronSpec{
-				Every:     defaultDuration(s.cfg.StudyMonitorInterval, 10*time.Minute),
-				Timezone:  s.cfg.StudyMonitorTimezone,
-				StartHour: s.cfg.StudyMonitorStartHour,
-				EndHour:   s.cfg.StudyMonitorEndHour,
-			},
-		},
-		Agent:    agentworkflow.AgentSpec{Name: "dispatch_agent", Mode: "react", MaxSteps: 6, Timeout: s.cfg.StudyMonitorToolTimeout + 30*time.Second},
-		Metadata: studyMeta,
-	})
-
-	hour := clampInt(s.cfg.MorningGreetingHour, 0, 23, 8)
-	minute := clampInt(s.cfg.MorningGreetingMinute, 0, 59, 0)
-	greetingMeta := map[string]any{
-		"time":       fmt.Sprintf("%02d:%02d", hour, minute),
-		"text":       firstText(strings.TrimSpace(s.cfg.MorningGreetingText), "早上好。"),
-		"device_ids": s.cfg.MorningGreetingDeviceIDs,
-	}
-	defs = append(defs, agentworkflow.Definition{
-		ID:          "morning_greeting",
-		Name:        "早安问候",
-		Description: "每天早上固定时间向在线设备播放问候语；没有在线设备时跳过，不补播。",
-		Enabled:     s.cfg.MorningGreetingEnabled,
-		Trigger: agentworkflow.Trigger{
-			Kind: agentworkflow.TriggerCron,
-			Cron: &agentworkflow.CronSpec{
-				Timezone: s.cfg.MorningGreetingTimezone,
-				AtHour:   &hour,
-				AtMinute: &minute,
-			},
-		},
-		Agent:    agentworkflow.AgentSpec{Name: "dispatch_agent", Mode: "react", MaxSteps: 4, Timeout: 120 * time.Second},
-		Metadata: greetingMeta,
-	})
+	defs = append(defs, s.cfg.Workflows...)
 	return defs
 }
 
-func defaultDuration(value, fallback time.Duration) time.Duration {
-	if value <= 0 {
-		return fallback
+func (s *AdminServer) workflowByID(id string) *agentworkflow.Definition {
+	for _, def := range s.workflowDefinitions() {
+		if def.ID == id {
+			return &def
+		}
 	}
-	return value
+	return nil
 }
 
 func needsVision(text string) bool {

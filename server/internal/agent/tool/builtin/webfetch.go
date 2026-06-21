@@ -76,14 +76,14 @@ func NewFilteredTools(filters ToolFilter, opts ToolOptions) []tool.BaseTool {
 	if filters&ToolAskUserQuestion != 0 {
 		tools = append(tools, NewAskUserQuestionTool())
 	}
-	if filters&ToolMemorySave != 0 && opts.MemoryBackend != nil {
-		tools = append(tools, NewMemorySaveTool(opts.MemoryBackend))
+	if filters&ToolMemorySave != 0 && opts.MemoryBackends != nil {
+		tools = append(tools, NewMemorySaveTool(opts.MemoryBackends))
 	}
-	if filters&ToolMemoryForget != 0 && opts.MemoryBackend != nil {
-		tools = append(tools, NewMemoryForgetTool(opts.MemoryBackend))
+	if filters&ToolMemoryForget != 0 && opts.MemoryBackends != nil {
+		tools = append(tools, NewMemoryForgetTool(opts.MemoryBackends))
 	}
-	if filters&ToolMemoryList != 0 && opts.MemoryBackend != nil {
-		tools = append(tools, NewMemoryListTool(opts.MemoryBackend))
+	if filters&ToolMemoryList != 0 && opts.MemoryBackends != nil {
+		tools = append(tools, NewMemoryListTool(opts.MemoryBackends))
 	}
 	return tools
 }

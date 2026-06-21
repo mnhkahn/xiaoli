@@ -3,6 +3,7 @@ package admin
 import (
 	"testing"
 	"time"
+	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
 
 func TestPickOnlineDevice(t *testing.T) {
@@ -51,7 +52,7 @@ func TestParseStudyDecisionFromJSON(t *testing.T) {
 		"reminder_text": "抬头一点。",
 	}
 
-	decision := srv.parseStudyDecision(value)
+	decision := srv.parseStudyDecision(value, "请坐直")
 
 	if !decision.NeedReminder {
 		t.Fatal("NeedReminder = false, want true")
@@ -70,7 +71,7 @@ func TestParseStudyDecisionFromNestedJSONText(t *testing.T) {
 		"result": `{"need_reminder":false,"summary":"坐姿端正，认真学习"}`,
 	}
 
-	decision := srv.parseStudyDecision(value)
+	decision := srv.parseStudyDecision(value, "请坐直")
 
 	if decision.NeedReminder {
 		t.Fatal("NeedReminder = true, want false")
@@ -82,40 +83,59 @@ func TestParseStudyDecisionFromNestedJSONText(t *testing.T) {
 
 func TestStudyMonitorSlotUsesConfiguredWindow(t *testing.T) {
 	cfg := testConfig()
-	cfg.StudyMonitorTimezone = "Asia/Shanghai"
-	cfg.StudyMonitorStartHour = 17
-	cfg.StudyMonitorEndHour = 21
-	cfg.StudyMonitorInterval = 10 * time.Minute
+	cfg.Workflows = parseWorkflows(map[string]settingsWorkflowDef{
+		"study_monitor": {
+			Name: "学习状态监控", Enabled: true,
+			Trigger: settingsWorkflowTrigger{Every: "10m", Timezone: "Asia/Shanghai", StartHour: 17, EndHour: 21},
+			Agent:   settingsWorkflowAgent{Name: "dispatch_agent", Mode: "react", MaxSteps: 6, Timeout: "150s"},
+		},
+	})
 	srv := NewServer(cfg)
+	def := srv.workflowByID("study_monitor")
+	if def == nil || def.Trigger.Cron == nil {
+		t.Fatal("study_monitor workflow not found or has no cron spec")
+	}
+	cronSpec := def.Trigger.Cron
 	inWindow := time.Date(2026, 5, 24, 17, 3, 20, 0, time.FixedZone("CST", 8*3600))
 	outWindow := time.Date(2026, 5, 24, 21, 0, 0, 0, time.FixedZone("CST", 8*3600))
 
-	if slot := srv.studyMonitorSlot(inWindow); slot == nil {
+	if slot := agentworkflow.CronSlot(*cronSpec, inWindow); slot == nil {
 		t.Fatal("slot is nil inside monitor window")
 	}
-	if slot := srv.studyMonitorSlot(outWindow); slot != nil {
+	if slot := agentworkflow.CronSlot(*cronSpec, outWindow); slot != nil {
 		t.Fatalf("slot = %v outside monitor window", *slot)
 	}
 }
 
 func TestMorningGreetingSlotFiresAtConfiguredTime(t *testing.T) {
 	cfg := testConfig()
-	cfg.MorningGreetingTimezone = "Asia/Shanghai"
-	cfg.MorningGreetingHour = 8
-	cfg.MorningGreetingMinute = 0
+	hour := 8
+	minute := 0
+	cfg.Workflows = parseWorkflows(map[string]settingsWorkflowDef{
+		"morning_greeting": {
+			Name: "早安问候", Enabled: true,
+			Trigger: settingsWorkflowTrigger{Timezone: "Asia/Shanghai", AtHour: &hour, AtMinute: &minute},
+			Agent:   settingsWorkflowAgent{Name: "dispatch_agent", Mode: "react", MaxSteps: 4, Timeout: "120s"},
+		},
+	})
 	srv := NewServer(cfg)
+	def := srv.workflowByID("morning_greeting")
+	if def == nil || def.Trigger.Cron == nil {
+		t.Fatal("morning_greeting workflow not found or has no cron spec")
+	}
+	cronSpec := def.Trigger.Cron
 	before := time.Date(2026, 6, 4, 7, 59, 30, 0, time.FixedZone("CST", 8*3600))
 	atTime := time.Date(2026, 6, 4, 8, 0, 0, 0, time.FixedZone("CST", 8*3600))
 	later := time.Date(2026, 6, 4, 8, 0, 59, 0, time.FixedZone("CST", 8*3600))
 
-	if slot := srv.morningGreetingSlot(before); slot != nil {
+	if slot := agentworkflow.CronSlot(*cronSpec, before); slot != nil {
 		t.Fatalf("slot = %v before greeting time", *slot)
 	}
-	firstSlot := srv.morningGreetingSlot(atTime)
+	firstSlot := agentworkflow.CronSlot(*cronSpec, atTime)
 	if firstSlot == nil {
 		t.Fatal("slot is nil at greeting time")
 	}
-	secondSlot := srv.morningGreetingSlot(later)
+	secondSlot := agentworkflow.CronSlot(*cronSpec, later)
 	if secondSlot == nil || *secondSlot != *firstSlot {
 		t.Fatalf("slot within same minute = %v, want %v", secondSlot, firstSlot)
 	}

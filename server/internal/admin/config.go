@@ -10,84 +10,71 @@ import (
 	"strings"
 	"time"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
+	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
 
 const fallbackLLMPrompt = "你是一个叫小李的中文语音助手。回答要简短、自然、适合通过扬声器播放。"
 
 type Config struct {
-	Host                     string
-	Port                     int
-	PublicBaseURL            string
-	SessionSecret            string
-	SessionMaxAge            time.Duration
-	LogtoEndpoint            string
-	LogtoAppID               string
-	LogtoAppSecret           string
-	AllowedUsers             []string
-	DirectDeviceServer       bool
-	DeviceAuthEnabled        bool
-	DeviceAuthKey            string
-	AllowedDeviceIDs         []string
-	BridgeBaseURL            string
-	VisionProxyBaseURL       string
-	InternalStreamToken      string
-	MCPReadyWait             time.Duration
-	GoASRURL                 string
-	GoASRAPIKey              string
-	GoASRModel               string
-	GoASRTimeout             time.Duration
-	GoLLMURL                 string
-	GoLLMAPIKey              string
-	GoLLMModel               string
-	GoLLMModels              []string
-	GoLLMModelConfigs        map[string]LLMModelConfig
-	GoLLMPrompt              string
-	GoLLMTimeout             time.Duration
-	GoVLLMURL                string
-	GoVLLMAPIKey             string
-	GoVLLMModel              string
-	GoVLLMTimeout            time.Duration
-	GoTTSURL                 string
-	GoTTSAPIKey              string
-	GoTTSModel               string
-	GoTTSVoice               string
-	GoTTSResponseFormat      string
-	GoTTSTimeout             time.Duration
-	ExternalMCPURLs          []string
-	MCPConfigPath            string
-	BuiltinWebFetchEnabled   bool
-	SkillRoots               []string
-	EnabledSkills            []string
-	SkillMaxBytes            int64
-	SkillExecTimeout         time.Duration
-	SkillExecMaxOutputBytes  int64
-	SkillExecGlobalBinDirs   []string
-	TaskAllowedRoots         []string
-	StudyMonitorEnabled      bool
-	StudyMonitorTimezone     string
-	StudyMonitorStartHour    int
-	StudyMonitorEndHour      int
-	StudyMonitorInterval     time.Duration
-	StudyMonitorCameraTool   string
-	StudyMonitorReminder     string
-	StudyMonitorToolTimeout  time.Duration
-	StudyMonitorDeviceIDs    []string
-	MorningGreetingEnabled   bool
-	MorningGreetingTimezone  string
-	MorningGreetingHour      int
-	MorningGreetingMinute    int
-	MorningGreetingText      string
-	MorningGreetingDeviceIDs []string
-	LarkWebhookURL           string
-	LarkAppID                string
-	LarkAppToken             string
-	WeChatEnabled            bool
-	WeChatBotToken           string
-	WeChatBaseURL            string
-	RedisURL                 string
-	RedisKeyPrefix           string
-	MemoryTTL                time.Duration
-	Now                      func() time.Time
+	Host                    string
+	Port                    int
+	PublicBaseURL           string
+	SessionSecret           string
+	SessionMaxAge           time.Duration
+	LogtoEndpoint           string
+	LogtoAppID              string
+	LogtoAppSecret          string
+	AllowedUsers            []string
+	DirectDeviceServer      bool
+	DeviceAuthEnabled       bool
+	DeviceAuthKey           string
+	AllowedDeviceIDs        []string
+	BridgeBaseURL           string
+	VisionProxyBaseURL      string
+	InternalStreamToken     string
+	MCPReadyWait            time.Duration
+	GoASRURL                string
+	GoASRAPIKey             string
+	GoASRModel              string
+	GoASRTimeout            time.Duration
+	GoLLMURL                string
+	GoLLMAPIKey             string
+	GoLLMModel              string
+	GoLLMModels             []string
+	GoLLMModelConfigs       map[string]LLMModelConfig
+	GoLLMPrompt             string
+	GoLLMTimeout            time.Duration
+	GoVLLMURL               string
+	GoVLLMAPIKey            string
+	GoVLLMModel             string
+	GoVLLMTimeout           time.Duration
+	GoTTSURL                string
+	GoTTSAPIKey             string
+	GoTTSModel              string
+	GoTTSVoice              string
+	GoTTSResponseFormat     string
+	GoTTSTimeout            time.Duration
+	ExternalMCPURLs         []string
+	MCPConfigPath           string
+	BuiltinWebFetchEnabled  bool
+	SkillRoots              []string
+	EnabledSkills           []string
+	SkillMaxBytes           int64
+	SkillExecTimeout        time.Duration
+	SkillExecMaxOutputBytes int64
+	SkillExecGlobalBinDirs  []string
+	TaskAllowedRoots        []string
+	Workflows               []agentworkflow.Definition
+	LarkWebhookURL          string
+	LarkAppID               string
+	LarkAppToken            string
+	WeChatEnabled           bool
+	WeChatBotToken          string
+	WeChatBaseURL           string
+	RedisURL                string
+	RedisKeyPrefix          string
+	MemoryTTL               time.Duration
+	Now                     func() time.Time
 }
 
 type LLMModelConfig struct {
@@ -138,78 +125,64 @@ func LoadConfig() Config {
 	asr := settings.Models.ASR
 	tts := settings.Models.TTS
 	cfg := Config{
-		Host:                     env("XIAOLI_ADMIN_HOST", "0.0.0.0"),
-		Port:                     envInt("XIAOLI_ADMIN_PORT", 8004),
-		PublicBaseURL:            strings.TrimRight(env("ADMIN_PUBLIC_BASE_URL", env("PUBLIC_BASE_URL", "https://xiaoli-server.fly.dev")), "/"),
-		SessionSecret:            sessionSecret,
-		SessionMaxAge:            time.Duration(envInt("ADMIN_SESSION_MAX_AGE_SECONDS", 604800)) * time.Second,
-		LogtoEndpoint:            strings.TrimRight(env("LOGTO_ENDPOINT", ""), "/") + "/",
-		LogtoAppID:               env("LOGTO_APP_ID", ""),
-		LogtoAppSecret:           env("LOGTO_APP_SECRET", ""),
-		AllowedUsers:             csv(env("ADMIN_ALLOWED_USERS", "")),
-		DirectDeviceServer:       envBool("XIAOLI_DIRECT_DEVICE_SERVER", false),
-		DeviceAuthEnabled:        envBool("ENABLE_SERVER_AUTH", false),
-		DeviceAuthKey:            env("SERVER_AUTH_KEY", ""),
-		AllowedDeviceIDs:         csv(firstNonEmptyEnv("ALLOWED_DEVICE_IDS", "ALLOWED_DEVICE_ID", "SERVER_AUTH_ALLOWED_DEVICE_IDS")),
-		BridgeBaseURL:            strings.TrimRight(env("XIAOLI_BRIDGE_BASE_URL", "http://127.0.0.1:8005"), "/"),
-		VisionProxyBaseURL:       strings.TrimRight(env("XIAOLI_VISION_PROXY_BASE_URL", "http://127.0.0.1:8003"), "/"),
-		InternalStreamToken:      env("XIAOLI_ADMIN_INTERNAL_TOKEN", sessionSecret),
-		MCPReadyWait:             time.Duration(envFloat("ADMIN_MCP_READY_WAIT_SECONDS", 5)) * time.Second,
-		GoASRURL:                 strings.TrimSpace(asr.BaseURL),
-		GoASRAPIKey:              settingsAPIKey(asr.APIKeyEnv),
-		GoASRModel:               strings.TrimSpace(asr.Model),
-		GoASRTimeout:             time.Duration(envInt("XIAOLI_GO_ASR_TIMEOUT_SECONDS", 45)) * time.Second,
-		GoLLMURL:                 selectedLLM.BaseURL,
-		GoLLMAPIKey:              selectedLLM.APIKey,
-		GoLLMModel:               goLLMModel,
-		GoLLMModels:              goLLMModels,
-		GoLLMModelConfigs:        goLLMModelConfigs,
-		GoLLMPrompt:              goLLMPrompt,
-		GoLLMTimeout:             time.Duration(envInt("XIAOLI_GO_LLM_TIMEOUT_SECONDS", 120)) * time.Second,
-		GoVLLMURL:                strings.TrimSpace(vision.BaseURL),
-		GoVLLMAPIKey:             settingsAPIKey(vision.APIKeyEnv),
-		GoVLLMModel:              strings.TrimSpace(vision.Model),
-		GoVLLMTimeout:            time.Duration(envInt("XIAOLI_GO_VLLM_TIMEOUT_SECONDS", 60)) * time.Second,
-		GoTTSURL:                 strings.TrimSpace(tts.BaseURL),
-		GoTTSAPIKey:              settingsAPIKey(tts.APIKeyEnv),
-		GoTTSModel:               strings.TrimSpace(tts.Model),
-		GoTTSVoice:               strings.TrimSpace(tts.Voice),
-		GoTTSResponseFormat:      strings.TrimSpace(tts.ResponseFormat),
-		GoTTSTimeout:             time.Duration(envInt("XIAOLI_GO_TTS_TIMEOUT_SECONDS", 30)) * time.Second,
-		MCPConfigPath:            settingsPath,
-		ExternalMCPURLs:          settings.mcpURLs(),
-		BuiltinWebFetchEnabled:   settings.webFetchEnabled(),
-		SkillRoots:               csv(env("XIAOLI_SKILL_ROOTS", "/opt/xiaoli/skills")),
-		EnabledSkills:            csv(env("XIAOLI_ENABLED_SKILLS", "*")),
-		SkillMaxBytes:            int64(envInt("XIAOLI_SKILL_MAX_BYTES", int(agentskill.DefaultMaxBytes))),
-		SkillExecTimeout:         time.Duration(envInt("XIAOLI_SKILL_EXEC_TIMEOUT_SECONDS", int(agentskill.DefaultExecTimeout/time.Second))) * time.Second,
-		SkillExecMaxOutputBytes:  int64(envInt("XIAOLI_SKILL_EXEC_MAX_OUTPUT_BYTES", agentskill.DefaultExecMaxOutputBytes)),
-		SkillExecGlobalBinDirs:   csv(env("XIAOLI_SKILL_EXEC_GLOBAL_BIN_DIRS", "/usr/local/bin")),
-		TaskAllowedRoots:         csv(env("XIAOLI_TASK_ALLOWED_ROOTS", "")),
-		StudyMonitorEnabled:      envBool("STUDY_MONITOR_ENABLED", false),
-		StudyMonitorTimezone:     env("STUDY_MONITOR_TIMEZONE", "Asia/Shanghai"),
-		StudyMonitorStartHour:    envInt("STUDY_MONITOR_START_HOUR", 17),
-		StudyMonitorEndHour:      envInt("STUDY_MONITOR_END_HOUR", 21),
-		StudyMonitorInterval:     time.Duration(envInt("STUDY_MONITOR_INTERVAL_SECONDS", 300)) * time.Second,
-		StudyMonitorCameraTool:   env("STUDY_MONITOR_CAMERA_TOOL", "self.camera.take_photo"),
-		StudyMonitorReminder:     env("STUDY_MONITOR_REMINDER_TEXT", "请坐直，认真学习。"),
-		StudyMonitorToolTimeout:  time.Duration(envInt("STUDY_MONITOR_TOOL_TIMEOUT_SECONDS", 120)) * time.Second,
-		StudyMonitorDeviceIDs:    csv(env("STUDY_MONITOR_DEVICE_IDS", "")),
-		MorningGreetingEnabled:   envBool("MORNING_GREETING_ENABLED", true),
-		MorningGreetingTimezone:  env("MORNING_GREETING_TIMEZONE", "Asia/Shanghai"),
-		MorningGreetingHour:      envInt("MORNING_GREETING_HOUR", 8),
-		MorningGreetingMinute:    envInt("MORNING_GREETING_MINUTE", 0),
-		MorningGreetingText:      env("MORNING_GREETING_TEXT", "早上好。"),
-		MorningGreetingDeviceIDs: csv(env("MORNING_GREETING_DEVICE_IDS", "")),
-		LarkWebhookURL:           env("LARK_BOT_WEBHOOK_URL", ""),
-		LarkAppID:                env("LARK_APP_ID", ""),
-		LarkAppToken:             env("LARK_APP_TOKEN", ""),
-		WeChatEnabled:            envBool("WECHAT_ENABLED", false),
-		WeChatBotToken:           env("WECHAT_BOT_TOKEN", ""),
-		WeChatBaseURL:            env("WECHAT_BASE_URL", wechatDefaultBaseURL),
-		RedisURL:                 env("XIAOLI_REDIS_URL", ""),
-		RedisKeyPrefix:           env("XIAOLI_REDIS_KEY_PREFIX", "xiaoli:cp:"),
-		MemoryTTL:                time.Duration(envInt("XIAOLI_MEMORY_TTL_HOURS", 24)) * time.Hour,
+		Host:                    env("XIAOLI_ADMIN_HOST", "0.0.0.0"),
+		Port:                    envInt("XIAOLI_ADMIN_PORT", 8004),
+		PublicBaseURL:           strings.TrimRight(env("ADMIN_PUBLIC_BASE_URL", env("PUBLIC_BASE_URL", "https://xiaoli-server.fly.dev")), "/"),
+		SessionSecret:           sessionSecret,
+		SessionMaxAge:           time.Duration(envInt("ADMIN_SESSION_MAX_AGE_SECONDS", 604800)) * time.Second,
+		LogtoEndpoint:           strings.TrimRight(env("LOGTO_ENDPOINT", ""), "/") + "/",
+		LogtoAppID:              env("LOGTO_APP_ID", ""),
+		LogtoAppSecret:          env("LOGTO_APP_SECRET", ""),
+		AllowedUsers:            csv(env("ADMIN_ALLOWED_USERS", "")),
+		DirectDeviceServer:      envBool("XIAOLI_DIRECT_DEVICE_SERVER", false),
+		DeviceAuthEnabled:       envBool("ENABLE_SERVER_AUTH", false),
+		DeviceAuthKey:           env("SERVER_AUTH_KEY", ""),
+		AllowedDeviceIDs:        csv(firstNonEmptyEnv("ALLOWED_DEVICE_IDS", "ALLOWED_DEVICE_ID", "SERVER_AUTH_ALLOWED_DEVICE_IDS")),
+		BridgeBaseURL:           strings.TrimRight(env("XIAOLI_BRIDGE_BASE_URL", "http://127.0.0.1:8005"), "/"),
+		VisionProxyBaseURL:      strings.TrimRight(env("XIAOLI_VISION_PROXY_BASE_URL", "http://127.0.0.1:8003"), "/"),
+		InternalStreamToken:     env("XIAOLI_ADMIN_INTERNAL_TOKEN", sessionSecret),
+		MCPReadyWait:            time.Duration(envFloat("ADMIN_MCP_READY_WAIT_SECONDS", 5)) * time.Second,
+		GoASRURL:                strings.TrimSpace(asr.BaseURL),
+		GoASRAPIKey:             settingsAPIKey(asr.APIKeyEnv),
+		GoASRModel:              strings.TrimSpace(asr.Model),
+		GoASRTimeout:            time.Duration(envInt("XIAOLI_GO_ASR_TIMEOUT_SECONDS", 45)) * time.Second,
+		GoLLMURL:                selectedLLM.BaseURL,
+		GoLLMAPIKey:             selectedLLM.APIKey,
+		GoLLMModel:              goLLMModel,
+		GoLLMModels:             goLLMModels,
+		GoLLMModelConfigs:       goLLMModelConfigs,
+		GoLLMPrompt:             goLLMPrompt,
+		GoLLMTimeout:            time.Duration(envInt("XIAOLI_GO_LLM_TIMEOUT_SECONDS", 120)) * time.Second,
+		GoVLLMURL:               strings.TrimSpace(vision.BaseURL),
+		GoVLLMAPIKey:            settingsAPIKey(vision.APIKeyEnv),
+		GoVLLMModel:             strings.TrimSpace(vision.Model),
+		GoVLLMTimeout:           time.Duration(envInt("XIAOLI_GO_VLLM_TIMEOUT_SECONDS", 60)) * time.Second,
+		GoTTSURL:                strings.TrimSpace(tts.BaseURL),
+		GoTTSAPIKey:             settingsAPIKey(tts.APIKeyEnv),
+		GoTTSModel:              strings.TrimSpace(tts.Model),
+		GoTTSVoice:              strings.TrimSpace(tts.Voice),
+		GoTTSResponseFormat:     strings.TrimSpace(tts.ResponseFormat),
+		GoTTSTimeout:            time.Duration(envInt("XIAOLI_GO_TTS_TIMEOUT_SECONDS", 30)) * time.Second,
+		MCPConfigPath:           settingsPath,
+		ExternalMCPURLs:         settings.mcpURLs(),
+		BuiltinWebFetchEnabled:  settings.webFetchEnabled(),
+		SkillRoots:              csv(env("XIAOLI_SKILL_ROOTS", "/opt/xiaoli/skills")),
+		EnabledSkills:           csv(env("XIAOLI_ENABLED_SKILLS", "*")),
+		SkillMaxBytes:           int64(envInt("XIAOLI_SKILL_MAX_BYTES", int(agentskill.DefaultMaxBytes))),
+		SkillExecTimeout:        time.Duration(envInt("XIAOLI_SKILL_EXEC_TIMEOUT_SECONDS", int(agentskill.DefaultExecTimeout/time.Second))) * time.Second,
+		SkillExecMaxOutputBytes: int64(envInt("XIAOLI_SKILL_EXEC_MAX_OUTPUT_BYTES", agentskill.DefaultExecMaxOutputBytes)),
+		SkillExecGlobalBinDirs:  csv(env("XIAOLI_SKILL_EXEC_GLOBAL_BIN_DIRS", "/usr/local/bin")),
+		TaskAllowedRoots:        csv(env("XIAOLI_TASK_ALLOWED_ROOTS", "")),
+		Workflows:               parseWorkflows(settings.Workflows),
+		LarkWebhookURL:          env("LARK_BOT_WEBHOOK_URL", ""),
+		LarkAppID:               env("LARK_APP_ID", ""),
+		LarkAppToken:            env("LARK_APP_TOKEN", ""),
+		WeChatEnabled:           envBool("WECHAT_ENABLED", false),
+		WeChatBotToken:          env("WECHAT_BOT_TOKEN", ""),
+		WeChatBaseURL:           env("WECHAT_BASE_URL", wechatDefaultBaseURL),
+		RedisURL:                env("XIAOLI_REDIS_URL", ""),
+		RedisKeyPrefix:          env("XIAOLI_REDIS_KEY_PREFIX", "xiaoli:cp:"),
+		MemoryTTL:               time.Duration(envInt("XIAOLI_MEMORY_TTL_HOURS", 24)) * time.Hour,
 	}
 	return cfg
 }
@@ -222,9 +195,10 @@ func defaultSettingsPaths() []string {
 }
 
 type settingsConfig struct {
-	Models     settingsModels      `json:"models"`
-	MCPServers []settingsMCPServer `json:"mcp_servers"`
-	Tools      settingsTools       `json:"tools"`
+	Models     settingsModels                 `json:"models"`
+	MCPServers []settingsMCPServer            `json:"mcp_servers"`
+	Tools      settingsTools                  `json:"tools"`
+	Workflows  map[string]settingsWorkflowDef `json:"cron"`
 }
 
 type settingsTools struct {
@@ -281,6 +255,206 @@ func loadSettings(paths []string) (settingsConfig, string) {
 		return cfg, path
 	}
 	return settingsConfig{}, ""
+}
+
+func parseWorkflows(raw map[string]settingsWorkflowDef) []agentworkflow.Definition {
+	if raw == nil {
+		return nil
+	}
+	var defs []agentworkflow.Definition
+	seen := map[string]bool{}
+	for id, wf := range raw {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			logger.Infof("[workflows] skip entry with empty key")
+			continue
+		}
+		if seen[id] {
+			logger.Infof("[workflows] duplicate key %q, keeping first", id)
+			continue
+		}
+		seen[id] = true
+
+		if !wf.Trigger.valid() {
+			logger.Infof("[workflows] %q: invalid trigger (both every and at_hour/at_minute set, or neither), disabling", id)
+			wf.Enabled = false
+		}
+
+		agentTimeout := 120 * time.Second
+		if wf.Agent.Timeout != "" {
+			if d, err := time.ParseDuration(wf.Agent.Timeout); err == nil {
+				agentTimeout = d
+			} else {
+				logger.Infof("[workflows] %q: invalid agent timeout %q, using default", id, wf.Agent.Timeout)
+			}
+		}
+
+		cronSpec := wf.Trigger.toCronSpec()
+		if strings.TrimSpace(wf.Trigger.Every) != "" && cronSpec.every <= 0 {
+			logger.Infof("[workflows] %q: invalid every duration %q, disabling", id, wf.Trigger.Every)
+			wf.Enabled = false
+		}
+
+		spec := agentworkflow.CronSpec{
+			Every:     cronSpec.every,
+			Timezone:  cronSpec.timezone,
+			StartHour: cronSpec.startHour,
+			EndHour:   cronSpec.endHour,
+			AtHour:    cronSpec.atHour,
+			AtMinute:  cronSpec.atMinute,
+		}
+
+		name := wf.Agent.Name
+		if name == "" {
+			name = "dispatch_agent"
+		}
+		mode := wf.Agent.Mode
+		if mode == "" {
+			mode = "react"
+		}
+
+		defs = append(defs, agentworkflow.Definition{
+			ID:          id,
+			Name:        wf.Name,
+			Description: wf.Description,
+			Enabled:     wf.Enabled,
+			Trigger: agentworkflow.Trigger{
+				Kind: agentworkflow.TriggerCron,
+				Cron: &spec,
+			},
+			Agent: agentworkflow.AgentSpec{
+				Name:     name,
+				Mode:     mode,
+				MaxSteps: wf.Agent.MaxSteps,
+				Timeout:  agentTimeout,
+			},
+			Metadata: wf.Metadata,
+		})
+	}
+	return defs
+}
+
+func metadataString(m map[string]any, key, fallback string) string {
+	if m == nil {
+		return fallback
+	}
+	v, ok := m[key]
+	if !ok {
+		return fallback
+	}
+	s, ok := v.(string)
+	if !ok {
+		return fallback
+	}
+	return s
+}
+
+func metadataCSV(m map[string]any, key string, fallback []string) []string {
+	s := metadataString(m, key, "")
+	if s == "" {
+		return fallback
+	}
+	var items []string
+	for _, item := range strings.Split(s, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func metadataInt(m map[string]any, key string, fallback int) int {
+	if m == nil {
+		return fallback
+	}
+	v, ok := m[key]
+	if !ok {
+		return fallback
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	default:
+		return fallback
+	}
+}
+
+func metadataDuration(m map[string]any, key string, fallback time.Duration) time.Duration {
+	s := metadataString(m, key, "")
+	if s == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return fallback
+	}
+	return d
+}
+
+type settingsWorkflowDef struct {
+	Name        string                  `json:"name"`
+	Description string                  `json:"description"`
+	Enabled     bool                    `json:"enabled"`
+	Trigger     settingsWorkflowTrigger `json:"trigger"`
+	Agent       settingsWorkflowAgent   `json:"agent"`
+	Metadata    map[string]any          `json:"metadata"`
+}
+
+type settingsWorkflowTrigger struct {
+	Every     string `json:"every"`
+	Timezone  string `json:"timezone"`
+	StartHour int    `json:"start_hour"`
+	EndHour   int    `json:"end_hour"`
+	AtHour    *int   `json:"at_hour"`
+	AtMinute  *int   `json:"at_minute"`
+}
+
+type settingsWorkflowAgent struct {
+	Name     string `json:"name"`
+	Mode     string `json:"mode"`
+	MaxSteps int    `json:"max_steps"`
+	Timeout  string `json:"timeout"`
+}
+
+type parsedCronSpec struct {
+	every     time.Duration
+	timezone  string
+	startHour int
+	endHour   int
+	atHour    *int
+	atMinute  *int
+}
+
+func (t settingsWorkflowTrigger) valid() bool {
+	hasEvery := strings.TrimSpace(t.Every) != ""
+	hasAt := t.AtHour != nil && t.AtMinute != nil
+	if hasEvery && hasAt {
+		return false
+	}
+	return hasEvery || hasAt
+}
+
+func (t settingsWorkflowTrigger) toCronSpec() parsedCronSpec {
+	spec := parsedCronSpec{
+		timezone:  t.Timezone,
+		startHour: t.StartHour,
+		endHour:   t.EndHour,
+		atHour:    t.AtHour,
+		atMinute:  t.AtMinute,
+	}
+	if t.Every != "" {
+		d, err := time.ParseDuration(t.Every)
+		if err == nil {
+			spec.every = d
+		}
+	}
+	if spec.timezone == "" {
+		spec.timezone = "Asia/Shanghai"
+	}
+	return spec
 }
 
 func (s settingsLLMModel) modelIDs() []string {

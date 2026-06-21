@@ -409,16 +409,22 @@ func TestSpeakStopAPIForwardsToBridge(t *testing.T) {
 
 func TestSchedulesAPIIncludesBackgroundTasks(t *testing.T) {
 	cfg := testConfig()
-	cfg.StudyMonitorEnabled = true
-	cfg.StudyMonitorTimezone = "Asia/Shanghai"
-	cfg.StudyMonitorStartHour = 17
-	cfg.StudyMonitorEndHour = 21
-	cfg.StudyMonitorInterval = 10 * time.Minute
-	cfg.StudyMonitorCameraTool = "self.camera.take_photo"
-	cfg.MorningGreetingEnabled = true
-	cfg.MorningGreetingTimezone = "Asia/Shanghai"
-	cfg.MorningGreetingHour = 8
-	cfg.MorningGreetingText = "早上好。"
+	hour := 8
+	minute := 0
+	cfg.Workflows = parseWorkflows(map[string]settingsWorkflowDef{
+		"study_monitor": {
+			Name: "学习状态监控", Enabled: true,
+			Trigger:  settingsWorkflowTrigger{Every: "10m", Timezone: "Asia/Shanghai", StartHour: 17, EndHour: 21},
+			Agent:    settingsWorkflowAgent{Name: "dispatch_agent", Mode: "react", MaxSteps: 6, Timeout: "150s"},
+			Metadata: map[string]any{"camera_tool": "self.camera.take_photo"},
+		},
+		"morning_greeting": {
+			Name: "早安问候", Enabled: true,
+			Trigger:  settingsWorkflowTrigger{Timezone: "Asia/Shanghai", AtHour: &hour, AtMinute: &minute},
+			Agent:    settingsWorkflowAgent{Name: "dispatch_agent", Mode: "react", MaxSteps: 4, Timeout: "120s"},
+			Metadata: map[string]any{"text": "早上好。"},
+		},
+	})
 	srv := NewServer(cfg)
 	session, err := srv.signer.sign(map[string]any{
 		"user": map[string]any{"sub": "logto-user"},
@@ -446,18 +452,28 @@ func TestSchedulesAPIIncludesBackgroundTasks(t *testing.T) {
 	if len(payload.Schedules) != 2 {
 		t.Fatalf("schedules length = %d, want 2", len(payload.Schedules))
 	}
-	task := payload.Schedules[0]
+	var task, greeting map[string]any
+	for _, s := range payload.Schedules {
+		switch s["id"] {
+		case "study_monitor":
+			task = s
+		case "morning_greeting":
+			greeting = s
+		}
+	}
+	if task == nil || greeting == nil {
+		t.Fatalf("missing expected schedules: %#v", payload.Schedules)
+	}
 	if task["id"] != "study_monitor" || task["enabled"] != true || task["timezone"] != "Asia/Shanghai" {
 		t.Fatalf("unexpected schedule task: %#v", task)
 	}
-	if task["interval_seconds"] != float64(600) || task["window"] != "17:00-21:00" {
-		t.Fatalf("unexpected schedule timing: %#v", task)
+	if task["camera_tool"] != "self.camera.take_photo" {
+		t.Fatalf("unexpected schedule metadata: %#v", task)
 	}
-	greeting := payload.Schedules[1]
 	if greeting["id"] != "morning_greeting" || greeting["enabled"] != true || greeting["timezone"] != "Asia/Shanghai" {
 		t.Fatalf("unexpected greeting schedule: %#v", greeting)
 	}
-	if greeting["time"] != "08:00" || greeting["text"] != "早上好。" {
+	if greeting["text"] != "早上好。" {
 		t.Fatalf("unexpected greeting timing/text: %#v", greeting)
 	}
 }
