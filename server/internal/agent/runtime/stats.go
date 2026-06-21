@@ -144,7 +144,7 @@ func (r *Recorder) cleanupLoop() {
 	}
 }
 
-func (r *Recorder) Status() string {
+func (r *Recorder) Status(contextLength int) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -176,11 +176,21 @@ func (r *Recorder) Status() string {
 				totalErrs += bkt.errors
 				totalPi += bkt.promptTokens
 				totalPo += bkt.completionTokens
-				fmt.Fprintf(&b, "  %s  %d req  %d err  %d in  %d out\n", mm, bkt.requests, bkt.errors, bkt.promptTokens, bkt.completionTokens)
+				fmt.Fprintf(&b, "  %s  %d req  %d err  %d in", mm, bkt.requests, bkt.errors, bkt.promptTokens)
+				if contextLength > 0 && bkt.promptTokens > 0 {
+					pct := bkt.promptTokens * 100 / int64(contextLength)
+					fmt.Fprintf(&b, "（%d%%）", pct)
+				}
+				fmt.Fprintf(&b, "  %d out\n", bkt.completionTokens)
 			}
 			if totalReqs > 0 {
 				b.WriteString("  ─────────────────────\n")
-				fmt.Fprintf(&b, "  合计    %d req  %d err  %d in  %d out\n", totalReqs, totalErrs, totalPi, totalPo)
+				fmt.Fprintf(&b, "  合计    %d req  %d err  %d in", totalReqs, totalErrs, totalPi)
+			if contextLength > 0 && totalPi > 0 {
+				pct := totalPi * 100 / int64(contextLength)
+				fmt.Fprintf(&b, "（%d%%）", pct)
+			}
+			fmt.Fprintf(&b, "  %d out\n", totalPo)
 			}
 		}
 	}

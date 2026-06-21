@@ -313,7 +313,13 @@ func (d adminSlashDeps) LLMStats() string {
 	if recorder == nil {
 		return "LLM 统计未启用。"
 	}
-	return recorder.Status()
+	ctxLen := 0
+	if d.s.agent.CurrentLLMModel() != "" {
+		if cfg, ok := d.s.cfg.GoLLMModelConfigs[d.s.agent.CurrentLLMModel()]; ok {
+			ctxLen = cfg.ContextLength
+		}
+	}
+	return recorder.Status(ctxLen)
 }
 
 func (d adminSlashDeps) NewSession(ctx context.Context) string {
