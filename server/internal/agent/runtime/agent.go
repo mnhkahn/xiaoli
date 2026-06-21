@@ -59,6 +59,20 @@ func (a *Agent) MCPStatus() []MCPEndpointStatus {
 	return a.extMCPStatus
 }
 
+func (a *Agent) TaskStatusList() []agentbuiltin.JobSummary {
+	if a.taskTool == nil {
+		return nil
+	}
+	return a.taskTool.ListJobs()
+}
+
+func (a *Agent) TaskStatusByID(id string) *agentbuiltin.BackgroundJob {
+	if a.taskTool == nil {
+		return nil
+	}
+	return a.taskTool.QueryJob(id)
+}
+
 func NewAgent(cfg Config) *Agent {
 	selected := cfg.selectedLLMModelConfig()
 	if selected.APIKey == "" {
@@ -650,6 +664,54 @@ func (a *Agent) loadMemories(ctx context.Context, channelName, deviceID string) 
 	globalB := agentbuiltin.NewMemoryBackendScoped(a.memory.Client(), a.memory.Prefix(), channelName, deviceID, "global")
 	channelB := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
 	return agentbuiltin.LoadMemories(ctx, &agentbuiltin.MemoryBackends{Global: globalB, Channel: channelB})
+}
+
+func (a *Agent) CurrentContext(ctx context.Context, channelName, deviceID string) *ContextUsage {
+	if a.memory == nil {
+		return nil
+	}
+	modelID := a.CurrentLLMModel()
+	cfg := a.cfg.selectedLLMModelConfigFor(modelID)
+
+	memoryID := deviceID
+	if a.sessionMgr != nil && channelName != "" && deviceID != "" {
+		if sid := a.sessionMgr.GetChannelSession(ctx, channelName, deviceID); sid != "" {
+			memoryID = sid
+		}
+	}
+
+	history := a.memory.Load(ctx, memoryID)
+	systemMsgs := make([]string, 0, 4)
+	if a.cfg.LLMPrompt != "" {
+		systemMsgs = append(systemMsgs, a.cfg.LLMPrompt)
+	}
+	systemMsgs = append(systemMsgs, a.buildEnvContext(channelName, deviceID))
+	systemMsgs = append(systemMsgs, a.toolGuide(true))
+	if memories := a.loadMemories(ctx, channelName, deviceID); memories != "" {
+		systemMsgs = append(systemMsgs, memories)
+	}
+
+	var estimated int
+	for _, s := range systemMsgs {
+		estimated += len(s) / 4
+	}
+	for _, m := range history {
+		estimated += len(m.Content) / 4
+	}
+
+	reserve := 8000
+	compressAt := cfg.ContextLength*75/100 - cfg.MaxTokens - reserve
+	if compressAt < 2000 {
+		compressAt = 2000
+	}
+
+	return &ContextUsage{
+		Model:          modelID,
+		ContextLength:  cfg.ContextLength,
+		MaxTokens:      cfg.MaxTokens,
+		EstimatedInput: estimated,
+		CompressAt:     compressAt,
+	}
 }
 
 func (a *Agent) Generate(ctx context.Context, system, user string) (string, error) {

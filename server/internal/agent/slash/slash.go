@@ -54,7 +54,7 @@ type Dependencies interface {
 	ListModels(role model.Role) []ModelOption
 	UseModel(role model.Role, id string) error
 	ListChannels(ctx context.Context) ([]channel.Info, error)
-	LLMStats() string
+	LLMStats(ctx context.Context) string
 	NewSession(ctx context.Context) string
 	ListSessions(ctx context.Context) string
 	SessionContext(ctx context.Context, id string) string
@@ -67,6 +67,8 @@ type Dependencies interface {
 	WorkflowList(ctx context.Context) string
 	WorkflowRun(ctx context.Context, id string) string
 	MCPStatus(ctx context.Context) string
+	TaskStatusList(ctx context.Context) string
+	TaskStatusByID(ctx context.Context, id string) string
 }
 
 type Handler struct {
@@ -108,7 +110,7 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 	case "channel":
 		return h.channels(ctx), true
 	case "status":
-		return h.status(), true
+		return h.status(ctx), true
 	case "new":
 		return h.deps.NewSession(ctx), true
 	case "sessions":
@@ -123,6 +125,8 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 		return h.cron(ctx, cmd.Args), true
 	case "mcp":
 		return h.deps.MCPStatus(ctx), true
+	case "task":
+		return h.taskStatus(ctx, cmd.Args), true
 	case "help":
 		return helpText(), true
 	default:
@@ -172,6 +176,20 @@ func (h Handler) cron(ctx context.Context, args string) string {
 		return h.deps.WorkflowRun(ctx, fields[1])
 	}
 	return "未知子命令，可用：list, run"
+}
+
+func (h Handler) taskStatus(ctx context.Context, args string) string {
+	fields := strings.Fields(args)
+	if len(fields) == 0 {
+		return h.deps.TaskStatusList(ctx)
+	}
+	if fields[0] == "status" {
+		if len(fields) >= 2 {
+			return h.deps.TaskStatusByID(ctx, fields[1])
+		}
+		return h.deps.TaskStatusList(ctx)
+	}
+	return "用法：/task status [task_id]"
 }
 
 func (h Handler) skills(ctx context.Context) string {
@@ -225,19 +243,21 @@ func (h Handler) model(ctx context.Context, args string) string {
 	return b.String()
 }
 
-func (h Handler) status() string {
+func (h Handler) status(ctx context.Context) string {
 	info := h.deps.ModelInfo()
 	var b strings.Builder
-	b.WriteString("当前模型：")
-	b.WriteString(info.LLM)
-	if info.ContextLength > 0 {
-		fmt.Fprintf(&b, "\n窗口 %dK", info.ContextLength/1024)
-		if info.MaxTokens > 0 {
-			fmt.Fprintf(&b, " | 输出上限 %d", info.MaxTokens)
+	if info.LLM != "" {
+		b.WriteString("当前模型：")
+		b.WriteString(info.LLM)
+		if info.ContextLength > 0 {
+			fmt.Fprintf(&b, "\n窗口 %dK", info.ContextLength/1024)
+			if info.MaxTokens > 0 {
+				fmt.Fprintf(&b, " | 输出上限 %d", info.MaxTokens)
+			}
 		}
+		b.WriteByte('\n')
 	}
-	b.WriteString("\n\n")
-	b.WriteString(h.deps.LLMStats())
+	b.WriteString(h.deps.LLMStats(ctx))
 	return b.String()
 }
 
@@ -344,6 +364,7 @@ func helpText() string {
 /cron       - 查看和管理定时任务（/cron list 查看, /cron run <任务ID> 立即执行）
 /mcp        - 查看 MCP 外部服务连接状态
 /skills     - 列出所有可用技能及其版本号
+/task       - 查看 Task 运行状态（/task status）
 /model      - 查看或切换 LLM 模型（/model list 查看可选模型，/model use <id> 切换）
 /channel    - 查看可用消息渠道
 /status     - 查看 LLM 调用统计

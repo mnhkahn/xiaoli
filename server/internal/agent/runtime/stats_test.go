@@ -3,16 +3,19 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 )
 
 type fakeInvokableTool struct {
-	name     string
-	failOn   int
-	callSeq  int
+	name    string
+	failOn  int
+	callSeq int
 }
 
 func (f *fakeInvokableTool) Info(_ context.Context) (*schema.ToolInfo, error) {
@@ -47,6 +50,13 @@ func toolStatsErrors(rec *Recorder, name string) int64 {
 		return 0
 	}
 	return entry.Errors
+}
+
+func firstBucket(rec *Recorder, mid string) *minuteBucket {
+	for _, b := range rec.buckets[mid] {
+		return b
+	}
+	return &minuteBucket{}
 }
 
 func TestWrapToolNilRecorder(t *testing.T) {
@@ -150,5 +160,148 @@ func TestWrapToolPerToolName(t *testing.T) {
 	}
 	if c := toolStatsCalls(rec, "beta"); c != 1 {
 		t.Fatalf("beta calls = %d, want 1", c)
+	}
+}
+
+func TestRecordCachedTokens(t *testing.T) {
+	rec := &Recorder{buckets: make(map[string]map[string]*minuteBucket)}
+
+	mid := "test-model"
+
+	rec.record(mid, &model.CallbackOutput{
+		TokenUsage: &model.TokenUsage{
+			PromptTokens:     100,
+			CompletionTokens: 50,
+			PromptTokenDetails: model.PromptTokenDetails{
+				CachedTokens: 30,
+			},
+		},
+	})
+	b := firstBucket(rec, mid)
+	if b.cachedPromptTokens != 30 {
+		t.Fatalf("cached = %d, want 30", b.cachedPromptTokens)
+	}
+	if b.promptTokens != 100 {
+		t.Fatalf("prompt = %d, want 100", b.promptTokens)
+	}
+}
+
+func TestRecordCachedTokensClamp(t *testing.T) {
+	rec := &Recorder{buckets: make(map[string]map[string]*minuteBucket)}
+
+	mid := "test-model"
+
+	rec.record(mid, &model.CallbackOutput{
+		TokenUsage: &model.TokenUsage{
+			PromptTokens:     50,
+			CompletionTokens: 25,
+			PromptTokenDetails: model.PromptTokenDetails{
+				CachedTokens: 999,
+			},
+		},
+	})
+	b := firstBucket(rec, mid)
+	if b.cachedPromptTokens != 50 {
+		t.Fatalf("cached clamped = %d, want 50 (prompt=50)", b.cachedPromptTokens)
+	}
+}
+
+func TestRecordCachedTokensNegative(t *testing.T) {
+	rec := &Recorder{buckets: make(map[string]map[string]*minuteBucket)}
+
+	mid := "test-model"
+
+	rec.record(mid, &model.CallbackOutput{
+		TokenUsage: &model.TokenUsage{
+			PromptTokens:     100,
+			CompletionTokens: 50,
+			PromptTokenDetails: model.PromptTokenDetails{
+				CachedTokens: -10,
+			},
+		},
+	})
+	b := firstBucket(rec, mid)
+	if b.cachedPromptTokens != 0 {
+		t.Fatalf("cached negative = %d, want 0", b.cachedPromptTokens)
+	}
+}
+
+func TestRecordCachedTokensAccumulate(t *testing.T) {
+	rec := &Recorder{buckets: make(map[string]map[string]*minuteBucket)}
+
+	mid := "test-model"
+
+	for i := 0; i < 3; i++ {
+		rec.record(mid, &model.CallbackOutput{
+			TokenUsage: &model.TokenUsage{
+				PromptTokens:     100,
+				CompletionTokens: 50,
+				PromptTokenDetails: model.PromptTokenDetails{
+					CachedTokens: 20,
+				},
+			},
+		})
+	}
+
+	if b := firstBucket(rec, mid); b.cachedPromptTokens != 60 {
+		t.Fatalf("cached accumulated = %d, want 60", b.cachedPromptTokens)
+	}
+}
+
+func TestStatusShowsCachedTokens(t *testing.T) {
+	rec := &Recorder{buckets: make(map[string]map[string]*minuteBucket)}
+
+	mid := "test-model"
+	for i := 0; i < 3; i++ {
+		rec.record(mid, &model.CallbackOutput{
+			TokenUsage: &model.TokenUsage{
+				PromptTokens:     200,
+				CompletionTokens: 100,
+				PromptTokenDetails: model.PromptTokenDetails{
+					CachedTokens: 50,
+				},
+			},
+		})
+	}
+
+	output := rec.Status(StatusOptions{})
+	if !strings.Contains(output, "cached 150") {
+		t.Fatal(fmt.Sprintf("output should contain 'cached 150', got: %s", output))
+	}
+	if !strings.Contains(output, "hit 25.0%") {
+		t.Fatal(fmt.Sprintf("output should contain 'hit 25.0%%', got: %s", output))
+	}
+}
+
+func TestStatusContextSection(t *testing.T) {
+	rec := &Recorder{buckets: make(map[string]map[string]*minuteBucket)}
+
+	output := rec.Status(StatusOptions{
+		Context: &ContextUsage{
+			Model:          "test-llm",
+			ContextLength:  131072,
+			MaxTokens:      8192,
+			EstimatedInput: 50000,
+			CompressAt:     90000,
+		},
+	})
+	if !strings.Contains(output, "test-llm") {
+		t.Fatal(fmt.Sprintf("output should contain model name, got: %s", output))
+	}
+	if !strings.Contains(output, "131072") {
+		t.Fatal(fmt.Sprintf("output should contain context length, got: %s", output))
+	}
+	if !strings.Contains(output, "50000") {
+		t.Fatal(fmt.Sprintf("output should contain estimated input, got: %s", output))
+	}
+	if !strings.Contains(output, "8192") {
+		t.Fatal(fmt.Sprintf("output should contain max tokens, got: %s", output))
+	}
+	if !strings.Contains(output, "90000") {
+		t.Fatal(fmt.Sprintf("output should contain compress threshold, got: %s", output))
+	}
+	pct := fmt.Sprintf("%.1f%%", float64(50000)/float64(131072)*100)
+	if !strings.Contains(output, pct) {
+		t.Fatal(fmt.Sprintf("output should contain %s, got: %s", pct, output))
 	}
 }

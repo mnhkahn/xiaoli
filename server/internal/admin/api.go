@@ -16,6 +16,7 @@ import (
 	agentwechat "xiaoli/server/internal/agent/channel/wechat"
 	agentmodel "xiaoli/server/internal/agent/model"
 	"xiaoli/server/internal/agent/provider"
+	agentruntime "xiaoli/server/internal/agent/runtime"
 	"xiaoli/server/internal/agent/slash"
 	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
@@ -305,7 +306,7 @@ func (d adminSlashDeps) ListChannels(ctx context.Context) ([]agentchannel.Info, 
 	return d.s.channels(ctx)
 }
 
-func (d adminSlashDeps) LLMStats() string {
+func (d adminSlashDeps) LLMStats(ctx context.Context) string {
 	if d.s.agent == nil {
 		return "LLM agent 未初始化。"
 	}
@@ -313,13 +314,11 @@ func (d adminSlashDeps) LLMStats() string {
 	if recorder == nil {
 		return "LLM 统计未启用。"
 	}
-	ctxLen := 0
-	if d.s.agent.CurrentLLMModel() != "" {
-		if cfg, ok := d.s.cfg.GoLLMModelConfigs[d.s.agent.CurrentLLMModel()]; ok {
-			ctxLen = cfg.ContextLength
-		}
+	opts := agentruntime.StatusOptions{}
+	if c := d.s.agent.CurrentContext(ctx, slash.ChannelNameFromContext(ctx), slash.DeviceIDFromContext(ctx)); c != nil {
+		opts.Context = c
 	}
-	return recorder.Status(ctxLen)
+	return recorder.Status(opts)
 }
 
 func (d adminSlashDeps) NewSession(ctx context.Context) string {
@@ -627,6 +626,63 @@ func (d adminSlashDeps) MCPStatus(_ context.Context) string {
 		} else {
 			fmt.Fprintf(&b, "\n- ❌ %s 连接失败：%s", s.URL, s.Error)
 		}
+	}
+	return b.String()
+}
+
+func (d adminSlashDeps) TaskStatusList(_ context.Context) string {
+	if d.s.agent == nil {
+		return "LLM agent 未初始化。"
+	}
+	jobs := d.s.agent.TaskStatusList()
+	if len(jobs) == 0 {
+		return "暂无 Task 记录。"
+	}
+	var b strings.Builder
+	b.WriteString("Task 列表（最近优先）：")
+	for _, j := range jobs {
+		icon := "🟢"
+		switch j.Status {
+		case "running":
+			icon = "🔄"
+		case "completed":
+			icon = "✅"
+		case "failed":
+			icon = "❌"
+		}
+		fmt.Fprintf(&b, "\n%s %s [%s] %s", icon, j.ID, j.Status, j.CreatedAt.Format("15:04:05"))
+	}
+	return b.String()
+}
+
+func (d adminSlashDeps) TaskStatusByID(_ context.Context, id string) string {
+	if d.s.agent == nil {
+		return "LLM agent 未初始化。"
+	}
+	job := d.s.agent.TaskStatusByID(id)
+	if job == nil {
+		return fmt.Sprintf("未找到任务：%s", id)
+	}
+	var b strings.Builder
+	icon := "🟢"
+	switch job.Status {
+	case "running":
+		icon = "🔄"
+	case "completed":
+		icon = "✅"
+	case "failed":
+		icon = "❌"
+	}
+	fmt.Fprintf(&b, "%s %s [%s]\n创建时间：%s", icon, job.ID, job.Status, job.CreatedAt.Format("15:04:05"))
+	if job.Result != "" {
+		truncated := job.Result
+		if len(truncated) > 500 {
+			truncated = truncated[:500] + "\n\n...（结果过长已截断，完整结果请在任务记录中查看）"
+		}
+		fmt.Fprintf(&b, "\n\n结果：\n%s", truncated)
+	}
+	if job.Error != "" {
+		fmt.Fprintf(&b, "\n\n错误：\n%s", job.Error)
 	}
 	return b.String()
 }

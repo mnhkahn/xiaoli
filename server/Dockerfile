@@ -53,11 +53,18 @@ RUN set -eux; \
     count=$(find /skills -name SKILL.md | wc -l); \
     echo "skills installed: $count"
 
+ARG CYEAM_CLI_VERSION=latest
+
 RUN set -eux; \
     mkdir -p /skill-bin; \
     find /skills -path '*/bin/*' -type f -perm /111 -exec cp -a {} /skill-bin/ \; ; \
-    if [ ! -x /skill-bin/cyeam ] && [ -d /skills/cyeam-cli ]; then \
-        curl -fsSL -o /tmp/cyeam.tgz https://github.com/mnhkahn/cyeam-cli/releases/latest/download/cyeam_Linux_x86_64.tar.gz; \
+    if [ ! -x /skill-bin/cyeam ]; then \
+        if [ "${CYEAM_CLI_VERSION}" = "latest" ]; then \
+            url="https://github.com/mnhkahn/cyeam-cli/releases/latest/download/cyeam_Linux_x86_64.tar.gz"; \
+        else \
+            url="https://github.com/mnhkahn/cyeam-cli/releases/download/${CYEAM_CLI_VERSION}/cyeam_Linux_x86_64.tar.gz"; \
+        fi; \
+        curl -fsSL -o /tmp/cyeam.tgz "$url"; \
         tar -xzf /tmp/cyeam.tgz -C /skill-bin cyeam; \
         rm /tmp/cyeam.tgz; \
     fi; \
@@ -75,6 +82,10 @@ RUN ldconfig
 COPY --from=go-build /out/xiaoli-admin /usr/local/bin/xiaoli-admin
 COPY --from=skill-build /skill-bin/ /usr/local/bin/
 COPY --from=skill-build /skills /opt/xiaoli/skills
+COPY --from=skill-build /usr/local/bin/node /usr/local/bin/node
+COPY --from=skill-build /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 COPY AGENT.md /opt/xiaoli/AGENT.md
 COPY settings.json /opt/xiaoli/settings.json
 

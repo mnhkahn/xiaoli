@@ -328,6 +328,32 @@ func (t *TaskTool) releaseSlot() {
 	t.mu.Unlock()
 }
 
+type JobSummary struct {
+	ID            string
+	Status        string
+	CreatedAt     time.Time
+	ParentSession string
+}
+
+func (t *TaskTool) ListJobs() []JobSummary {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	result := make([]JobSummary, 0, len(t.jobs))
+	for _, job := range t.jobs {
+		snap := job.Snapshot()
+		result = append(result, JobSummary{
+			ID:            snap.ID,
+			Status:        snap.Status,
+			CreatedAt:     snap.CreatedAt,
+			ParentSession: snap.ParentSession,
+		})
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].CreatedAt.After(result[j].CreatedAt)
+	})
+	return result
+}
+
 func (t *TaskTool) cleanupOldJobs() {
 	t.mu.Lock()
 	defer t.mu.Unlock()

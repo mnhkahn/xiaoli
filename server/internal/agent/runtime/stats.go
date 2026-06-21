@@ -15,10 +15,11 @@ import (
 )
 
 type minuteBucket struct {
-	requests         int64
-	errors           int64
-	promptTokens     int64
-	completionTokens int64
+	requests           int64
+	errors             int64
+	promptTokens       int64
+	cachedPromptTokens int64
+	completionTokens   int64
 }
 
 type modelIDKeyType struct{}
@@ -35,6 +36,18 @@ type Recorder struct {
 type toolStatsEntry struct {
 	Calls  int64
 	Errors int64
+}
+
+type ContextUsage struct {
+	Model          string
+	ContextLength  int
+	MaxTokens      int
+	EstimatedInput int
+	CompressAt     int
+}
+
+type StatusOptions struct {
+	Context *ContextUsage
 }
 
 var (
@@ -98,7 +111,19 @@ func (r *Recorder) record(mid string, mo *model.CallbackOutput) {
 	b := r.bucket(mid, time.Now())
 	b.requests++
 	if mo.TokenUsage != nil {
-		b.promptTokens += int64(mo.TokenUsage.PromptTokens)
+		prompt := int64(mo.TokenUsage.PromptTokens)
+		cached := int64(0)
+		if mo.TokenUsage.PromptTokenDetails.CachedTokens > 0 {
+			cached = int64(mo.TokenUsage.PromptTokenDetails.CachedTokens)
+		}
+		if cached > prompt {
+			cached = prompt
+		}
+		if cached < 0 {
+			cached = 0
+		}
+		b.promptTokens += prompt
+		b.cachedPromptTokens += cached
 		b.completionTokens += int64(mo.TokenUsage.CompletionTokens)
 	}
 }
@@ -144,13 +169,35 @@ func (r *Recorder) cleanupLoop() {
 	}
 }
 
-func (r *Recorder) Status(contextLength int) string {
+func (r *Recorder) Status(opts StatusOptions) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	var b strings.Builder
 
+	if ctx := opts.Context; ctx != nil && ctx.ContextLength > 0 {
+		b.WriteString("━━━ 当前上下文 ━━━\n")
+		fmt.Fprintf(&b, "模型：%s\n", ctx.Model)
+		fmt.Fprintf(&b, "窗口：%d\n", ctx.ContextLength)
+		fmt.Fprintf(&b, "当前输入估算：%d", ctx.EstimatedInput)
+		if ctx.MaxTokens > 0 {
+			fmt.Fprintf(&b, "\n输出预留：%d", ctx.MaxTokens)
+		}
+		b.WriteByte('\n')
+		pct := float64(ctx.EstimatedInput) / float64(ctx.ContextLength) * 100
+		filled := int(pct) / 10
+		if filled > 10 {
+			filled = 10
+		}
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", 10-filled)
+		fmt.Fprintf(&b, "占用：%.1f%% %s\n", pct, bar)
+		fmt.Fprintf(&b, "阈值：约 %d 后触发自动压缩\n", ctx.CompressAt)
+	}
+
 	if len(r.buckets) > 0 {
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
 		b.WriteString("━━━ LLM 调用统计（近 60 分钟）━━━\n")
 
 		models := make([]string, 0, len(r.buckets))
@@ -162,7 +209,7 @@ func (r *Recorder) Status(contextLength int) string {
 		for _, mid := range models {
 			mb := r.buckets[mid]
 			fmt.Fprintf(&b, "\n%s\n", mid)
-			var totalReqs, totalErrs, totalPi, totalPo int64
+			var totalReqs, totalErrs, totalPi, totalPo, totalCached int64
 			minutes := make([]string, 0, len(mb))
 			for k := range mb {
 				minutes = append(minutes, k)
@@ -176,21 +223,30 @@ func (r *Recorder) Status(contextLength int) string {
 				totalErrs += bkt.errors
 				totalPi += bkt.promptTokens
 				totalPo += bkt.completionTokens
-				fmt.Fprintf(&b, "  %s  %d req  %d err  %d in", mm, bkt.requests, bkt.errors, bkt.promptTokens)
-				if contextLength > 0 && bkt.promptTokens > 0 {
-					pct := bkt.promptTokens * 100 / int64(contextLength)
-					fmt.Fprintf(&b, "（%d%%）", pct)
+				totalCached += bkt.cachedPromptTokens
+				fmt.Fprintf(&b, "  %s  %d req  %d err  %d in  %d out", mm, bkt.requests, bkt.errors, bkt.promptTokens, bkt.completionTokens)
+				if bkt.promptTokens > 0 {
+					cached := bkt.cachedPromptTokens
+					if cached < 0 {
+						cached = 0
+					}
+					hit := float64(cached) / float64(bkt.promptTokens) * 100
+					fmt.Fprintf(&b, "  cached %d  hit %.1f%%", cached, hit)
 				}
-				fmt.Fprintf(&b, "  %d out\n", bkt.completionTokens)
+				b.WriteByte('\n')
 			}
 			if totalReqs > 0 {
 				b.WriteString("  ─────────────────────\n")
-				fmt.Fprintf(&b, "  合计    %d req  %d err  %d in", totalReqs, totalErrs, totalPi)
-			if contextLength > 0 && totalPi > 0 {
-				pct := totalPi * 100 / int64(contextLength)
-				fmt.Fprintf(&b, "（%d%%）", pct)
-			}
-			fmt.Fprintf(&b, "  %d out\n", totalPo)
+				fmt.Fprintf(&b, "  合计    %d req  %d err  %d in  %d out", totalReqs, totalErrs, totalPi, totalPo)
+				if totalPi > 0 {
+					cached := totalCached
+					if cached < 0 {
+						cached = 0
+					}
+					hit := float64(cached) / float64(totalPi) * 100
+					fmt.Fprintf(&b, "  cached %d  hit %.1f%%", cached, hit)
+				}
+				b.WriteByte('\n')
 			}
 		}
 	}

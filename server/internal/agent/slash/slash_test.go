@@ -43,7 +43,7 @@ func (fakeDeps) ListChannels(context.Context) ([]channel.Info, error) {
 	return []channel.Info{{ID: "lark:app:test", Type: channel.TypeLark}}, nil
 }
 
-func (fakeDeps) LLMStats() string {
+func (fakeDeps) LLMStats(_ context.Context) string {
 	return "test stats"
 }
 
@@ -93,6 +93,14 @@ func (fakeDeps) WorkflowRun(_ context.Context, id string) string {
 
 func (fakeDeps) MCPStatus(_ context.Context) string {
 	return "test mcp status"
+}
+
+func (fakeDeps) TaskStatusList(_ context.Context) string {
+	return "test tasks"
+}
+
+func (fakeDeps) TaskStatusByID(_ context.Context, _ string) string {
+	return "test task detail"
 }
 
 func TestParseRequiresLeadingSlash(t *testing.T) {
