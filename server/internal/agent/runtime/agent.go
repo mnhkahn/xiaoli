@@ -607,7 +607,7 @@ func (a *Agent) buildEnvContext(channelName, deviceID string) string {
 	now := time.Now().In(loc)
 	var b strings.Builder
 	b.WriteString("=== 环境信息 ===")
-	fmt.Fprintf(&b, "\n当前时间：%s %s %02d:%02d", now.Format("2006-01-02"), chineseWeekday[now.Weekday()], now.Hour(), now.Minute())
+	fmt.Fprintf(&b, "\n当前时间：%s %s %02d:%02d（%s）", now.Format("2006-01-02"), chineseWeekday[now.Weekday()], now.Hour(), now.Minute(), loc.String())
 	if deviceID != "" {
 		fmt.Fprintf(&b, "\n用户标识：%s", deviceID)
 	}
