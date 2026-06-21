@@ -2,6 +2,11 @@ package runtime
 
 import "time"
 
+type MCPEndpoint struct {
+	URL    string
+	APIKey string
+}
+
 type Config struct {
 	LLMURL                  string
 	LLMAPIKey               string
@@ -16,7 +21,7 @@ type Config struct {
 	RedisURL                string
 	RedisKeyPrefix          string
 	MemoryTTL               time.Duration
-	ExternalMCPURLs         []string
+	ExternalMCPEndpoints    []MCPEndpoint
 	BuiltinWebFetchEnabled  bool
 	SkillRoots              []string
 	EnabledSkills           []string

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -17,18 +18,29 @@ import (
 
 type Client struct {
 	url       string
+	apiKey    string
 	sessionID string
 	mu        sync.Mutex
 }
 
-func NewClient(ctx context.Context, url string) (*Client, error) {
-	c := &Client{url: url}
+func NewClient(ctx context.Context, url string, apiKey string) (*Client, error) {
+	c := &Client{url: url, apiKey: apiKey}
 	sid, err := c.mcpInit(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("mcp connect %s: %w", url, err)
 	}
 	c.sessionID = sid
 	return c, nil
+}
+
+func (c *Client) requestURL() string {
+	if c.apiKey == "" {
+		return c.url
+	}
+	if strings.ContainsRune(c.url, '?') {
+		return c.url + "&key=" + url.QueryEscape(c.apiKey)
+	}
+	return c.url + "?key=" + url.QueryEscape(c.apiKey)
 }
 
 func (c *Client) ListTools(ctx context.Context) ([]tool.BaseTool, error) {
@@ -145,7 +157,7 @@ func (c *Client) Call(ctx context.Context, toolName string, args map[string]any)
 
 func (c *Client) mcpInit(ctx context.Context) (string, error) {
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"xiaoli-server","version":"1.0"}}}`
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.requestURL(), strings.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -175,7 +187,7 @@ func (c *Client) reinit(ctx context.Context) (string, error) {
 }
 
 func (c *Client) mcpPost(ctx context.Context, payload []byte, extraHeaders ...string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.requestURL(), bytes.NewReader(payload))
 	if err != nil {
 		return "", err
 	}

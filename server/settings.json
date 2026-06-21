@@ -59,6 +59,11 @@
     {
       "name": "CYEAM",
       "url": "https://cyeam-wiki-mcp-production.up.railway.app/mcp"
+    },
+    {
+      "name": "AMap",
+      "url": "https://mcp.amap.com/mcp",
+      "api_key_env": "AMAP_API_KEY"
     }
   ],
   "tools": {

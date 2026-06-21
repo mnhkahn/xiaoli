@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	agentruntime "xiaoli/server/internal/agent/runtime"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
 	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
@@ -54,7 +55,7 @@ type Config struct {
 	GoTTSVoice              string
 	GoTTSResponseFormat     string
 	GoTTSTimeout            time.Duration
-	ExternalMCPURLs         []string
+	ExternalMCPEndpoints    []agentruntime.MCPEndpoint
 	MCPConfigPath           string
 	BuiltinWebFetchEnabled  bool
 	SkillRoots              []string
@@ -164,7 +165,7 @@ func LoadConfig() Config {
 		GoTTSResponseFormat:     strings.TrimSpace(tts.ResponseFormat),
 		GoTTSTimeout:            time.Duration(envInt("XIAOLI_GO_TTS_TIMEOUT_SECONDS", 30)) * time.Second,
 		MCPConfigPath:           settingsPath,
-		ExternalMCPURLs:         settings.mcpURLs(),
+		ExternalMCPEndpoints:    settings.mcpEndpoints(),
 		BuiltinWebFetchEnabled:  settings.webFetchEnabled(),
 		SkillRoots:              csv(env("XIAOLI_SKILL_ROOTS", "/opt/xiaoli/skills")),
 		EnabledSkills:           csv(env("XIAOLI_ENABLED_SKILLS", "*")),
@@ -233,8 +234,9 @@ type settingsModelEndpoint struct {
 }
 
 type settingsMCPServer struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
+	Name      string `json:"name"`
+	URL       string `json:"url"`
+	APIKeyEnv string `json:"api_key_env"`
 }
 
 func loadSettings(paths []string) (settingsConfig, string) {
@@ -469,15 +471,21 @@ func (s settingsLLMModel) modelIDs() []string {
 	return ids
 }
 
-func (s settingsConfig) mcpURLs() []string {
-	urls := make([]string, 0, len(s.MCPServers))
+func (s settingsConfig) mcpEndpoints() []agentruntime.MCPEndpoint {
+	var out []agentruntime.MCPEndpoint
 	for _, server := range s.MCPServers {
-		url := strings.TrimSpace(server.URL)
-		if url != "" {
-			urls = append(urls, url)
+		u := strings.TrimSpace(server.URL)
+		if u == "" {
+			continue
 		}
+		key := settingsAPIKey(server.APIKeyEnv)
+		if server.APIKeyEnv != "" && key == "" {
+			logger.Infof("[mcp] %q: %s not set, skipping", server.Name, server.APIKeyEnv)
+			continue
+		}
+		out = append(out, agentruntime.MCPEndpoint{URL: u, APIKey: key})
 	}
-	return urls
+	return out
 }
 
 func (s settingsConfig) webFetchEnabled() bool {

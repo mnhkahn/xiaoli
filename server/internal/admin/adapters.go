@@ -80,7 +80,7 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		RedisURL:                cfg.RedisURL,
 		RedisKeyPrefix:          cfg.RedisKeyPrefix,
 		MemoryTTL:               cfg.MemoryTTL,
-		ExternalMCPURLs:         cfg.ExternalMCPURLs,
+		ExternalMCPEndpoints:    cfg.ExternalMCPEndpoints,
 		BuiltinWebFetchEnabled:  cfg.BuiltinWebFetchEnabled,
 		SkillRoots:              cfg.SkillRoots,
 		EnabledSkills:           cfg.EnabledSkills,
@@ -1199,13 +1199,13 @@ func (s *AdminServer) dailyEncouragement(ctx context.Context) string {
 }
 
 func (s *AdminServer) fetchMCPPrompt(ctx context.Context, promptName string) string {
-	urls := s.cfg.ExternalMCPURLs
-	if len(urls) == 0 {
+	endpoints := s.cfg.ExternalMCPEndpoints
+	if len(endpoints) == 0 {
 		return ""
 	}
 
 	initBody := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"xiaoli-server","version":"1.0"}}}`
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, urls[0], strings.NewReader(initBody))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoints[0].URL, strings.NewReader(initBody))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	resp, err := s.httpClient.Do(req)
@@ -1219,7 +1219,7 @@ func (s *AdminServer) fetchMCPPrompt(ctx context.Context, promptName string) str
 	}
 
 	getBody := fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":{"name":"%s"}}`, promptName)
-	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, urls[0], strings.NewReader(getBody))
+	req2, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoints[0].URL, strings.NewReader(getBody))
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("Accept", "application/json, text/event-stream")
 	req2.Header.Set("Mcp-Session-Id", sessionID)

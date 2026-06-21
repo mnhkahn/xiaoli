@@ -68,24 +68,20 @@ func NewAgent(cfg Config) *Agent {
 
 	var extMCPs []*agentmcp.Client
 	var extToolSets [][]tool.BaseTool
-	for _, mcpURL := range cfg.ExternalMCPURLs {
-		mcpURL = strings.TrimSpace(mcpURL)
-		if mcpURL == "" {
-			continue
-		}
-		client, err := agentmcp.NewClient(ctx, mcpURL)
+	for _, ep := range cfg.ExternalMCPEndpoints {
+		client, err := agentmcp.NewClient(ctx, ep.URL, ep.APIKey)
 		if err != nil {
-			logger.Infof("ext MCP connect failed %s: %v", mcpURL, err)
+			logger.Infof("ext MCP connect failed %s: %v", ep.URL, err)
 			continue
 		}
 		tools, err := client.ListTools(ctx)
 		if err != nil {
-			logger.Infof("ext MCP list tools failed %s: %v", mcpURL, err)
+			logger.Infof("ext MCP list tools failed %s: %v", ep.URL, err)
 			continue
 		}
 		extMCPs = append(extMCPs, client)
 		extToolSets = append(extToolSets, tools)
-		logger.Infof("ext MCP ready: %s tools=%d", mcpURL, len(tools))
+		logger.Infof("ext MCP ready: %s tools=%d", ep.URL, len(tools))
 	}
 
 	var skillMW adk.ChatModelAgentMiddleware

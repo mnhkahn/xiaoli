@@ -41,7 +41,7 @@ data: {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"curl","description":"F
 	}))
 	defer mcpServer.Close()
 
-	client, err := NewClient(context.Background(), mcpServer.URL)
+	client, err := NewClient(context.Background(), mcpServer.URL, "")
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
@@ -105,7 +105,7 @@ data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"ok\
 	}))
 	defer mcpServer.Close()
 
-	client, err := NewClient(context.Background(), mcpServer.URL)
+	client, err := NewClient(context.Background(), mcpServer.URL, "")
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}

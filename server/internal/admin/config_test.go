@@ -166,8 +166,8 @@ func TestLoadConfigReadsModelAndMCPSettingsFromJSON(t *testing.T) {
 	if cfg.GoTTSURL != "https://settings.example/v1/audio/speech" || cfg.GoTTSModel != "FunAudioLLM/CosyVoice2-0.5B" || cfg.GoTTSVoice != "FunAudioLLM/CosyVoice2-0.5B:anna" || cfg.GoTTSResponseFormat != "opus" || cfg.GoTTSAPIKey != "secret-from-env" {
 		t.Fatalf("tts config = %#v/%q/%q/%q/%q, want settings", cfg.GoTTSURL, cfg.GoTTSModel, cfg.GoTTSVoice, cfg.GoTTSResponseFormat, cfg.GoTTSAPIKey)
 	}
-	if len(cfg.ExternalMCPURLs) != 1 || cfg.ExternalMCPURLs[0] != "https://cyeam-wiki-mcp-production.up.railway.app/mcp" {
-		t.Fatalf("ExternalMCPURLs = %#v, want settings MCP URL", cfg.ExternalMCPURLs)
+	if len(cfg.ExternalMCPEndpoints) != 1 || cfg.ExternalMCPEndpoints[0].URL != "https://cyeam-wiki-mcp-production.up.railway.app/mcp" {
+		t.Fatalf("ExternalMCPEndpoints = %#v, want settings MCP URL", cfg.ExternalMCPEndpoints)
 	}
 }
 
