@@ -66,12 +66,6 @@ https://xiaoli-server.fly.dev/admin
 
 Rotate the Logto app secret if it is ever exposed.
 
-The study monitor is optional. When `STUDY_MONITOR_ENABLED=true`, the admin
-server runs a background job in `Asia/Shanghai` time from 17:00 to 21:00 every
-5 minutes. Each run asks the device camera tool to inspect study posture, sends
-the captured image and analysis to the Lark bot, and calls a speaker/TTS tool
-when a reminder is needed.
-
 Deploy:
 
 ```bash
@@ -116,14 +110,6 @@ Important environment variables:
 - `LOGTO_APP_ID`: Logto application ID
 - `LOGTO_APP_SECRET`: Logto application secret; set as a secret
 - `ADMIN_ALLOWED_USERS`: optional comma-separated Logto sub/email/username/name allowlist; `*` allows all authenticated users
-- `STUDY_MONITOR_ENABLED`: enables the study monitor background job when `true`; set as a secret in production
-- `STUDY_MONITOR_TIMEZONE`: default `Asia/Shanghai`
-- `STUDY_MONITOR_START_HOUR`: default `17`
-- `STUDY_MONITOR_END_HOUR`: default `21`
-- `STUDY_MONITOR_INTERVAL_SECONDS`: default `300`
-- `STUDY_MONITOR_CAMERA_TOOL`: camera tool name; default `self.camera.take_photo`
-- `STUDY_MONITOR_TOOL_TIMEOUT_SECONDS`: camera tool timeout; default `120`
-- `STUDY_MONITOR_REMINDER_TEXT`: speaker reminder text when posture/focus needs correction
 - `LARK_BOT_WEBHOOK_URL`: custom bot webhook URL; set as a secret
 - `LARK_APP_ID`: Lark app ID; when set together with `LARK_APP_TOKEN`, enables `/lark/events`
 - `LARK_APP_TOKEN`: Lark app token used as the app credential for tenant access tokens; set as a secret
@@ -148,3 +134,64 @@ Skill support:
 - At startup the server indexes only Skill frontmatter. During an agent run, Eino exposes a `skill` tool; the model calls it with a skill name to lazily load the full `SKILL.md`.
 
 Use `fly secrets set` for keys. Do not commit real keys.
+
+## Memory（用户记忆）
+
+Xiaoli 是单用户系统。记忆存储在 Redis，每轮对话自动加载。
+
+两种作用域（LLM 工具的 `scope` 参数可选，默认 `global`）：
+
+| 作用域 | Redis Key | 说明 |
+|--------|-----------|------|
+| `global` | `{prefix}memory:global` | 全局共享。不区分频道和用户，所有设备/频道共享同一份记忆 |
+| `channel` | `{prefix}memory:{channel}:{user}` | 频道内独立。比如 Lark 和 ESP32 的记忆不互通 |
+
+**关键假设**：系统是单人使用的，`global` 没有全局用户 ID。如果将来需要多用户隔离，需引入全局用户标识（如 Logto sub）。
+
+## Cron 定时任务
+
+Cron 任务配置在 `settings.json` 的 `"cron"` 字段，不再是环境变量。支持两种触发器：
+
+- **interval 型**（`every` + 可选 `start_hour`/`end_hour` 时间窗）
+- **固定时间型**（`at_hour` + `at_minute`，必须成对出现）
+
+示例：
+
+```json
+"cron": {
+  "study_monitor": {
+    "enabled": false,
+    "trigger": { "every": "5m", "timezone": "Asia/Shanghai", "start_hour": 17, "end_hour": 21 },
+    "agent": { "name": "dispatch_agent", "mode": "react", "max_steps": 6, "timeout": "150s" },
+    "metadata": { "camera_tool": "self.camera.take_photo", "reminder_text": "请坐直，认真学习。", "tool_timeout": "120s" }
+  },
+  "morning_greeting": {
+    "enabled": true,
+    "trigger": { "at_hour": 8, "at_minute": 0, "timezone": "Asia/Shanghai" },
+    "agent": { "name": "dispatch_agent", "mode": "react", "max_steps": 4, "timeout": "120s" },
+    "metadata": { "text": "早上好。" }
+  }
+}
+```
+
+斜杠命令：`/cron list` 查看定时任务，`/cron run <任务ID>` 立即执行。
+
+## MCP 外部服务
+
+`settings.json` 的 `"mcp_servers"` 支持 `api_key_env` 字段引用环境变量中的 API key：
+
+```json
+{
+  "name": "AMap",
+  "url": "https://mcp.amap.com/mcp",
+  "api_key_env": "AMAP_API_KEY"
+}
+```
+
+Key 由 MCP 客户端在请求时静默注入 URL query 参数，不进入日志。`api_key_env` 非空但未配置时跳过该服务。
+
+配置方式：
+
+```bash
+fly secrets set AMAP_API_KEY=你的高德APIKey
+```

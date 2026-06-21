@@ -40,7 +40,7 @@ func NewMemoryBackendScoped(client *redis.Client, prefix, channel, user, scope s
 	if scope == "global" {
 		return &redisMemoryBackend{
 			client: client,
-			key:    prefix + "memory:global:" + user,
+			key:    prefix + "memory:global",
 		}
 	}
 	return NewMemoryBackend(client, prefix, channel, user)
