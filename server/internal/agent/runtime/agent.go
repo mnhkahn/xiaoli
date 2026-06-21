@@ -30,6 +30,13 @@ type DeviceTools interface {
 
 var chineseWeekday = []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
 
+type MCPEndpointStatus struct {
+	URL       string
+	Connected bool
+	ToolCount int
+	Error     string
+}
+
 type Agent struct {
 	modelMu       sync.Mutex
 	chatModels    map[string]*openai.ChatModel
@@ -39,12 +46,17 @@ type Agent struct {
 	hub           DeviceTools
 	extMCPs       []*agentmcp.Client
 	extToolSets   [][]tool.BaseTool
+	extMCPStatus  []MCPEndpointStatus
 	skillMW       adk.ChatModelAgentMiddleware
 	recorder      *Recorder
 	sessionMgr    *agentsession.Manager
 	askData       map[string]*agentbuiltin.AskData
 	askDataMu     sync.Mutex
 	taskTool      *agentbuiltin.TaskTool
+}
+
+func (a *Agent) MCPStatus() []MCPEndpointStatus {
+	return a.extMCPStatus
 }
 
 func NewAgent(cfg Config) *Agent {
@@ -68,19 +80,23 @@ func NewAgent(cfg Config) *Agent {
 
 	var extMCPs []*agentmcp.Client
 	var extToolSets [][]tool.BaseTool
+	var extMCPStatus []MCPEndpointStatus
 	for _, ep := range cfg.ExternalMCPEndpoints {
 		client, err := agentmcp.NewClient(ctx, ep.URL, ep.APIKey)
 		if err != nil {
 			logger.Infof("ext MCP connect failed %s: %v", ep.URL, err)
+			extMCPStatus = append(extMCPStatus, MCPEndpointStatus{URL: ep.URL, Connected: false, Error: err.Error()})
 			continue
 		}
 		tools, err := client.ListTools(ctx)
 		if err != nil {
 			logger.Infof("ext MCP list tools failed %s: %v", ep.URL, err)
+			extMCPStatus = append(extMCPStatus, MCPEndpointStatus{URL: ep.URL, Connected: false, Error: err.Error()})
 			continue
 		}
 		extMCPs = append(extMCPs, client)
 		extToolSets = append(extToolSets, tools)
+		extMCPStatus = append(extMCPStatus, MCPEndpointStatus{URL: ep.URL, Connected: true, ToolCount: len(tools)})
 		logger.Infof("ext MCP ready: %s tools=%d", ep.URL, len(tools))
 	}
 
@@ -132,7 +148,7 @@ func NewAgent(cfg Config) *Agent {
 		}
 	}
 
-	a := &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, skillMW: skillMW, recorder: recorder, sessionMgr: sessionMgr}
+	a := &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, extMCPStatus: extMCPStatus, skillMW: skillMW, recorder: recorder, sessionMgr: sessionMgr}
 
 	taskTool := agentbuiltin.NewTaskTool(
 		agentbuiltin.DefaultSubAgents(),

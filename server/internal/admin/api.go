@@ -611,6 +611,26 @@ func (d adminSlashDeps) WorkflowRun(ctx context.Context, id string) string {
 	return fmt.Sprintf("已执行：%s", id)
 }
 
+func (d adminSlashDeps) MCPStatus(_ context.Context) string {
+	if d.s.agent == nil {
+		return "LLM agent 未初始化。"
+	}
+	statuses := d.s.agent.MCPStatus()
+	if len(statuses) == 0 {
+		return "没有配置 MCP 外部服务。"
+	}
+	var b strings.Builder
+	b.WriteString("MCP 外部服务：")
+	for _, s := range statuses {
+		if s.Connected {
+			fmt.Fprintf(&b, "\n- ✅ %s 已连接（%d 个工具）", s.URL, s.ToolCount)
+		} else {
+			fmt.Fprintf(&b, "\n- ❌ %s 连接失败：%s", s.URL, s.Error)
+		}
+	}
+	return b.String()
+}
+
 func (s *AdminServer) dispatchAgentRun(ctx context.Context, def agentworkflow.Definition) error {
 	handlers := map[string]func(context.Context, agentworkflow.Definition, time.Time) error{
 		"study_monitor":    s.runStudyMonitorOnce,

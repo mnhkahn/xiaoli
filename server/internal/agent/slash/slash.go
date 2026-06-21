@@ -66,6 +66,7 @@ type Dependencies interface {
 	MemoryClear(ctx context.Context) string
 	WorkflowList(ctx context.Context) string
 	WorkflowRun(ctx context.Context, id string) string
+	MCPStatus(ctx context.Context) string
 }
 
 type Handler struct {
@@ -120,6 +121,8 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 		return h.memory(ctx, cmd.Args), true
 	case "cron":
 		return h.cron(ctx, cmd.Args), true
+	case "mcp":
+		return h.deps.MCPStatus(ctx), true
 	case "help":
 		return helpText(), true
 	default:
@@ -339,6 +342,7 @@ func helpText() string {
 /compact    - 手动压缩当前会话的历史消息为摘要，保留最近对话
 /memory     - 管理用户记忆（/memory list 查看, /memory save <分类> <内容> 记录, /memory delete <分类> 删除, /memory clear 清空）
 /cron       - 查看和管理定时任务（/cron list 查看, /cron run <任务ID> 立即执行）
+/mcp        - 查看 MCP 外部服务连接状态
 /skills     - 列出所有可用技能及其版本号
 /model      - 查看或切换 LLM 模型（/model list 查看可选模型，/model use <id> 切换）
 /channel    - 查看可用消息渠道

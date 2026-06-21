@@ -173,6 +173,12 @@ func (c *Client) mcpInit(ctx context.Context) (string, error) {
 	sessionID := resp.Header.Get("Mcp-Session-Id")
 	if sessionID == "" {
 		raw, _ := io.ReadAll(resp.Body)
+		var initResp struct {
+			Result *json.RawMessage `json:"result"`
+		}
+		if json.Unmarshal(raw, &initResp) == nil && initResp.Result != nil {
+			return "", nil
+		}
 		return "", fmt.Errorf("MCP init: no session ID, body: %s", string(raw))
 	}
 	return sessionID, nil
@@ -194,7 +200,9 @@ func (c *Client) mcpPost(ctx context.Context, payload []byte, extraHeaders ...st
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	for i := 0; i+1 < len(extraHeaders); i += 2 {
-		req.Header.Set(extraHeaders[i], extraHeaders[i+1])
+		if extraHeaders[i+1] != "" {
+			req.Header.Set(extraHeaders[i], extraHeaders[i+1])
+		}
 	}
 
 	resp, err := http.DefaultClient.Do(req)
