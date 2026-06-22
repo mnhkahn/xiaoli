@@ -173,7 +173,7 @@ func LoadConfig() Config {
 		SkillRoots:              csv(env("XIAOLI_SKILL_ROOTS", "/opt/xiaoli/skills")),
 		EnabledSkills:           csv(env("XIAOLI_ENABLED_SKILLS", "*")),
 		SkillMaxBytes:           int64(envInt("XIAOLI_SKILL_MAX_BYTES", int(agentskill.DefaultMaxBytes))),
-		SkillExecTimeout:        time.Duration(envInt("XIAOLI_SKILL_EXEC_TIMEOUT_SECONDS", int(agentskill.DefaultExecTimeout/time.Second))) * time.Second,
+		SkillExecTimeout:        capDuration(time.Duration(envInt("XIAOLI_SKILL_EXEC_TIMEOUT_SECONDS", int(agentskill.DefaultExecTimeout/time.Second)))*time.Second, agentskill.MaxExecTimeout),
 		SkillExecMaxOutputBytes: int64(envInt("XIAOLI_SKILL_EXEC_MAX_OUTPUT_BYTES", agentskill.DefaultExecMaxOutputBytes)),
 		SkillExecGlobalBinDirs:  csv(env("XIAOLI_SKILL_EXEC_GLOBAL_BIN_DIRS", "/usr/local/bin")),
 		TaskAllowedRoots:        csv(env("XIAOLI_TASK_ALLOWED_ROOTS", "")),
@@ -647,4 +647,11 @@ func csv(value string) []string {
 		}
 	}
 	return items
+}
+
+func capDuration(d, cap time.Duration) time.Duration {
+	if d > cap {
+		return cap
+	}
+	return d
 }

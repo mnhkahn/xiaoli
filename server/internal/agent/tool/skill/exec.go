@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	DefaultExecTimeout        = 8 * time.Second
+	DefaultExecTimeout        = 120 * time.Second
+	MaxExecTimeout            = 600 * time.Second
 	DefaultExecMaxOutputBytes = 256 * 1024
 )
 

@@ -46,8 +46,8 @@
   <text x="55" y="308" fill="#064e3b" font-size="10">agent/runtime — Agent 运行时</text>
   <text x="55" y="325" fill="#064e3b" font-size="10">agent/session — 会话管理</text>
   <text x="55" y="342" fill="#064e3b" font-size="10">agent/slash — 斜杠命令</text>
-  <text x="55" y="360" fill="#064e3b" font-size="9" opacity="0.65">ChatModelAgent · 工具循环 · 上下文管理</text>
-  <text x="55" y="374" fill="#064e3b" font-size="9" opacity="0.65">窗口压缩 · 技能注入 · 429 重试</text>
+  <text x="55" y="360" fill="#064e3b" font-size="9" opacity="0.65">/skills·/model·/channel·/status·/new·/sessions·/session</text>
+  <text x="55" y="374" fill="#064e3b" font-size="9" opacity="0.65">/compact·/memory·/cron·/mcp·/task·/help</text>
 
   <rect x="315" y="268" width="270" height="115" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
   <text x="340" y="290" fill="#064e3b" font-size="12" font-weight="bold">AI 服务层</text>
@@ -62,8 +62,8 @@
   <text x="625" y="308" fill="#1a1b2e" font-size="10">agent/tool/builtin — 内置工具</text>
   <text x="625" y="325" fill="#1a1b2e" font-size="10">agent/tool/skill — Skill 后端</text>
   <text x="625" y="342" fill="#1a1b2e" font-size="10">agent/tool/mcp — MCP 客户端</text>
-  <text x="625" y="360" fill="#1a1b2e" font-size="9" opacity="0.65">ask · memory · prompt · task · webfetch</text>
-  <text x="625" y="374" fill="#1a1b2e" font-size="9" opacity="0.65">skill CLI · MCP HTTP/SSE · 设备桥接</text>
+  <text x="625" y="360" fill="#1a1b2e" font-size="9" opacity="0.65">ask_user·bash·websearch·webfetch·task</text>
+  <text x="625" y="374" fill="#1a1b2e" font-size="9" opacity="0.65">memory_save·memory_forget·memory_list</text>
 
   <line x1="165" y1="383" x2="165" y2="398" stroke="#10b981" stroke-width="2"/>
   <line x1="450" y1="383" x2="450" y2="398" stroke="#10b981" stroke-width="2"/>
