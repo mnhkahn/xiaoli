@@ -85,6 +85,9 @@ func NewFilteredTools(filters ToolFilter, opts ToolOptions) []tool.BaseTool {
 	if filters&ToolMemoryList != 0 && opts.MemoryBackends != nil {
 		tools = append(tools, NewMemoryListTool(opts.MemoryBackends))
 	}
+	if filters&ToolBash != 0 && opts.ShellConfig != nil {
+		tools = append(tools, NewShellTool(*opts.ShellConfig))
+	}
 	return tools
 }
 

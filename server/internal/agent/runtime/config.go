@@ -1,6 +1,14 @@
 package runtime
 
-import "time"
+import (
+	"time"
+)
+
+type BashConfig struct {
+	Enabled        bool
+	Timeout        time.Duration
+	MaxOutputBytes int64
+}
 
 type MCPEndpoint struct {
 	URL    string
@@ -30,6 +38,7 @@ type Config struct {
 	SkillExecMaxOutputBytes int64
 	SkillExecGlobalBinDirs  []string
 	TaskAllowedRoots        []string
+	BashConfig              BashConfig
 }
 
 type LLMModelConfig struct {

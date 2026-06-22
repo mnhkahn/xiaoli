@@ -10,11 +10,13 @@ const (
 	ToolMemorySave
 	ToolMemoryForget
 	ToolMemoryList
+	ToolBash
 )
 
 type ToolOptions struct {
 	MemoryBackends *MemoryBackends
 	WebSearchKey   string
+	ShellConfig    *ShellConfig
 }
 
 type subAgentParentKeyType struct{}

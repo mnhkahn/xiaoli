@@ -50,6 +50,7 @@ RUN set -eux; \
         rm -rf "/skills/$skill_name"; \
         cp -a "$skill_dir" "/skills/$skill_name"; \
     done; \
+    find /root /home -name 'skills-lock.json' -not -path '/skills/*' -exec cp {} /skills/ \; 2>/dev/null; \
     count=$(find /skills -name SKILL.md | wc -l); \
     echo "skills installed: $count"
 
@@ -86,6 +87,7 @@ COPY --from=skill-build /usr/local/bin/node /usr/local/bin/node
 COPY --from=skill-build /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+RUN mkdir -p /root/.config && if [ -f /opt/xiaoli/skills/skills-lock.json ]; then cp /opt/xiaoli/skills/skills-lock.json /root/.config/skills-lock.json; fi
 COPY AGENT.md /opt/xiaoli/AGENT.md
 COPY settings.json /opt/xiaoli/settings.json
 

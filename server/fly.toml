@@ -49,6 +49,10 @@ primary_region = "nrt"
     hard_limit = 50
     soft_limit = 25
 
+[mounts]
+  source = "xiaoli_data"
+  destination = "/data"
+
 [[vm]]
   cpu_kind = "shared"
   cpus = 1

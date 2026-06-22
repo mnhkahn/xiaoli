@@ -40,6 +40,7 @@ func NewAskDataHolder(ctx context.Context) (context.Context, *AskDataHolder) {
 type AskData struct {
 	Question string
 	Options  []string
+	BashHash string // non-empty when this is a bash approval request; carries the command hash
 }
 
 type AskUserQuestionTool struct{}

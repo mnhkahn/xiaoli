@@ -89,6 +89,11 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		SkillExecMaxOutputBytes: cfg.SkillExecMaxOutputBytes,
 		SkillExecGlobalBinDirs:  cfg.SkillExecGlobalBinDirs,
 		TaskAllowedRoots:        cfg.TaskAllowedRoots,
+		BashConfig: agentruntime.BashConfig{
+			Enabled:        cfg.BashEnabled,
+			Timeout:        cfg.BashTimeout,
+			MaxOutputBytes: cfg.BashMaxOutputBytes,
+		},
 	})
 }
 
@@ -744,6 +749,10 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 									if v, ok := a["value"].(map[string]any); ok {
 										v["_chat_id"] = event.Message.ChatID
 										v["_sender_id"] = senderID
+										if askData.BashHash != "" {
+											v["_bash_type"] = "bash"
+											v["_bash_hash"] = askData.BashHash
+										}
 									}
 								}
 							}
@@ -788,6 +797,17 @@ func (s *AdminServer) handleLarkCardAction(ctx context.Context, w http.ResponseW
 
 	if chatID != "" && senderID != "" && s.conversation != nil {
 		formatter := agentlark.NewReplyFormatter(lc, actionEvent.OpenMessageID, selected)
+		if actionEvent.Action.Value["_bash_type"] == "bash" {
+			bashHash := actionEvent.Action.Value["_bash_hash"]
+			if bashHash != "" && senderID != "" && actionEvent.OpenID == senderID {
+				if s.agent != nil && s.agent.SessionManager() != nil {
+					sid := s.agent.SessionManager().GetChannelSession(ctx, string(ChannelLarkText), senderID)
+					if sid != "" {
+						agentbuiltin.StoreBashApproval(sid, bashHash)
+					}
+				}
+			}
+		}
 		turn := LarkTextFactory{}.Build(chatID, senderID, selected)
 		turn.Formatter = formatter
 		reply, err := s.conversation.Run(ctx, turn)
@@ -808,6 +828,10 @@ func (s *AdminServer) handleLarkCardAction(ctx context.Context, w http.ResponseW
 											if v, ok := a["value"].(map[string]any); ok {
 												v["_chat_id"] = chatID
 												v["_sender_id"] = senderID
+												if reply.AskData.BashHash != "" {
+													v["_bash_type"] = "bash"
+													v["_bash_hash"] = reply.AskData.BashHash
+												}
 											}
 										}
 									}

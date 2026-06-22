@@ -36,6 +36,8 @@ backups/
 esp-idf/
 nohup.out
 server/.superpowers/
+server/.agents/
+server/skills-lock.json
 server/wechat-login
 xiaoli-mac/xiaoli-mac.json
 xiaozhi-esp32/build/

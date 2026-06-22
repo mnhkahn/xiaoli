@@ -65,6 +65,9 @@ type Config struct {
 	SkillExecMaxOutputBytes int64
 	SkillExecGlobalBinDirs  []string
 	TaskAllowedRoots        []string
+	BashEnabled             bool
+	BashTimeout             time.Duration
+	BashMaxOutputBytes      int64
 	Workflows               []agentworkflow.Definition
 	LarkWebhookURL          string
 	LarkAppID               string
@@ -174,6 +177,9 @@ func LoadConfig() Config {
 		SkillExecMaxOutputBytes: int64(envInt("XIAOLI_SKILL_EXEC_MAX_OUTPUT_BYTES", agentskill.DefaultExecMaxOutputBytes)),
 		SkillExecGlobalBinDirs:  csv(env("XIAOLI_SKILL_EXEC_GLOBAL_BIN_DIRS", "/usr/local/bin")),
 		TaskAllowedRoots:        csv(env("XIAOLI_TASK_ALLOWED_ROOTS", "")),
+		BashEnabled:             settings.bashEnabled(),
+		BashTimeout:             settings.bashTimeout(),
+		BashMaxOutputBytes:      int64(settings.bashMaxOutputBytes()),
 		Workflows:               parseWorkflows(settings.Workflows),
 		LarkWebhookURL:          env("LARK_BOT_WEBHOOK_URL", ""),
 		LarkAppID:               env("LARK_APP_ID", ""),
@@ -204,10 +210,17 @@ type settingsConfig struct {
 
 type settingsTools struct {
 	WebFetch settingsToolSwitch `json:"webfetch"`
+	Bash     *settingsBash      `json:"bash"`
 }
 
 type settingsToolSwitch struct {
 	Enabled *bool `json:"enabled"`
+}
+
+type settingsBash struct {
+	Enabled        *bool `json:"enabled"`
+	TimeoutSeconds *int  `json:"timeout_seconds"`
+	MaxOutputKB    *int  `json:"max_output_kb"`
 }
 
 type settingsModels struct {
@@ -493,6 +506,30 @@ func (s settingsConfig) webFetchEnabled() bool {
 		return true
 	}
 	return *s.Tools.WebFetch.Enabled
+}
+
+func (s settingsConfig) bashEnabled() bool {
+	if s.Tools.Bash == nil || s.Tools.Bash.Enabled == nil {
+		return false
+	}
+	return *s.Tools.Bash.Enabled
+}
+
+const defaultBashTimeout = 30 * time.Second
+const defaultBashMaxOutputBytes = 512 * 1024
+
+func (s settingsConfig) bashTimeout() time.Duration {
+	if s.Tools.Bash == nil || s.Tools.Bash.TimeoutSeconds == nil {
+		return defaultBashTimeout
+	}
+	return time.Duration(*s.Tools.Bash.TimeoutSeconds) * time.Second
+}
+
+func (s settingsConfig) bashMaxOutputBytes() int {
+	if s.Tools.Bash == nil || s.Tools.Bash.MaxOutputKB == nil {
+		return defaultBashMaxOutputBytes
+	}
+	return *s.Tools.Bash.MaxOutputKB * 1024
 }
 
 func settingsAPIKey(envName string) string {

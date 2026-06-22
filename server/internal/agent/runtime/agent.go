@@ -616,8 +616,12 @@ func (a *Agent) toolGuide(interactive bool) string {
 	b.WriteString(`=== 工具使用指引 ===
 根据任务场景选择最合适的工具：
 
-• webfetch — 获取网页内容。用于读取 URL、查看网页、获取公开信息。支持 markdown/text/html 格式。不支持需要登录的页面。
-• websearch — 搜索网络。用于查询实时信息、最新新闻、事件和知识。`)
+	• webfetch — 获取网页内容。用于读取 URL、查看网页、获取公开信息。支持 markdown/text/html 格式。不支持需要登录的页面。
+	• websearch — 搜索网络。用于查询实时信息、最新新闻、事件和知识。`)
+	if a.cfg.BashConfig.Enabled {
+		b.WriteString(`
+	• bash — 执行 shell 命令。用于系统诊断、查看状态、运行脚本。所有命令均需用户确认。`)
+	}
 	if interactive {
 		b.WriteString(`
 • ask_user_question — 向用户提问。需要用户选择、确认或补充信息时使用。问题以按钮（飞书）或文字列表展示。不会阻塞等待用户回答。
@@ -902,7 +906,16 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 	if a.cfg.BuiltinWebFetchEnabled {
 		filter |= agentbuiltin.ToolWebFetch
 	}
+	if a.cfg.BashConfig.Enabled && channelName == string(agentchannel.TypeLark) {
+		filter |= agentbuiltin.ToolBash
+	}
 	opts := agentbuiltin.ToolOptions{}
+	if a.cfg.BashConfig.Enabled && channelName == string(agentchannel.TypeLark) {
+		opts.ShellConfig = &agentbuiltin.ShellConfig{
+			Timeout:        a.cfg.BashConfig.Timeout,
+			MaxOutputBytes: a.cfg.BashConfig.MaxOutputBytes,
+		}
+	}
 	if a.memory != nil && channelName != "" && deviceID != "" {
 		filter |= agentbuiltin.ToolMemorySave | agentbuiltin.ToolMemoryForget | agentbuiltin.ToolMemoryList
 		globalB := agentbuiltin.NewMemoryBackendScoped(a.memory.Client(), a.memory.Prefix(), channelName, deviceID, "global")
