@@ -89,7 +89,6 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		SkillExecMaxOutputBytes: cfg.SkillExecMaxOutputBytes,
 		SkillExecGlobalBinDirs:  cfg.SkillExecGlobalBinDirs,
 		TaskAllowedRoots:        cfg.TaskAllowedRoots,
-		AgentFileRoots: cfg.AgentFileRoots,
 		BashConfig: agentruntime.BashConfig{
 			Enabled:        cfg.BashEnabled,
 			Timeout:        cfg.BashTimeout,
