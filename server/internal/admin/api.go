@@ -655,6 +655,88 @@ func (d adminSlashDeps) TaskStatusList(_ context.Context) string {
 	return b.String()
 }
 
+func (d adminSlashDeps) TaskStatusListGrouped(_ context.Context) string {
+	if d.s.agent == nil {
+		return "LLM agent 未初始化。"
+	}
+	jobs := d.s.agent.TaskStatusList()
+	if len(jobs) == 0 {
+		return "暂无后台任务。"
+	}
+	groups := make(map[string][]agentbuiltin.JobSummary)
+	for _, j := range jobs {
+		key := j.AgentName
+		if key == "" {
+			key = j.AgentType
+			if key == "" {
+				key = "default"
+			}
+		}
+		groups[key] = append(groups[key], j)
+	}
+	names := make([]string, 0, len(groups))
+	for name := range groups {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	b.WriteString("后台任务面板：")
+	var totalRunning, totalTotal int
+	for _, name := range names {
+		items := groups[name]
+		totalTotal += len(items)
+		for _, j := range items {
+			if j.Status == "running" {
+				totalRunning++
+			}
+		}
+	}
+	fmt.Fprintf(&b, "\n%d running · %d total", totalRunning, totalTotal)
+	for _, name := range names {
+		items := groups[name]
+		var running, completed, failed int
+		for _, j := range items {
+			switch j.Status {
+			case "running":
+				running++
+			case "completed":
+				completed++
+			case "failed":
+				failed++
+			}
+		}
+		fmt.Fprintf(&b, "\n\n%s（%d）", name, len(items))
+		if running > 0 {
+			fmt.Fprintf(&b, " 运行中 %d", running)
+		}
+		if completed > 0 {
+			fmt.Fprintf(&b, " 完成 %d", completed)
+		}
+		if failed > 0 {
+			fmt.Fprintf(&b, " 失败 %d", failed)
+		}
+		for _, j := range items {
+			statusIcon := "🟢"
+			switch j.Status {
+			case "running":
+				statusIcon = "🔄"
+			case "completed":
+				statusIcon = "✅"
+			case "failed":
+				statusIcon = "❌"
+			}
+			fmt.Fprintf(&b, "\n  %s %s", statusIcon, j.ID)
+			if j.Duration > 0 {
+				fmt.Fprintf(&b, " · %s", j.Duration.Round(time.Second))
+			}
+			if j.Description != "" {
+				fmt.Fprintf(&b, " · %s", j.Description)
+			}
+		}
+	}
+	return b.String()
+}
+
 func (d adminSlashDeps) TaskStatusByID(_ context.Context, id string) string {
 	if d.s.agent == nil {
 		return "LLM agent 未初始化。"

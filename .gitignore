@@ -1,4 +1,5 @@
 
+.claude/scheduled_tasks.lock
 __pycache__/
 !.env.example
 .deepseek/

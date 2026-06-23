@@ -69,6 +69,7 @@ type Dependencies interface {
 	MCPStatus(ctx context.Context) string
 	TaskStatusList(ctx context.Context) string
 	TaskStatusByID(ctx context.Context, id string) string
+	TaskStatusListGrouped(ctx context.Context) string
 }
 
 type Handler struct {
@@ -125,7 +126,12 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 		return h.cron(ctx, cmd.Args), true
 	case "mcp":
 		return h.deps.MCPStatus(ctx), true
+	case "tasks":
+		return h.deps.TaskStatusListGrouped(ctx), true
 	case "task":
+		if cmd.Args == "" {
+			return h.deps.TaskStatusListGrouped(ctx), true
+		}
 		return h.taskStatus(ctx, cmd.Args), true
 	case "help":
 		return helpText(), true
@@ -359,19 +365,20 @@ func writeValue(b *strings.Builder, name, value string) {
 
 func helpText() string {
 	return `可用命令：
-/compact    - 手动压缩当前会话的历史消息为摘要，保留最近对话
-/memory     - 管理用户记忆（/memory list 查看, /memory save <分类> <内容> 记录, /memory delete <分类> 删除, /memory clear 清空）
-/cron       - 查看和管理定时任务（/cron list 查看, /cron run <任务ID> 立即执行）
-/mcp        - 查看 MCP 外部服务连接状态
-/skills     - 列出所有可用技能及其版本号
-/task       - 查看 Task 运行状态（/task status）
-/model      - 查看或切换 LLM 模型（/model list 查看可选模型，/model use <id> 切换）
-/channel    - 查看可用消息渠道
-/status     - 查看 LLM 调用统计
-/sessions   - 列出所有会话
-/session    - 查看会话上下文，/session <id>
-/new        - 新建会话
-/help       - 显示此帮助信息`
+	/compact    - 手动压缩当前会话的历史消息为摘要，保留最近对话
+	/memory     - 管理用户记忆（/memory list 查看, /memory save <分类> <内容> 记录, /memory delete <分类> 删除, /memory clear 清空）
+	/cron       - 查看和管理定时任务（/cron list 查看, /cron run <任务ID> 立即执行）
+	/mcp        - 查看 MCP 外部服务连接状态
+	/skills     - 列出所有可用技能及其版本号
+	/tasks      - 查看 Task 任务面板
+	/task       - 查看 Task 运行状态（/task status <id>）
+	/model      - 查看或切换 LLM 模型（/model list 查看可选模型，/model use <id> 切换）
+	/channel    - 查看可用消息渠道
+	/status     - 查看 LLM 调用统计
+	/sessions   - 列出所有会话
+	/session    - 查看会话上下文，/session <id>
+	/new        - 新建会话
+	/help       - 显示此帮助信息`
 }
 
 func AskLarkCard(question string, options []string) string {

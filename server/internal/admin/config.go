@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	agentruntime "xiaoli/server/internal/agent/runtime"
+	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
 	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
@@ -68,6 +69,7 @@ type Config struct {
 	BashEnabled             bool
 	BashTimeout             time.Duration
 	BashMaxOutputBytes      int64
+	AgentFileRoots       []string
 	Workflows               []agentworkflow.Definition
 	LarkWebhookURL          string
 	LarkAppID               string
@@ -180,6 +182,7 @@ func LoadConfig() Config {
 		BashEnabled:             settings.bashEnabled(),
 		BashTimeout:             settings.bashTimeout(),
 		BashMaxOutputBytes:      int64(settings.bashMaxOutputBytes()),
+			AgentFileRoots:       agentbuiltin.FileAgentRoots(),
 		Workflows:               parseWorkflows(settings.Workflows),
 		LarkWebhookURL:          env("LARK_BOT_WEBHOOK_URL", ""),
 		LarkAppID:               env("LARK_APP_ID", ""),

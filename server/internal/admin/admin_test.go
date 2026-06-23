@@ -92,17 +92,13 @@ func TestDockerfileCopiesSettingsConfig(t *testing.T) {
 	}
 }
 
-func TestDockerfileSkillInstallHasExplicitCacheBustArg(t *testing.T) {
+func TestDockerfileCopiesAgentFiles(t *testing.T) {
 	data, err := os.ReadFile("../../Dockerfile")
 	if err != nil {
 		t.Fatalf("read Dockerfile: %v", err)
 	}
-	text := string(data)
-	if !strings.Contains(text, "ARG XIAOLI_SKILLS_CACHE_BUST") {
-		t.Fatal("Dockerfile should define XIAOLI_SKILLS_CACHE_BUST so floating skill installs can be refreshed")
-	}
-	if !strings.Contains(text, "skill cache bust: ${XIAOLI_SKILLS_CACHE_BUST}") {
-		t.Fatal("Dockerfile should consume XIAOLI_SKILLS_CACHE_BUST in the skill install layer")
+	if !strings.Contains(string(data), "COPY agents/ /opt/xiaoli/agents/") {
+		t.Fatal("Dockerfile should copy agents/ to /opt/xiaoli/agents so file-backed subagents load in the container")
 	}
 }
 

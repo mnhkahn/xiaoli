@@ -103,6 +103,10 @@ func (fakeDeps) TaskStatusByID(_ context.Context, _ string) string {
 	return "test task detail"
 }
 
+func (fakeDeps) TaskStatusListGrouped(_ context.Context) string {
+	return "test tasks grouped"
+}
+
 func TestParseRequiresLeadingSlash(t *testing.T) {
 	cmd, ok := Parse(" /skills  --verbose ")
 	if !ok {

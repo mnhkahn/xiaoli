@@ -39,6 +39,7 @@ type Config struct {
 	SkillExecGlobalBinDirs  []string
 	TaskAllowedRoots        []string
 	BashConfig              BashConfig
+		AgentFileRoots          []string
 }
 
 type LLMModelConfig struct {

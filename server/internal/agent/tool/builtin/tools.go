@@ -22,3 +22,11 @@ type ToolOptions struct {
 type subAgentParentKeyType struct{}
 
 var SubAgentParentKey = subAgentParentKeyType{}
+
+type subAgentDeviceIDKeyType struct{}
+
+var SubAgentDeviceIDKey = subAgentDeviceIDKeyType{}
+
+type subAgentChannelKeyType struct{}
+
+var SubAgentChannelKey = subAgentChannelKeyType{}

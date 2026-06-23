@@ -164,8 +164,14 @@ func NewAgent(cfg Config) *Agent {
 
 	a := &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, extMCPStatus: extMCPStatus, skillMW: skillMW, recorder: recorder, sessionMgr: sessionMgr}
 
+	agentRegistry := agentbuiltin.NewAgentRegistry()
+	agentRoots := cfg.AgentFileRoots
+	if len(agentRoots) == 0 {
+		agentRoots = agentbuiltin.FileAgentRoots()
+	}
+	agentRegistry.LoadAgentFiles(agentRoots)
 	taskTool := agentbuiltin.NewTaskTool(
-		agentbuiltin.DefaultSubAgents(),
+		agentRegistry.ListSpecs(),
 		func(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt *agentbuiltin.SubAgentRuntime, prompt string) (string, error) {
 			return a.SubAgent(ctx, spec, *rt, prompt)
 		},
@@ -459,6 +465,8 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	var askHolder *agentbuiltin.AskDataHolder
 	ctx, askHolder = agentbuiltin.NewAskDataHolder(ctx)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, memoryID)
+	ctx = context.WithValue(ctx, agentbuiltin.SubAgentDeviceIDKey, deviceID)
+	ctx = context.WithValue(ctx, agentbuiltin.SubAgentChannelKey, channelName)
 
 	einoTools := a.toolsForChat(ctx, memoryID, deviceID, channelName)
 
@@ -782,6 +790,13 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 }
 
 func (a *Agent) SubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt agentbuiltin.SubAgentRuntime, prompt string) (string, error) {
+	if spec.IsFork {
+		return a.runForkSubAgent(ctx, spec, rt, prompt)
+	}
+	return a.runNormalSubAgent(ctx, spec, rt, prompt)
+}
+
+func (a *Agent) runNormalSubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt agentbuiltin.SubAgentRuntime, prompt string) (string, error) {
 	msgs := make([]*schema.Message, 0, 2)
 	if spec.SystemPrompt != "" {
 		msgs = append(msgs, schema.SystemMessage(spec.SystemPrompt))
@@ -801,6 +816,24 @@ func (a *Agent) SubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt
 	msgs = append(msgs, schema.UserMessage(prompt))
 
 	einoTools := a.subAgentTools(ctx, spec.AllowTools)
+	if len(spec.DisabledTools) > 0 {
+		disabled := make(map[string]bool, len(spec.DisabledTools))
+		for _, name := range spec.DisabledTools {
+			disabled[name] = true
+		}
+		filtered := make([]tool.BaseTool, 0, len(einoTools))
+		for _, t := range einoTools {
+			info, err := t.Info(ctx)
+			if err != nil || info == nil {
+				continue
+			}
+			if disabled[info.Name] {
+				continue
+			}
+			filtered = append(filtered, t)
+		}
+		einoTools = filtered
+	}
 
 	chatModel, modelID, err := a.chatModel(ctx)
 	if err != nil {
@@ -868,6 +901,129 @@ func (a *Agent) SubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt
 	}
 
 	return result, nil
+}
+
+func (a *Agent) runForkSubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt agentbuiltin.SubAgentRuntime, prompt string) (string, error) {
+	var parentHistory []*schema.Message
+	if rt.ParentSession != "" && a.memory != nil {
+		parentHistory = a.memory.Load(ctx, rt.ParentSession)
+	}
+
+	msgs := make([]*schema.Message, 0, len(parentHistory)+6)
+	if a.cfg.LLMPrompt != "" {
+		msgs = append(msgs, schema.SystemMessage(a.cfg.LLMPrompt))
+	}
+	msgs = append(msgs, schema.SystemMessage(a.buildEnvContext(rt.ChannelName, rt.DeviceID)))
+	msgs = append(msgs, schema.SystemMessage(a.toolGuide(true)))
+	if spec.SystemPrompt != "" {
+		msgs = append(msgs, schema.SystemMessage(spec.SystemPrompt))
+	}
+	if memories := a.loadMemories(ctx, rt.ChannelName, rt.DeviceID); memories != "" {
+		msgs = append(msgs, schema.SystemMessage(memories))
+	}
+	msgs = append(msgs, parentHistory...)
+	msgs = append(msgs, schema.UserMessage(prompt))
+
+	einoTools := a.forkTools(ctx, spec)
+
+	chatModel, modelID, err := a.chatModel(ctx)
+	if err != nil {
+		return "", fmt.Errorf("create chat model: %w", err)
+	}
+
+	maxSteps := spec.MaxSteps
+	if maxSteps <= 0 {
+		maxSteps = 10
+	}
+	cfg := &adk.ChatModelAgentConfig{
+		Name:             spec.Name,
+		Model:            chatModel,
+		MaxIterations:    maxSteps,
+		ModelRetryConfig: newLLMRetryConfig(),
+	}
+	if a.skillMW != nil {
+		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
+	}
+	if len(einoTools) > 0 {
+		cfg.ToolsConfig = adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: einoTools,
+			},
+		}
+	}
+
+	agent, err := adk.NewChatModelAgent(ctx, cfg)
+	if err != nil {
+		return "", fmt.Errorf("create subagent: %w", err)
+	}
+
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
+	runCtx := a.recorder.WithContext(ctx, modelID)
+
+	events, err := runWithRetry(runCtx, runner, msgs)
+	if err != nil {
+		return "", fmt.Errorf("subagent error: %w", err)
+	}
+
+	var result string
+	for _, event := range events {
+		if event.Err != nil {
+			logger.Infof("SubAgent event error: %v", event.Err)
+			return "", fmt.Errorf("subagent error: %w", event.Err)
+		}
+		if event.Output != nil && event.Output.MessageOutput != nil &&
+			event.Output.MessageOutput.Message != nil &&
+			event.Output.MessageOutput.Role == schema.Assistant {
+			result = event.Output.MessageOutput.Message.Content
+		}
+	}
+	if result == "" {
+		return "", fmt.Errorf("subagent returned empty response")
+	}
+
+	sessionKey := rt.SessionKey
+	if sessionKey == "" {
+		sessionKey = rt.TaskID
+	}
+	if sessionKey != "" && a.sessionMgr != nil && a.memory != nil {
+		subSession, _, _ := a.sessionMgr.GetOrCreate(ctx, "subagent", sessionKey, a.CurrentLLMModel())
+		if subSession != "" {
+			updated := a.memory.Load(ctx, subSession)
+			updated = append(updated, schema.UserMessage(prompt))
+			updated = append(updated, &schema.Message{Role: schema.Assistant, Content: result})
+			a.memory.Save(ctx, subSession, updated)
+		}
+	}
+
+	return result, nil
+}
+
+func (a *Agent) forkTools(ctx context.Context, spec agentbuiltin.SubAgentSpec) []tool.BaseTool {
+	if !spec.AllowTools {
+		return nil
+	}
+	parentTools := a.subAgentTools(ctx, true)
+	// Block tools unsafe for background fork execution, plus any the agent disabled.
+	blocked := map[string]bool{
+		"task": true, "ask_user_question": true,
+		"memory_save": true, "memory_forget": true,
+		"bash": true,
+	}
+	for _, name := range spec.DisabledTools {
+		blocked[name] = true
+	}
+	filtered := make([]tool.BaseTool, 0, len(parentTools))
+	for _, t := range parentTools {
+		info, err := t.Info(ctx)
+		if err != nil || info == nil {
+			continue
+		}
+		if blocked[info.Name] {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	return filtered
 }
 
 func (a *Agent) subAgentTools(ctx context.Context, allowTools bool) []tool.BaseTool {

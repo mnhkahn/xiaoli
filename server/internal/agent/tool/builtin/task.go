@@ -13,17 +13,22 @@ import (
 )
 
 type SubAgentSpec struct {
-	Name         string
-	Description  string
-	SystemPrompt string
-	MaxSteps     int
-	AllowTools   bool
+	Name          string
+	Description   string
+	SystemPrompt  string
+	MaxSteps      int
+	AllowTools    bool
+	IsFork        bool
+	DisabledTools []string
 }
 
 type SubAgentRuntime struct {
-	TaskID     string
-	Background bool
-	SessionKey string
+	TaskID        string
+	Background    bool
+	SessionKey    string
+	ParentSession string
+	DeviceID      string
+	ChannelName   string
 }
 
 type BackgroundJob struct {
@@ -35,6 +40,12 @@ type BackgroundJob struct {
 	Done          chan struct{}
 	CreatedAt     time.Time
 	ParentSession string
+		AgentName     string
+		AgentType     string
+		Description   string
+		StartedAt     time.Time
+		FinishedAt    *time.Time
+		Duration      time.Duration
 }
 
 func (j *BackgroundJob) Snapshot() BackgroundJob {
@@ -44,6 +55,10 @@ func (j *BackgroundJob) Snapshot() BackgroundJob {
 		ID: j.ID, Status: j.Status, Result: j.Result,
 		Error: j.Error, Done: j.Done, CreatedAt: j.CreatedAt,
 		ParentSession: j.ParentSession,
+		AgentName: j.AgentName, AgentType: j.AgentType,
+		Description: j.Description,
+		StartedAt: j.StartedAt, FinishedAt: j.FinishedAt,
+		Duration: j.Duration,
 	}
 }
 
@@ -164,6 +179,7 @@ func (t *TaskTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ .
 		TaskID       string `json:"task_id,omitempty"`
 		Background   bool   `json:"background,omitempty"`
 		TaskStatus   string `json:"task_status,omitempty"`
+Fork         bool   `json:"fork,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return taskResult("error", "参数解析失败："+err.Error()), nil
@@ -190,13 +206,23 @@ func (t *TaskTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ .
 	if args.Prompt == "" {
 		return taskResult("error", "参数 prompt 是必填的"), nil
 	}
-	if args.SubAgentType == "" {
-		return taskResult("error", "参数 subagent_type 是必填的"), nil
+	isFork := args.Fork || args.SubAgentType == "fork"
+	if !isFork && args.SubAgentType == "" {
+		return taskResult("error", "参数 subagent_type 是必填的（或设置 fork: true）"), nil
 	}
-
-	spec, ok := t.subAgents[args.SubAgentType]
-	if !ok {
-		return taskResult("error", fmt.Sprintf("未知的子代理类型 %q，可用：%s", args.SubAgentType, joinKeys(t.subAgents))), nil
+	var spec SubAgentSpec
+	var agentName string
+	if isFork {
+		spec = t.subAgents["fork"]
+		agentName = "fork"
+		args.Background = true
+	} else {
+		var ok bool
+		spec, ok = t.subAgents[args.SubAgentType]
+		if !ok {
+			return taskResult("error", fmt.Sprintf("未知的子代理类型 %q，可用：%s", args.SubAgentType, joinKeys(t.subAgents))), nil
+		}
+		agentName = args.SubAgentType
 	}
 
 	resolvedPrompt, resolveErr := ResolvePromptRefs(ctx, args.Prompt, t.resolveCfg,
@@ -234,18 +260,26 @@ func (t *TaskTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ .
 		}
 		t.activeJobs++
 		parentSession, _ := ctx.Value(SubAgentParentKey).(string)
+	deviceID, _ := ctx.Value(SubAgentDeviceIDKey).(string)
+	channelName, _ := ctx.Value(SubAgentChannelKey).(string)
+		now := time.Now()
 		job := &BackgroundJob{
 			ID:            effectiveTaskID,
 			Status:        "running",
 			Done:          make(chan struct{}),
-			CreatedAt:     time.Now(),
+			CreatedAt:     now,
 			ParentSession: parentSession,
+			AgentName:     agentName,
+			AgentType:     "normal",
+			Description:   args.Description,
+			StartedAt:     now,
 		}
 		t.jobs[effectiveTaskID] = job
 		t.mu.Unlock()
 
 		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		go func() {
+			startTime := time.Now()
 			defer cancel()
 			defer func() {
 				if r := recover(); r != nil {
@@ -263,7 +297,7 @@ func (t *TaskTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ .
 				}
 			}()
 
-			rt := &SubAgentRuntime{TaskID: effectiveTaskID, SessionKey: effectiveTaskID, Background: true}
+			rt := &SubAgentRuntime{TaskID: effectiveTaskID, SessionKey: effectiveTaskID, Background: true, ParentSession: parentSession, DeviceID: deviceID, ChannelName: channelName}
 			if parentSession != "" {
 				rt.SessionKey = parentSession + ":" + effectiveTaskID
 			}
@@ -273,12 +307,21 @@ func (t *TaskTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ .
 			if err != nil {
 				job.Status = "failed"
 				job.Error = err.Error()
+				now := time.Now()
+				job.FinishedAt = &now
+				job.Duration = now.Sub(startTime)
 			} else if result == "" {
 				job.Status = "failed"
 				job.Error = "子代理返回空结果"
+				now := time.Now()
+				job.FinishedAt = &now
+				job.Duration = now.Sub(startTime)
 			} else {
 				job.Status = "completed"
 				job.Result = result
+				now := time.Now()
+				job.FinishedAt = &now
+				job.Duration = now.Sub(startTime)
 			}
 			state := job.Status
 			resultContent := job.Result
@@ -307,7 +350,9 @@ func (t *TaskTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ .
 	}
 
 	parentSession, _ := ctx.Value(SubAgentParentKey).(string)
-	rt := &SubAgentRuntime{TaskID: args.TaskID, SessionKey: args.TaskID}
+	deviceID, _ := ctx.Value(SubAgentDeviceIDKey).(string)
+	channelName, _ := ctx.Value(SubAgentChannelKey).(string)
+	rt := &SubAgentRuntime{TaskID: args.TaskID, SessionKey: args.TaskID, ParentSession: parentSession, DeviceID: deviceID, ChannelName: channelName}
 	if parentSession != "" && args.TaskID != "" {
 		rt.SessionKey = parentSession + ":" + args.TaskID
 	}
@@ -333,6 +378,10 @@ type JobSummary struct {
 	Status        string
 	CreatedAt     time.Time
 	ParentSession string
+	AgentName     string
+	AgentType     string
+	Description   string
+	Duration      time.Duration
 }
 
 func (t *TaskTool) ListJobs() []JobSummary {
@@ -346,6 +395,10 @@ func (t *TaskTool) ListJobs() []JobSummary {
 			Status:        snap.Status,
 			CreatedAt:     snap.CreatedAt,
 			ParentSession: snap.ParentSession,
+			AgentName:     snap.AgentName,
+			AgentType:     snap.AgentType,
+			Description:   snap.Description,
+			Duration:      snap.Duration,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool {
