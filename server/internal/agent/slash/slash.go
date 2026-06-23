@@ -66,6 +66,9 @@ type Dependencies interface {
 	MemoryClear(ctx context.Context) string
 	WorkflowList(ctx context.Context) string
 	WorkflowRun(ctx context.Context, id string) string
+	ReminderList(ctx context.Context) string
+	ReminderAdd(ctx context.Context, at, text string) string
+	ReminderDelete(ctx context.Context, id string) string
 	MCPStatus(ctx context.Context) string
 	TaskStatusList(ctx context.Context) string
 	TaskStatusByID(ctx context.Context, id string) string
@@ -124,6 +127,8 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 		return h.memory(ctx, cmd.Args), true
 	case "cron":
 		return h.cron(ctx, cmd.Args), true
+	case "reminder":
+		return h.reminder(ctx, cmd.Args), true
 	case "mcp":
 		return h.deps.MCPStatus(ctx), true
 	case "tasks":
@@ -182,6 +187,51 @@ func (h Handler) cron(ctx context.Context, args string) string {
 		return h.deps.WorkflowRun(ctx, fields[1])
 	}
 	return "未知子命令，可用：list, run"
+}
+
+func (h Handler) reminder(ctx context.Context, args string) string {
+	fields := strings.Fields(args)
+	if len(fields) == 0 || fields[0] == "list" {
+		return h.deps.ReminderList(ctx)
+	}
+	switch fields[0] {
+	case "add":
+		// /reminder add <时间> <内容>，时间为 RFC3339 或 "2006-01-02 15:04"
+		rest := strings.TrimSpace(strings.TrimPrefix(args, fields[0]))
+		at, text := splitReminderAddArgs(rest)
+		if at == "" || text == "" {
+			return "用法：/reminder add <时间> <内容>\n例：/reminder add 2026-06-25T09:00:00+08:00 交房租\n或：/reminder add \"2026-06-25 09:00\" 交房租"
+		}
+		return h.deps.ReminderAdd(ctx, at, text)
+	case "del", "delete", "rm":
+		if len(fields) < 2 {
+			return "用法：/reminder del <提醒ID>"
+		}
+		return h.deps.ReminderDelete(ctx, fields[1])
+	default:
+		return "未知子命令，可用：list, add, del"
+	}
+}
+
+// splitReminderAddArgs 解析 add 参数：支持引号包裹的时间（含空格），否则取第一段为时间
+func splitReminderAddArgs(rest string) (at, text string) {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return "", ""
+	}
+	if rest[0] == '"' {
+		if end := strings.Index(rest[1:], "\""); end >= 0 {
+			at = rest[1 : 1+end]
+			text = strings.TrimSpace(rest[1+end+1:])
+			return at, text
+		}
+	}
+	parts := strings.SplitN(rest, " ", 2)
+	at = strings.TrimSpace(parts[0])
+	if len(parts) > 1 {
+		text = strings.TrimSpace(parts[1])
+	}
+	return at, text
 }
 
 func (h Handler) taskStatus(ctx context.Context, args string) string {
@@ -368,6 +418,7 @@ func helpText() string {
 	/compact    - 手动压缩当前会话的历史消息为摘要，保留最近对话
 	/memory     - 管理用户记忆（/memory list 查看, /memory save <分类> <内容> 记录, /memory delete <分类> 删除, /memory clear 清空）
 	/cron       - 查看和管理定时任务（/cron list 查看, /cron run <任务ID> 立即执行）
+	/reminder   - 管理提醒（/reminder list 查看, /reminder add <时间> <内容> 创建, /reminder del <ID> 删除）
 	/mcp        - 查看 MCP 外部服务连接状态
 	/skills     - 列出所有可用技能及其版本号
 	/tasks      - 查看 Task 任务面板

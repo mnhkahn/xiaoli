@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -1148,35 +1149,148 @@ func (s *AdminServer) StartBackground(ctx context.Context) {
 }
 
 func (s *AdminServer) startWorkflowCronScheduler(ctx context.Context) {
-	handlers := map[string]func(context.Context, agentworkflow.Definition, time.Time) error{
-		"study_monitor":    s.runStudyMonitorOnce,
-		"morning_greeting": s.runMorningGreetingOnce,
-	}
+	agentworkflow.NewCronScheduler(agentworkflow.CronSchedulerConfig{
+		// 每个 tick 重新构建任务列表，使运行时通过 /reminder 增删的提醒即时生效。
+		JobsProvider: s.buildCronJobs,
+		Tick:         30 * time.Second,
+		Now:          s.cfg.now,
+	}).Start(ctx)
+}
 
+func (s *AdminServer) buildCronJobs() []agentworkflow.CronJob {
 	jobs := []agentworkflow.CronJob{}
+
+	// 1. settings.json 中的固定任务（含 study_monitor / morning_greeting）
 	for _, def := range s.workflowDefinitions() {
-		handler, ok := handlers[def.ID]
-		if !ok {
-			logger.Infof("[cron] %q: no registered handler, skipping", def.ID)
+		if def.Trigger.Kind != agentworkflow.TriggerCron {
 			continue
 		}
 		jobDef := def
-		jobHandler := handler
 		jobs = append(jobs, agentworkflow.CronJob{
 			Definition: def,
 			Run: func(ctx context.Context, scheduledAt time.Time) error {
-				return jobHandler(ctx, jobDef, scheduledAt)
+				return s.runReminderAction(ctx, jobDef, scheduledAt, "")
 			},
 		})
 	}
-	if len(jobs) == 0 {
-		return
+
+	// 2. /data/reminders.json 中的用户任务（一次性 / 重复）
+	store := s.reminderStore()
+	reminders, err := store.Load()
+	if err != nil {
+		logger.Errorf("[reminder] load %s failed: %v", s.reminderPath(), err)
+		return jobs
 	}
-	agentworkflow.NewCronScheduler(agentworkflow.CronSchedulerConfig{
-		Jobs: jobs,
-		Tick: 30 * time.Second,
-		Now:  s.cfg.now,
-	}).Start(ctx)
+	for _, r := range reminders {
+		if !r.Enabled || r.IsOnceFired() {
+			continue
+		}
+		def, ok := r.ToDefinition()
+		if !ok {
+			logger.Infof("[reminder] %q: invalid trigger, skipping", r.ID)
+			continue
+		}
+		jobDef := def
+		isOnce := r.Trigger.Type == agentworkflow.ReminderOnce
+		jobs = append(jobs, agentworkflow.CronJob{
+			Definition: def,
+			Run: func(ctx context.Context, scheduledAt time.Time) error {
+				err := s.runReminderAction(ctx, jobDef, scheduledAt, jobDef.Action)
+				// 仅在成功时标记一次性任务完成，失败留待下次重试
+				if isOnce && err == nil {
+					if markErr := store.MarkFired(jobDef.ID, scheduledAt); markErr != nil {
+						logger.Errorf("[reminder] mark fired %q failed: %v", jobDef.ID, markErr)
+					}
+				}
+				return err
+			},
+		})
+	}
+	return jobs
+}
+
+func (s *AdminServer) reminderPath() string {
+	dir := s.cfg.DataDir
+	if dir == "" {
+		dir = "/data"
+	}
+	return filepath.Join(dir, "reminders.json")
+}
+
+func (s *AdminServer) reminderStore() *agentworkflow.ReminderStore {
+	s.reminderOnce.Do(func() {
+		s.reminderSt = agentworkflow.NewReminderStore(s.reminderPath())
+	})
+	return s.reminderSt
+}
+
+// runReminderAction 按 action 分发执行。action 为空时按任务 ID 走兼容逻辑。
+func (s *AdminServer) runReminderAction(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time, action string) error {
+	if action == "" {
+		switch def.ID {
+		case "study_monitor":
+			return s.runStudyMonitorOnce(ctx, def, scheduledAt)
+		case "morning_greeting":
+			return s.runMorningGreetingOnce(ctx, def, scheduledAt)
+		default:
+			logger.Infof("[reminder] %q: no action and no built-in handler, skipping", def.ID)
+			return nil
+		}
+	}
+	switch action {
+	case "speak":
+		return s.runSpeakAction(ctx, def, scheduledAt)
+	case "agent":
+		return s.runStudyMonitorOnce(ctx, def, scheduledAt)
+	case "notify":
+		return s.runNotifyAction(ctx, def, scheduledAt)
+	default:
+		logger.Infof("[reminder] %q: unknown action %q, skipping", def.ID, action)
+		return nil
+	}
+}
+
+// runSpeakAction 找在线设备播报 metadata.text
+func (s *AdminServer) runSpeakAction(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
+	text := metadataString(def.Metadata, "text", "")
+	if text == "" {
+		text = def.Name
+	}
+	if text == "" {
+		return nil
+	}
+	controller := s.deviceController()
+	devices, err := controller.Devices(ctx)
+	if err != nil {
+		return err
+	}
+	deviceIDs := metadataCSV(def.Metadata, "device_ids", nil)
+	deviceID := pickOnlineDevice(devices, deviceIDs)
+	if deviceID == "" {
+		// 返回错误，让一次性提醒不被标记完成，下次 tick 重试直到有设备在线
+		logger.Infof("[reminder] %q speak deferred at %s: no eligible device", def.ID, scheduledAt.Format(time.RFC3339))
+		return fmt.Errorf("no eligible device online")
+	}
+	if _, err := controller.Speak(ctx, deviceID, text); err != nil {
+		return err
+	}
+	logger.Infof("[reminder] %q spoke on %s at %s: %q", def.ID, deviceID, scheduledAt.Format(time.RFC3339), text)
+	return nil
+}
+
+// runNotifyAction 发送飞书通知（webhook）
+func (s *AdminServer) runNotifyAction(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
+	text := metadataString(def.Metadata, "text", "")
+	if text == "" {
+		text = def.Name
+	}
+	if text == "" {
+		return nil
+	}
+	return s.sendLarkStudyMessage(ctx, studyLarkPayloadInput{
+		AnalysisText: text,
+		CheckedAt:    scheduledAt,
+	})
 }
 
 func (s *AdminServer) runMorningGreetingOnce(ctx context.Context, def agentworkflow.Definition, checkedAt time.Time) error {

@@ -25,6 +25,7 @@ type CronSpec struct {
 	EndHour   int
 	AtHour    *int
 	AtMinute  *int
+	At        *time.Time // 一次性：到该绝对时刻触发一次
 }
 
 type AgentSpec struct {
@@ -39,6 +40,7 @@ type Definition struct {
 	Name        string
 	Description string
 	Enabled     bool
+	Action      string // speak | agent | notify（空则按 ID 走兼容逻辑）
 	Trigger     Trigger
 	Agent       AgentSpec
 	Metadata    map[string]any

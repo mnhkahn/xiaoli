@@ -80,6 +80,8 @@ type Config struct {
 	RedisURL                string
 	RedisKeyPrefix          string
 	MemoryTTL               time.Duration
+	DataDir                 string
+	Timezone                string
 	Now                     func() time.Time
 }
 
@@ -193,6 +195,8 @@ func LoadConfig() Config {
 		RedisURL:                env("XIAOLI_REDIS_URL", ""),
 		RedisKeyPrefix:          env("XIAOLI_REDIS_KEY_PREFIX", "xiaoli:cp:"),
 		MemoryTTL:               time.Duration(envInt("XIAOLI_MEMORY_TTL_HOURS", 24)) * time.Hour,
+		DataDir:                 env("XIAOLI_DATA_DIR", "/data"),
+		Timezone:                env("TZ", "Asia/Shanghai"),
 	}
 	return cfg
 }

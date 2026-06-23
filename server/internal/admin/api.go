@@ -610,6 +610,111 @@ func (d adminSlashDeps) WorkflowRun(ctx context.Context, id string) string {
 	return fmt.Sprintf("已执行：%s", id)
 }
 
+func (d adminSlashDeps) ReminderList(_ context.Context) string {
+	reminders, err := d.s.reminderStore().Load()
+	if err != nil {
+		return "读取提醒失败：" + err.Error()
+	}
+	if len(reminders) == 0 {
+		return "当前没有提醒。用 /reminder add <时间> <内容> 创建。"
+	}
+	var b strings.Builder
+	b.WriteString("提醒列表：")
+	for _, r := range reminders {
+		status := "启用"
+		if !r.Enabled {
+			status = "禁用"
+		}
+		when := reminderScheduleText(r.Trigger)
+		if r.IsOnceFired() {
+			status = "已完成"
+		}
+		fmt.Fprintf(&b, "\n- [%s] %s（%s）%s", r.ID, r.Text, when, status)
+	}
+	return b.String()
+}
+
+func (d adminSlashDeps) ReminderAdd(_ context.Context, at, text string) string {
+	parsed, err := parseReminderTime(at, d.s.cfg.Timezone)
+	if err != nil {
+		return "时间格式不对：" + err.Error() + "\n支持 RFC3339 或 \"2006-01-02 15:04\"。"
+	}
+	now := d.s.cfg.now()
+	if parsed.Before(now) {
+		return "提醒时间已过，请用将来的时间。"
+	}
+	r := agentworkflow.Reminder{
+		ID:      fmt.Sprintf("rmd_%d", now.UnixNano()),
+		Name:    text,
+		Enabled: true,
+		Action:  "speak",
+		Trigger: agentworkflow.ReminderTrigger{
+			Type: agentworkflow.ReminderOnce,
+			At:   parsed.Format(time.RFC3339),
+		},
+		Text:      text,
+		CreatedAt: now.Format(time.RFC3339),
+	}
+	if err := d.s.reminderStore().Add(r); err != nil {
+		return "保存提醒失败：" + err.Error()
+	}
+	return fmt.Sprintf("已创建提醒 [%s]：%s（%s）", r.ID, text, parsed.Format("2006-01-02 15:04"))
+}
+
+func (d adminSlashDeps) ReminderDelete(_ context.Context, id string) string {
+	removed, err := d.s.reminderStore().Delete(id)
+	if err != nil {
+		return "删除提醒失败：" + err.Error()
+	}
+	if !removed {
+		return fmt.Sprintf("未找到提醒：%s", id)
+	}
+	return fmt.Sprintf("已删除提醒：%s", id)
+}
+
+// parseReminderTime 解析用户输入的时间：优先 RFC3339，回退指定时区下的 "2006-01-02 15:04"
+func parseReminderTime(s, timezone string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+	loc := time.Local
+	if timezone != "" {
+		if l, err := time.LoadLocation(timezone); err == nil {
+			loc = l
+		}
+	}
+	for _, layout := range []string{"2006-01-02 15:04", "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, s, loc); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("无法解析 %q", s)
+}
+
+func reminderScheduleText(t agentworkflow.ReminderTrigger) string {
+	switch t.Type {
+	case agentworkflow.ReminderOnce:
+		if parsed, err := time.Parse(time.RFC3339, t.At); err == nil {
+			return parsed.Format("2006-01-02 15:04")
+		}
+		return t.At
+	case agentworkflow.ReminderDaily:
+		hour, minute := 0, 0
+		if t.AtHour != nil {
+			hour = *t.AtHour
+		}
+		if t.AtMinute != nil {
+			minute = *t.AtMinute
+		}
+		return fmt.Sprintf("每天 %02d:%02d", hour, minute)
+	case agentworkflow.ReminderInterval:
+		return "每 " + t.Every
+	default:
+		return string(t.Type)
+	}
+}
+
 func (d adminSlashDeps) MCPStatus(_ context.Context) string {
 	if d.s.agent == nil {
 		return "LLM agent 未初始化。"

@@ -91,6 +91,18 @@ func (fakeDeps) WorkflowRun(_ context.Context, id string) string {
 	return "已执行：" + id
 }
 
+func (fakeDeps) ReminderList(_ context.Context) string {
+	return "test reminders"
+}
+
+func (fakeDeps) ReminderAdd(_ context.Context, at, text string) string {
+	return "已创建提醒：" + text
+}
+
+func (fakeDeps) ReminderDelete(_ context.Context, id string) string {
+	return "已删除提醒：" + id
+}
+
 func (fakeDeps) MCPStatus(_ context.Context) string {
 	return "test mcp status"
 }

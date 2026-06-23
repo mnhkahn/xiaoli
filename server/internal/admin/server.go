@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"xiaoli/server/internal/agent/session"
+	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
 
 const (
@@ -62,6 +63,8 @@ type AdminServer struct {
 	larkToken     string
 	larkTokenExp  time.Time
 	larkTokenMu   sync.Mutex
+	reminderOnce  sync.Once
+	reminderSt    *agentworkflow.ReminderStore
 	oidcMu        sync.Mutex
 	oidc         *oidcConfig
 	oidcFetcher  func() (oidcConfig, error)
