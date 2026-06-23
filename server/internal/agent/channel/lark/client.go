@@ -9,12 +9,21 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 )
 
+type larkToken struct {
+	token     string
+	expiresAt time.Time
+}
+
 type Client struct {
-	appID      string
-	appToken   string
-	httpClient *http.Client
+	appID        string
+	appToken     string
+	httpClient   *http.Client
+	tokenCache   larkToken
+	tokenCacheMu sync.Mutex
 }
 
 type ClientConfig struct {
@@ -293,11 +302,21 @@ func (c *Client) RemoveReaction(ctx context.Context, messageID, reactionID strin
 }
 
 func (c *Client) tenantAccessToken(ctx context.Context) (string, error) {
+	c.tokenCacheMu.Lock()
+	if c.tokenCache.token != "" && time.Now().Before(c.tokenCache.expiresAt) {
+		defer c.tokenCacheMu.Unlock()
+		return c.tokenCache.token, nil
+	}
+	c.tokenCacheMu.Unlock()
+
+	tokenCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
 	requestBody, err := json.Marshal(map[string]string{"app_id": c.appID, "app_secret": c.appToken})
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(requestBody))
+	req, err := http.NewRequestWithContext(tokenCtx, http.MethodPost, "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(requestBody))
 	if err != nil {
 		return "", err
 	}
@@ -322,6 +341,15 @@ func (c *Client) tenantAccessToken(ctx context.Context) (string, error) {
 	if token == "" {
 		return "", fmt.Errorf("lark tenant_access_token missing")
 	}
+
+	expire := 7200
+	if e, ok := int64Value(payload["expire"]); ok && e > 0 {
+		expire = int(e)
+	}
+	c.tokenCacheMu.Lock()
+	c.tokenCache.token = token
+	c.tokenCache.expiresAt = time.Now().Add(time.Duration(expire-300) * time.Second)
+	c.tokenCacheMu.Unlock()
 	return token, nil
 }
 

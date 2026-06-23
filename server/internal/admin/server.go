@@ -57,9 +57,12 @@ type AdminServer struct {
 	imagesMu     sync.Mutex
 	images       map[string]imageRecord
 	imagesByDev  map[string][]string
-	larkMu       sync.Mutex
-	larkEvents   map[string]time.Time
-	oidcMu       sync.Mutex
+	larkMu        sync.Mutex
+	larkEvents    map[string]time.Time
+	larkToken     string
+	larkTokenExp  time.Time
+	larkTokenMu   sync.Mutex
+	oidcMu        sync.Mutex
 	oidc         *oidcConfig
 	oidcFetcher  func() (oidcConfig, error)
 }

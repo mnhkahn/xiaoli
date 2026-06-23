@@ -89,6 +89,7 @@ func newEinoAgent(cfg Config) *EinoAgent {
 		SkillExecMaxOutputBytes: cfg.SkillExecMaxOutputBytes,
 		SkillExecGlobalBinDirs:  cfg.SkillExecGlobalBinDirs,
 		TaskAllowedRoots:        cfg.TaskAllowedRoots,
+		AgentFileRoots: cfg.AgentFileRoots,
 		BashConfig: agentruntime.BashConfig{
 			Enabled:        cfg.BashEnabled,
 			Timeout:        cfg.BashTimeout,
@@ -920,6 +921,7 @@ func (s *AdminServer) newLarkClient() *agentlark.Client {
 }
 
 func (s *AdminServer) startLarkWSClient(ctx context.Context) {
+	const reconnectDelay = 5 * time.Second
 	eventHandler := dispatcher.NewEventDispatcher("", "").
 		OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
 			if event == nil || event.Event == nil || event.Event.Message == nil || event.Event.Sender == nil {
@@ -971,9 +973,19 @@ func (s *AdminServer) startLarkWSClient(ctx context.Context) {
 		larkws.WithLogLevel(larkcore.LogLevelWarn),
 	)
 
-	logger.Infof("[lark] ws start app_id=%s", s.cfg.LarkAppID)
-	if err := cli.Start(ctx); err != nil {
-		logger.Infof("[lark] ws stopped: %v", err)
+	for {
+		logger.Infof("[lark] ws start app_id=%s", s.cfg.LarkAppID)
+		if err := cli.Start(ctx); err != nil {
+			logger.Errorf("[lark] ws disconnected: %v, reconnecting in %v", err, reconnectDelay)
+		} else {
+			logger.Infof("[lark] ws stopped normally, reconnecting in %v", reconnectDelay)
+		}
+		select {
+		case <-ctx.Done():
+			logger.Infof("[lark] ws client stopped: context done")
+			return
+		case <-time.After(reconnectDelay):
+		}
 	}
 }
 
@@ -1582,8 +1594,18 @@ func (s *AdminServer) uploadLarkImage(ctx context.Context, body []byte, contentT
 }
 
 func (s *AdminServer) getLarkTenantAccessToken(ctx context.Context) (string, error) {
+	s.larkTokenMu.Lock()
+	if s.larkToken != "" && time.Now().Before(s.larkTokenExp) {
+		defer s.larkTokenMu.Unlock()
+		return s.larkToken, nil
+	}
+	s.larkTokenMu.Unlock()
+
+	tokenCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
 	requestBody, _ := json.Marshal(map[string]string{"app_id": s.cfg.LarkAppID, "app_secret": s.cfg.LarkAppToken})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(requestBody))
+	req, err := http.NewRequestWithContext(tokenCtx, http.MethodPost, "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(requestBody))
 	if err != nil {
 		return "", err
 	}
@@ -1600,7 +1622,20 @@ func (s *AdminServer) getLarkTenantAccessToken(ctx context.Context) (string, err
 	if code, _ := int64Value(payload["code"]); code != 0 {
 		return "", fmt.Errorf("lark tenant_access_token failed: %v", payload)
 	}
-	return stringValue(payload["tenant_access_token"]), nil
+	token := stringValue(payload["tenant_access_token"])
+	if token == "" {
+		return "", fmt.Errorf("lark tenant_access_token missing")
+	}
+
+	expire := 7200
+	if e, ok := int64Value(payload["expire"]); ok && e > 0 {
+		expire = int(e)
+	}
+	s.larkTokenMu.Lock()
+	s.larkToken = token
+	s.larkTokenExp = time.Now().Add(time.Duration(expire-300) * time.Second)
+	s.larkTokenMu.Unlock()
+	return token, nil
 }
 
 func (s *AdminServer) recentDeviceImageRecord(deviceID string, since time.Time) *imageRecord {
