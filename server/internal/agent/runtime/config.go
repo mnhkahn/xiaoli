@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"time"
+
+	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
 
 type BashConfig struct {
@@ -10,9 +12,27 @@ type BashConfig struct {
 	MaxOutputBytes int64
 }
 
+// MCP 认证方式
+const (
+	MCPAuthNone   = "none"   // 无认证
+	MCPAuthQuery  = "query"  // URL 拼 ?key=xxx（默认，兼容旧配置）
+	MCPAuthBearer = "bearer" // Authorization: Bearer <key>
+	MCPAuthHeader = "header" // 自定义请求头携带 key
+	MCPAuthOAuth  = "oauth"  // OAuth2 client_credentials/refresh_token，自动取并刷新 access token
+)
+
 type MCPEndpoint struct {
-	URL    string
-	APIKey string
+	URL     string
+	APIKey  string
+	Auth    string // 见 MCPAuth* 常量，空视为 query（兼容旧逻辑）
+	HeaderN string // Auth=header 时的请求头名，如 X-API-Key
+
+	// OAuth2（Auth=oauth）
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+	RefreshToken string
+	Scope        string
 }
 
 type Config struct {
@@ -39,7 +59,9 @@ type Config struct {
 	SkillExecGlobalBinDirs  []string
 	TaskAllowedRoots        []string
 	BashConfig              BashConfig
-		AgentFileRoots          []string
+	AgentFileRoots          []string
+	ReminderStore           *agentworkflow.ReminderStore
+	Timezone                string
 }
 
 type LLMModelConfig struct {

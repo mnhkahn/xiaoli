@@ -88,6 +88,13 @@ func NewFilteredTools(filters ToolFilter, opts ToolOptions) []tool.BaseTool {
 	if filters&ToolBash != 0 && opts.ShellConfig != nil {
 		tools = append(tools, NewShellTool(*opts.ShellConfig))
 	}
+	if filters&ToolReminder != 0 && opts.ReminderStore != nil {
+		tools = append(tools,
+			NewReminderAddTool(opts.ReminderStore, opts.Timezone),
+			NewReminderListTool(opts.ReminderStore),
+			NewReminderDeleteTool(opts.ReminderStore),
+		)
+	}
 	return tools
 }
 

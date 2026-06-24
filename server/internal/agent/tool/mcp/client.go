@@ -10,37 +10,162 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	einojsonschema "github.com/eino-contrib/jsonschema"
 )
 
-type Client struct {
-	url       string
-	apiKey    string
-	sessionID string
-	mu        sync.Mutex
+// 认证方式（与 runtime.MCPAuth* 对应）
+const (
+	authNone   = "none"
+	authQuery  = "query"
+	authBearer = "bearer"
+	authHeader = "header"
+	authOAuth  = "oauth"
+)
+
+// AuthConfig MCP 连接的认证配置
+type AuthConfig struct {
+	URL          string
+	APIKey       string
+	Auth         string
+	HeaderName   string
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+	RefreshToken string
+	Scope        string
 }
 
-func NewClient(ctx context.Context, url string, apiKey string) (*Client, error) {
-	c := &Client{url: url, apiKey: apiKey}
+type Client struct {
+	url       string
+	auth      AuthConfig
+	sessionID string
+	mu        sync.Mutex
+
+	// OAuth access token 缓存
+	oauthToken  string
+	oauthExpiry time.Time
+	oauthMu     sync.Mutex
+}
+
+func NewClient(ctx context.Context, cfg AuthConfig) (*Client, error) {
+	if cfg.Auth == "" {
+		// 兼容旧逻辑：有 key 走 query，无 key 走 none
+		if cfg.APIKey != "" {
+			cfg.Auth = authQuery
+		} else {
+			cfg.Auth = authNone
+		}
+	}
+	c := &Client{url: cfg.URL, auth: cfg}
 	sid, err := c.mcpInit(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("mcp connect %s: %w", url, err)
+		return nil, fmt.Errorf("mcp connect %s: %w", cfg.URL, err)
 	}
 	c.sessionID = sid
 	return c, nil
 }
 
 func (c *Client) requestURL() string {
-	if c.apiKey == "" {
-		return c.url
+	if c.auth.Auth == authQuery && c.auth.APIKey != "" {
+		if strings.ContainsRune(c.url, '?') {
+			return c.url + "&key=" + url.QueryEscape(c.auth.APIKey)
+		}
+		return c.url + "?key=" + url.QueryEscape(c.auth.APIKey)
 	}
-	if strings.ContainsRune(c.url, '?') {
-		return c.url + "&key=" + url.QueryEscape(c.apiKey)
+	return c.url
+}
+
+// applyAuthHeaders 按认证方式设置请求头（query 模式不在这里处理）
+func (c *Client) applyAuthHeaders(ctx context.Context, req *http.Request) error {
+	switch c.auth.Auth {
+	case authBearer:
+		if c.auth.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.auth.APIKey)
+		}
+	case authHeader:
+		name := c.auth.HeaderName
+		if name == "" {
+			name = "X-API-Key"
+		}
+		if c.auth.APIKey != "" {
+			req.Header.Set(name, c.auth.APIKey)
+		}
+	case authOAuth:
+		token, err := c.oauthAccessToken(ctx)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	return c.url + "?key=" + url.QueryEscape(c.apiKey)
+	return nil
+}
+
+// oauthAccessToken 返回有效的 access token，过期则用 refresh_token 刷新（带缓存）
+func (c *Client) oauthAccessToken(ctx context.Context) (string, error) {
+	c.oauthMu.Lock()
+	defer c.oauthMu.Unlock()
+	if c.oauthToken != "" && time.Now().Before(c.oauthExpiry) {
+		return c.oauthToken, nil
+	}
+	form := url.Values{}
+	if c.auth.RefreshToken != "" {
+		form.Set("grant_type", "refresh_token")
+		form.Set("refresh_token", c.auth.RefreshToken)
+	} else {
+		form.Set("grant_type", "client_credentials")
+	}
+	form.Set("client_id", c.auth.ClientID)
+	form.Set("client_secret", c.auth.ClientSecret)
+	if c.auth.Scope != "" {
+		form.Set("scope", c.auth.Scope)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.auth.TokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("oauth token failed: %d %s", resp.StatusCode, string(raw))
+	}
+	var tok struct {
+		AccessToken  string `json:"access_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(raw, &tok); err != nil {
+		return "", fmt.Errorf("parse oauth token: %w", err)
+	}
+	if tok.AccessToken == "" {
+		return "", fmt.Errorf("oauth token empty: %s", string(raw))
+	}
+	// 提供商可能轮换 refresh_token，需更新缓存，否则下次刷新会用失效的旧 token。
+	if tok.RefreshToken != "" {
+		c.auth.RefreshToken = tok.RefreshToken
+	}
+	expire := tok.ExpiresIn
+	if expire <= 0 {
+		expire = 3600
+	}
+	// 提前刷新的安全余量：默认 300s，但对短期 token 钳制到有效期的一半，
+	// 避免 expire<=300 时偏移为负导致缓存永远失效、每次请求都重取 token。
+	skew := 300
+	if skew > expire/2 {
+		skew = expire / 2
+	}
+	c.oauthToken = tok.AccessToken
+	c.oauthExpiry = time.Now().Add(time.Duration(expire-skew) * time.Second)
+	return c.oauthToken, nil
 }
 
 func (c *Client) ListTools(ctx context.Context) ([]tool.BaseTool, error) {
@@ -163,6 +288,9 @@ func (c *Client) mcpInit(ctx context.Context) (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if err := c.applyAuthHeaders(ctx, req); err != nil {
+		return "", err
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -199,6 +327,9 @@ func (c *Client) mcpPost(ctx context.Context, payload []byte, extraHeaders ...st
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if err := c.applyAuthHeaders(ctx, req); err != nil {
+		return "", err
+	}
 	for i := 0; i+1 < len(extraHeaders); i += 2 {
 		if extraHeaders[i+1] != "" {
 			req.Header.Set(extraHeaders[i], extraHeaders[i+1])

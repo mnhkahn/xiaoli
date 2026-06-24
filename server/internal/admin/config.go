@@ -69,7 +69,7 @@ type Config struct {
 	BashEnabled             bool
 	BashTimeout             time.Duration
 	BashMaxOutputBytes      int64
-	AgentFileRoots       []string
+	AgentFileRoots          []string
 	Workflows               []agentworkflow.Definition
 	LarkWebhookURL          string
 	LarkAppID               string
@@ -184,7 +184,7 @@ func LoadConfig() Config {
 		BashEnabled:             settings.bashEnabled(),
 		BashTimeout:             settings.bashTimeout(),
 		BashMaxOutputBytes:      int64(settings.bashMaxOutputBytes()),
-			AgentFileRoots:       agentbuiltin.FileAgentRoots(),
+		AgentFileRoots:          agentbuiltin.FileAgentRoots(),
 		Workflows:               parseWorkflows(settings.Workflows),
 		LarkWebhookURL:          env("LARK_BOT_WEBHOOK_URL", ""),
 		LarkAppID:               env("LARK_APP_ID", ""),
@@ -256,7 +256,17 @@ type settingsModelEndpoint struct {
 type settingsMCPServer struct {
 	Name      string `json:"name"`
 	URL       string `json:"url"`
+	URLEnv    string `json:"url_env,omitempty"` // 从环境变量读取 URL（含敏感 token 时用，优先于 url）
 	APIKeyEnv string `json:"api_key_env"`
+	// 认证方式：none/query/bearer/header/oauth，留空兼容旧逻辑（有 key 走 query）
+	AuthType   string `json:"auth_type,omitempty"`
+	HeaderName string `json:"header_name,omitempty"`
+	// OAuth2（auth_type=oauth）
+	TokenURL        string `json:"token_url,omitempty"`
+	ClientIDEnv     string `json:"client_id_env,omitempty"`
+	ClientSecretEnv string `json:"client_secret_env,omitempty"`
+	RefreshTokenEnv string `json:"refresh_token_env,omitempty"`
+	Scope           string `json:"scope,omitempty"`
 }
 
 func loadSettings(paths []string) (settingsConfig, string) {
@@ -495,15 +505,59 @@ func (s settingsConfig) mcpEndpoints() []agentruntime.MCPEndpoint {
 	var out []agentruntime.MCPEndpoint
 	for _, server := range s.MCPServers {
 		u := strings.TrimSpace(server.URL)
+		// url_env 优先：URL 含敏感 token 时通过环境变量注入，不写进配置文件
+		if server.URLEnv != "" {
+			if v := strings.TrimSpace(env(server.URLEnv, "")); v != "" {
+				u = v
+			} else {
+				logger.Infof("[mcp] %q: %s not set, skipping", server.Name, server.URLEnv)
+				continue
+			}
+		}
 		if u == "" {
 			continue
 		}
+		auth := strings.TrimSpace(server.AuthType)
+
+		if auth == agentruntime.MCPAuthOAuth {
+			clientID := settingsAPIKey(server.ClientIDEnv)
+			clientSecret := settingsAPIKey(server.ClientSecretEnv)
+			refreshToken := settingsAPIKey(server.RefreshTokenEnv)
+			if clientID == "" || server.TokenURL == "" {
+				logger.Infof("[mcp] %q: oauth 缺少 client_id 或 token_url，skipping", server.Name)
+				continue
+			}
+			out = append(out, agentruntime.MCPEndpoint{
+				URL:          u,
+				Auth:         agentruntime.MCPAuthOAuth,
+				TokenURL:     strings.TrimSpace(server.TokenURL),
+				ClientID:     clientID,
+				ClientSecret: clientSecret,
+				RefreshToken: refreshToken,
+				Scope:        strings.TrimSpace(server.Scope),
+			})
+			continue
+		}
+
 		key := settingsAPIKey(server.APIKeyEnv)
 		if server.APIKeyEnv != "" && key == "" {
 			logger.Infof("[mcp] %q: %s not set, skipping", server.Name, server.APIKeyEnv)
 			continue
 		}
-		out = append(out, agentruntime.MCPEndpoint{URL: u, APIKey: key})
+		// 留空时兼容旧逻辑：有 key 走 query，无 key 无认证
+		if auth == "" {
+			if key != "" {
+				auth = agentruntime.MCPAuthQuery
+			} else {
+				auth = agentruntime.MCPAuthNone
+			}
+		}
+		out = append(out, agentruntime.MCPEndpoint{
+			URL:     u,
+			APIKey:  key,
+			Auth:    auth,
+			HeaderN: strings.TrimSpace(server.HeaderName),
+		})
 	}
 	return out
 }

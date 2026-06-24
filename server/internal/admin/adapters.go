@@ -66,7 +66,7 @@ func newGoVisionClient(cfg Config) VisionAnalyzer {
 	})
 }
 
-func newEinoAgent(cfg Config) *EinoAgent {
+func newEinoAgent(cfg Config, reminderStore *agentworkflow.ReminderStore) *EinoAgent {
 	return agentruntime.NewAgent(agentruntime.Config{
 		LLMURL:                  cfg.GoLLMURL,
 		LLMAPIKey:               cfg.GoLLMAPIKey,
@@ -95,6 +95,8 @@ func newEinoAgent(cfg Config) *EinoAgent {
 			Timeout:        cfg.BashTimeout,
 			MaxOutputBytes: cfg.BashMaxOutputBytes,
 		},
+		ReminderStore: reminderStore,
+		Timezone:      cfg.Timezone,
 	})
 }
 
@@ -1209,17 +1211,22 @@ func (s *AdminServer) buildCronJobs() []agentworkflow.CronJob {
 	return jobs
 }
 
-func (s *AdminServer) reminderPath() string {
-	dir := s.cfg.DataDir
+func reminderPathForDir(dir string) string {
 	if dir == "" {
 		dir = "/data"
 	}
 	return filepath.Join(dir, "reminders.json")
 }
 
+func (s *AdminServer) reminderPath() string {
+	return reminderPathForDir(s.cfg.DataDir)
+}
+
 func (s *AdminServer) reminderStore() *agentworkflow.ReminderStore {
 	s.reminderOnce.Do(func() {
-		s.reminderSt = agentworkflow.NewReminderStore(s.reminderPath())
+		if s.reminderSt == nil {
+			s.reminderSt = agentworkflow.NewReminderStore(s.reminderPath())
+		}
 	})
 	return s.reminderSt
 }

@@ -1,5 +1,9 @@
 package builtin
 
+import (
+	agentworkflow "xiaoli/server/internal/agent/workflow"
+)
+
 type ToolFilter uint64
 
 const (
@@ -11,12 +15,15 @@ const (
 	ToolMemoryForget
 	ToolMemoryList
 	ToolBash
+	ToolReminder
 )
 
 type ToolOptions struct {
 	MemoryBackends *MemoryBackends
 	WebSearchKey   string
 	ShellConfig    *ShellConfig
+	ReminderStore  *agentworkflow.ReminderStore
+	Timezone       string
 }
 
 type subAgentParentKeyType struct{}

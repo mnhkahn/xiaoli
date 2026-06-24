@@ -96,7 +96,17 @@ func NewAgent(cfg Config) *Agent {
 	var extToolSets [][]tool.BaseTool
 	var extMCPStatus []MCPEndpointStatus
 	for _, ep := range cfg.ExternalMCPEndpoints {
-		client, err := agentmcp.NewClient(ctx, ep.URL, ep.APIKey)
+		client, err := agentmcp.NewClient(ctx, agentmcp.AuthConfig{
+			URL:          ep.URL,
+			APIKey:       ep.APIKey,
+			Auth:         ep.Auth,
+			HeaderName:   ep.HeaderN,
+			TokenURL:     ep.TokenURL,
+			ClientID:     ep.ClientID,
+			ClientSecret: ep.ClientSecret,
+			RefreshToken: ep.RefreshToken,
+			Scope:        ep.Scope,
+		})
 		if err != nil {
 			logger.Infof("ext MCP connect failed %s: %v", ep.URL, err)
 			extMCPStatus = append(extMCPStatus, MCPEndpointStatus{URL: ep.URL, Connected: false, Error: err.Error()})
@@ -1077,6 +1087,11 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 		globalB := agentbuiltin.NewMemoryBackendScoped(a.memory.Client(), a.memory.Prefix(), channelName, deviceID, "global")
 		channelB := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
 		opts.MemoryBackends = &agentbuiltin.MemoryBackends{Global: globalB, Channel: channelB}
+	}
+	if a.cfg.ReminderStore != nil {
+		filter |= agentbuiltin.ToolReminder
+		opts.ReminderStore = a.cfg.ReminderStore
+		opts.Timezone = a.cfg.Timezone
 	}
 	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, opts))
 	if a.taskTool != nil {

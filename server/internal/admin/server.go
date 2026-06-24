@@ -93,7 +93,8 @@ func NewServer(cfg Config) *AdminServer {
 	stream := newStreamHub()
 	audioStore := newAudioStore(cfg.now)
 	asr := newOpenAITranscriber(cfg)
-	agent := newEinoAgent(cfg)
+	reminderStore := agentworkflow.NewReminderStore(reminderPathForDir(cfg.DataDir))
+	agent := newEinoAgent(cfg, reminderStore)
 	var memory memoryReader
 	if agent != nil && agent.MemoryReader() != nil {
 		memory = agent.MemoryReader()
@@ -122,6 +123,7 @@ func NewServer(cfg Config) *AdminServer {
 		images:       map[string]imageRecord{},
 		imagesByDev:  map[string][]string{},
 		larkEvents:   map[string]time.Time{},
+		reminderSt:   reminderStore,
 	}
 	s.oidcFetcher = s.fetchOIDCConfig
 	return s
