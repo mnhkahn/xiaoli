@@ -85,7 +85,7 @@ RUN set -eux; \
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libopus0 libopusfile0 libstdc++6 \
+    && apt-get install -y --no-install-recommends ca-certificates git libopus0 libopusfile0 libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=onnxrt /opt/onnxruntime/lib/libonnxruntime.so* /usr/local/lib/
