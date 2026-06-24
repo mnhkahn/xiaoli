@@ -31,7 +31,7 @@ RUN curl -fsSL -o /tmp/ort.tgz \
 
 FROM node:22-bookworm-slim AS skill-build
 
-ARG XIAOLI_SKILLS="mnhkahn/cyeam-cli"
+ARG XIAOLI_SKILLS="mnhkahn/cyeam-cli https://open.feishu.cn"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git tar \
     && rm -rf /var/lib/apt/lists/*
@@ -68,6 +68,19 @@ RUN set -eux; \
         rm /tmp/cyeam.tgz; \
     fi; \
     find /skill-bin -type f -exec chmod +x {} \;
+
+ARG LARK_CLI_VERSION=latest
+
+RUN set -eux; \
+    if [ "${LARK_CLI_VERSION}" = "latest" ]; then \
+        npm install -g @larksuite/cli; \
+    else \
+        npm install -g "@larksuite/cli@${LARK_CLI_VERSION}"; \
+    fi; \
+    larkbin="$(npm root -g)/@larksuite/cli/bin/lark-cli"; \
+    test -x "$larkbin"; \
+    cp -a "$larkbin" /skill-bin/lark-cli; \
+    chmod +x /skill-bin/lark-cli
 
 FROM debian:bookworm-slim
 
