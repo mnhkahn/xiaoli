@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	einoskill "github.com/cloudwego/eino/adk/middlewares/skill"
@@ -130,6 +131,13 @@ func runSkillCommand(ctx context.Context, skill einoskill.Skill, argv []string, 
 	if err != nil {
 		return formatSkillCommandResult(argv, "", "", fmt.Errorf("resolve skill executable: %w", err)), nil
 	}
+
+	// 交互式命令（如 cyeam login）会先打印关键信息（登录链接/验证码）再长时间阻塞等待，
+	// 用早返回模式：拿到首屏输出后即返回给调用方，进程在后台继续完成。
+	if isEarlyReturnCommand(argv) {
+		return runSkillCommandEarlyReturn(ctx, skill, bin, argv, cfg), nil
+	}
+
 	runCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
@@ -159,6 +167,93 @@ func runSkillCommand(ctx context.Context, skill einoskill.Skill, argv []string, 
 		return formatSkillCommandResult(argv, stdout.String(), stderr.String(), err), nil
 	}
 	return formatSkillCommandResult(argv, stdout.String(), stderr.String(), nil), nil
+}
+
+// isEarlyReturnCommand 判断命令是否需要早返回（先输出后长时间阻塞）。
+// 目前仅 cyeam login：打印登录链接+验证码后会轮询等待用户授权，
+// 阻塞读取会导致链接迟迟返不回调用方，验证码已过期。
+func isEarlyReturnCommand(argv []string) bool {
+	for i, a := range argv {
+		if a == "login" && i > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// runSkillCommandEarlyReturn 启动命令并在拿到首屏 stdout 后尽快返回，
+// 进程在后台继续运行（如 login 的轮询取 token），由独立超时兜底。
+func runSkillCommandEarlyReturn(ctx context.Context, skill einoskill.Skill, bin string, argv []string, cfg ExecConfig) string {
+	// 后台进程脱离调用方 ctx，用自身超时（不超过 MaxExecTimeout），避免被调用方取消而中断轮询。
+	bgTimeout := cfg.Timeout
+	if bgTimeout <= 0 || bgTimeout > MaxExecTimeout {
+		bgTimeout = MaxExecTimeout
+	}
+	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bgTimeout)
+
+	cmd := exec.CommandContext(runCtx, bin, argv[1:]...)
+	cmd.Dir = skill.BaseDirectory
+
+	stdout := &syncBuffer{limit: cfg.MaxOutputBytes}
+	stderr := &syncBuffer{limit: cfg.MaxOutputBytes / 4}
+	if stderr.limit <= 0 {
+		stderr.limit = 1024
+	}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return formatSkillCommandResult(argv, "", "", fmt.Errorf("start skill command: %w", err))
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		cancel()
+		close(done)
+	}()
+
+	// 等待：命令很快结束（取已有输出），或首屏输出出现后给 1.5s 宽限期收集完整链接，再返回。
+	const grace = 1500 * time.Millisecond
+	deadline := time.NewTimer(8 * time.Second) // 最多等 8s 仍无输出则带提示返回
+	defer deadline.Stop()
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	var sawOutput bool
+	var graceTimer <-chan time.Time
+	for {
+		select {
+		case <-done:
+			return formatSkillCommandResult(argv, stdout.String(), stderr.String(), nil)
+		case <-graceTimer:
+			// 首屏输出已稳定，命令仍在后台运行（轮询中），返回当前输出
+			return earlyReturnResult(argv, stdout.String())
+		case <-deadline.C:
+			return earlyReturnResult(argv, stdout.String())
+		case <-ticker.C:
+			if !sawOutput && stdout.Len() > 0 {
+				sawOutput = true
+				t := time.NewTimer(grace)
+				graceTimer = t.C
+			}
+		}
+	}
+}
+
+func earlyReturnResult(argv []string, stdout string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Skill command %s started (running in background)\n", strings.Join(argv, " "))
+	if stdout != "" {
+		b.WriteString("\nstdout:\n")
+		b.WriteString(stdout)
+		if !strings.HasSuffix(stdout, "\n") {
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString("\n请按上面的链接和验证码完成授权，授权后稍等片刻即可生效。\n")
+	return b.String()
 }
 
 func defaultSkillToolContent(skill einoskill.Skill) string {
@@ -379,4 +474,41 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 	}
 	_, _ = b.Buffer.Write(p)
 	return len(p), nil
+}
+
+// syncBuffer 是并发安全的 limitedBuffer，供早返回模式下后台进程写、主流程读。
+type syncBuffer struct {
+	mu    sync.Mutex
+	buf   bytes.Buffer
+	limit int64
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.limit <= 0 {
+		return len(p), nil
+	}
+	remaining := int(b.limit) - b.buf.Len()
+	if remaining <= 0 {
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		_, _ = b.buf.Write(p[:remaining])
+		return len(p), nil
+	}
+	_, _ = b.buf.Write(p)
+	return len(p), nil
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func (b *syncBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
 }
