@@ -102,6 +102,7 @@ RUN mkdir -p /root/.config && if [ -f /opt/xiaoli/skills/skills-lock.json ]; the
 COPY AGENT.md /opt/xiaoli/AGENT.md
 COPY settings.json /opt/xiaoli/settings.json
 COPY agents/ /opt/xiaoli/agents/
+COPY .cyeam/ /root/.cyeam/
 
 WORKDIR /data
 

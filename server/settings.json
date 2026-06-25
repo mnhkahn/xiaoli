@@ -64,6 +64,12 @@
       "name": "AMap",
       "url": "https://mcp.amap.com/mcp",
       "api_key_env": "AMAP_API_KEY"
+    },
+    {
+      "name": "github",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "auth_type": "bearer",
+      "api_key_env": "GITHUB_PERSONAL_ACCESS_TOKEN"
     }
   ],
   "tools": {

@@ -83,6 +83,17 @@ type Config struct {
 	DataDir                 string
 	Timezone                string
 	Now                     func() time.Time
+
+	// Email configuration
+	EmailSMTPHost     string
+	EmailSMTPPort     int
+	EmailIMAPHost     string
+	EmailIMAPPort     int
+	EmailUsername     string
+	EmailPassword     string
+	EmailUseSSL       bool
+	EmailFromName     string
+	EmailFromAddress  string
 }
 
 type LLMModelConfig struct {
@@ -197,6 +208,17 @@ func LoadConfig() Config {
 		MemoryTTL:               time.Duration(envInt("XIAOLI_MEMORY_TTL_HOURS", 24)) * time.Hour,
 		DataDir:                 env("XIAOLI_DATA_DIR", "/data"),
 		Timezone:                env("TZ", "Asia/Shanghai"),
+
+		// Email configuration (Gmail defaults)
+		EmailSMTPHost:     env("EMAIL_SMTP_HOST", "smtp.gmail.com"),
+		EmailSMTPPort:     envInt("EMAIL_SMTP_PORT", 465),
+		EmailIMAPHost:     env("EMAIL_IMAP_HOST", "imap.gmail.com"),
+		EmailIMAPPort:     envInt("EMAIL_IMAP_PORT", 993),
+		EmailUsername:     env("EMAIL_USERNAME", ""),
+		EmailPassword:     env("EMAIL_PASSWORD", ""),
+		EmailUseSSL:       envBool("EMAIL_USE_SSL", true),
+		EmailFromName:     env("EMAIL_FROM_NAME", ""),
+		EmailFromAddress:  env("EMAIL_FROM_ADDRESS", ""),
 	}
 	return cfg
 }
@@ -267,6 +289,11 @@ type settingsMCPServer struct {
 	ClientSecretEnv string `json:"client_secret_env,omitempty"`
 	RefreshTokenEnv string `json:"refresh_token_env,omitempty"`
 	Scope           string `json:"scope,omitempty"`
+
+	// stdio 模式（如 docker run）
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
 }
 
 func loadSettings(paths []string) (settingsConfig, string) {
