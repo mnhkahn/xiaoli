@@ -701,7 +701,9 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 			}
 		}
 		formatter := agentlark.NewReplyFormatter(lc, event.Message.MessageID, text)
-		if err := formatter.Send(ctx, reply); err != nil {
+		if err := sendReply("lark", func(sendCtx context.Context) error {
+			return formatter.Send(sendCtx, reply)
+		}); err != nil {
 			return err
 		}
 		logger.Infof("[lark] builtin command reply sent event_id=%s message=%s chat=%s", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID)
@@ -763,13 +765,17 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 					}
 				}
 			}
-			if err := lc.ReplyCard(ctx, event.Message.MessageID, cardBody); err != nil {
+			if err := sendReply("lark", func(sendCtx context.Context) error {
+				return lc.ReplyCard(sendCtx, event.Message.MessageID, cardBody)
+			}); err != nil {
 				logger.Infof("[lark] ask card send failed: %v", err)
 			}
 		}
 	}
 
-	if err := formatter.Send(ctx, reply.Text); err != nil {
+	if err := sendReply("lark", func(sendCtx context.Context) error {
+		return formatter.Send(sendCtx, reply.Text)
+	}); err != nil {
 		return err
 	}
 	logger.Infof("[lark] message reply sent event_id=%s message=%s chat=%s", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID)
@@ -914,6 +920,23 @@ func (s *AdminServer) larkEventSeen(eventID string) bool {
 	return false
 }
 
+// replySendTimeout 单次"发送回复给用户"的独立超时。发送回复只是一次 IM HTTP 调用，
+// 不应共享主链路（LLM 推理）那条长 ctx——否则 LLM 把预算耗光后，已算出的回复会因 ctx 失效而发不出去。
+const replySendTimeout = 10 * time.Second
+
+// sendReply 用独立的、未被上游取消的 ctx 发送回复，保证主链路即便超时，已算出的回复仍能送达。
+// 不做重试：飞书/微信的发送接口非幂等（微信每次发送还会生成新 ClientID），首次已送达但读响应超时的场景下重试会导致重复回复；
+// 投递可靠性交由飞书事件未收到 ack 时的自动重发兜底。label 仅用于日志定位。
+func sendReply(label string, send func(ctx context.Context) error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), replySendTimeout)
+	defer cancel()
+	if err := send(ctx); err != nil {
+		logger.Infof("[%s] reply send failed: %v", label, err)
+		return err
+	}
+	return nil
+}
+
 func (s *AdminServer) newLarkClient() *agentlark.Client {
 	return agentlark.NewClient(agentlark.ClientConfig{
 		AppID:      s.cfg.LarkAppID,
@@ -1042,7 +1065,9 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 
 	if reply, ok := s.handleBuiltinCommand(ctx, ChannelWechatText, msg.FromUserID, text); ok {
 		formatter := agentwechat.NewReplyFormatter(c, msg.ToUserID, msg.FromUserID, msg.ContextToken)
-		if err := formatter.Send(ctx, reply); err != nil {
+		if err := sendReply("wechat", func(sendCtx context.Context) error {
+			return formatter.Send(sendCtx, reply)
+		}); err != nil {
 			logger.Infof("[wechat] builtin command send error: %v", err)
 		} else {
 			logger.Infof("[wechat] builtin command send ok to=%s command=%q", msg.FromUserID, text)
@@ -1074,14 +1099,18 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 
 	if askData := reply.AskData; askData != nil {
 		textReply := agentslash.AskText(askData.Question, askData.Options)
-		if err := formatter.Send(ctx, textReply); err != nil {
+		if err := sendReply("wechat", func(sendCtx context.Context) error {
+			return formatter.Send(sendCtx, textReply)
+		}); err != nil {
 			logger.Infof("[wechat] ask text send error: %v", err)
 		} else {
 			logger.Infof("[wechat] ask text sent to=%s", msg.FromUserID)
 		}
 	}
 
-	if err := formatter.Send(ctx, reply.Text); err != nil {
+	if err := sendReply("wechat", func(sendCtx context.Context) error {
+		return formatter.Send(sendCtx, reply.Text)
+	}); err != nil {
 		logger.Infof("[wechat] send error: %v", err)
 	} else {
 		logger.Infof("[wechat] send ok to=%s text=%q", msg.FromUserID, reply.Text)
