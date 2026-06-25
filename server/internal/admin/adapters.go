@@ -1212,9 +1212,16 @@ func (s *AdminServer) buildCronJobs() []agentworkflow.CronJob {
 		logger.Errorf("[reminder] load %s failed: %v", s.reminderPath(), err)
 		return jobs
 	}
+	now := s.cfg.now()
 	for _, r := range reminders {
 		if !r.Enabled || r.IsOnceFired() {
 			continue
+		}
+		// 检测过期的一次性提醒（超过时间但没执行成功）
+		if r.Trigger.Type == agentworkflow.ReminderOnce && r.Trigger.At != "" {
+			if at, err := time.Parse(time.RFC3339, r.Trigger.At); err == nil && now.After(at) {
+				logger.Infof("[reminder] %q (%s) 过期 %v，准备重试执行", r.ID, r.Text, now.Sub(at).Round(time.Second))
+			}
 		}
 		def, ok := r.ToDefinition()
 		if !ok {
