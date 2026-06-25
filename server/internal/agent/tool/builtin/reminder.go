@@ -114,7 +114,7 @@ func (t *ReminderAddTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 		r.Trigger = agentworkflow.ReminderTrigger{
 			Type:     agentworkflow.ReminderOnce,
 			At:       parsed.Format(time.RFC3339),
-			Timezone: t.timezone,
+			Timezone: loc.String(),
 		}
 		whenLabel = parsed.Format("2006-01-02 15:04")
 	case agentworkflow.ReminderDaily:
@@ -126,7 +126,7 @@ func (t *ReminderAddTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 			Type:     agentworkflow.ReminderDaily,
 			AtHour:   &hour,
 			AtMinute: &minute,
-			Timezone: t.timezone,
+			Timezone: loc.String(),
 		}
 		whenLabel = fmt.Sprintf("每天 %02d:%02d", hour, minute)
 	default:

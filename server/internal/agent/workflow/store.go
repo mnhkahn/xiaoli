@@ -167,6 +167,9 @@ func (s *ReminderStore) saveLocked(reminders []Reminder) error {
 // ToDefinition 把 Reminder 转成调度用的 Definition
 func (r Reminder) ToDefinition() (Definition, bool) {
 	spec := CronSpec{Timezone: r.Trigger.Timezone}
+	if spec.Timezone == "" {
+		spec.Timezone = "Asia/Shanghai"
+	}
 	switch r.Trigger.Type {
 	case ReminderOnce:
 		at, err := time.Parse(time.RFC3339, r.Trigger.At)
