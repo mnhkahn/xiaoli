@@ -1093,6 +1093,10 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 		opts.ReminderStore = a.cfg.ReminderStore
 		opts.Timezone = a.cfg.Timezone
 	}
+	if a.cfg.LogDir != "" {
+		filter |= agentbuiltin.ToolLog
+		opts.LogDir = a.cfg.LogDir
+	}
 	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, opts))
 	if a.taskTool != nil {
 		einoTools = append(einoTools, a.WrapTool(a.taskTool, "builtin"))

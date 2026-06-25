@@ -16,6 +16,7 @@ const (
 	ToolMemoryList
 	ToolBash
 	ToolReminder
+	ToolLog
 )
 
 type ToolOptions struct {
@@ -24,6 +25,7 @@ type ToolOptions struct {
 	ShellConfig    *ShellConfig
 	ReminderStore  *agentworkflow.ReminderStore
 	Timezone       string
+	LogDir         string
 }
 
 type subAgentParentKeyType struct{}

@@ -96,6 +96,7 @@ func (t *ReminderAddTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 	// 绑定发起提醒的语音设备：仅 ESP32 渠道的 deviceID 才是可播报的真实设备，
 	// 飞书/微信的 deviceID 是用户标识，匹配不到设备，绑定后会导致提醒永远无法触发。
 	channelName, _ := ctx.Value(SubAgentChannelKey).(string)
+	r.Channel = channelName // 记录创建时的来源 channel
 	deviceID, _ := ctx.Value(SubAgentDeviceIDKey).(string)
 	if channelName == "esp32" && deviceID != "" {
 		r.Metadata = map[string]any{"device_ids": deviceID}

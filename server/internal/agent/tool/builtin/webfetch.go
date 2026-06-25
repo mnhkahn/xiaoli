@@ -95,6 +95,9 @@ func NewFilteredTools(filters ToolFilter, opts ToolOptions) []tool.BaseTool {
 			NewReminderDeleteTool(opts.ReminderStore),
 		)
 	}
+	if filters&ToolLog != 0 && opts.LogDir != "" {
+		tools = append(tools, NewLogSearchTool(opts.LogDir))
+	}
 	return tools
 }
 

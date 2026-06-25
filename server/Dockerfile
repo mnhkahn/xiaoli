@@ -42,6 +42,10 @@ RUN set -eux; \
     for skill in $XIAOLI_SKILLS; do \
         npx -y skills add "$skill" -- -y -g; \
     done; \
+    # 只保留飞书文档相关的 4 个 Skill，其他全删
+    for skill in lark-im lark-mail lark-calendar lark-task lark-approval lark-contact lark-vc lark-meeting-summary lark-standup-report lark-minutes lark-note lark-okr lark-slides lark-sheets lark-event lark-apps lark-attendance lark-shared lark-workflow-meeting-summary lark-workflow-standup-report lark-skill-maker; do \
+        npx skills remove "$skill" 2>/dev/null || true; \
+    done; \
     find /root /home -name SKILL.md -not -path '/skills/*' -print 2>/dev/null | while read -r skill_file; do \
         skill_dir="$(dirname "$skill_file")"; \
         skill_name="$(basename "$skill_dir")"; \

@@ -81,6 +81,7 @@ type Config struct {
 	RedisKeyPrefix          string
 	MemoryTTL               time.Duration
 	DataDir                 string
+	LogDir                  string
 	Timezone                string
 	Now                     func() time.Time
 
@@ -220,6 +221,7 @@ func LoadConfig() Config {
 		EmailFromName:     env("EMAIL_FROM_NAME", ""),
 		EmailFromAddress:  env("EMAIL_FROM_ADDRESS", ""),
 	}
+	cfg.LogDir = filepath.Join(cfg.DataDir, "logs")
 	return cfg
 }
 

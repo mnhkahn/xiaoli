@@ -61,6 +61,7 @@ type Config struct {
 	BashConfig              BashConfig
 	AgentFileRoots          []string
 	ReminderStore           *agentworkflow.ReminderStore
+	LogDir                  string
 	Timezone                string
 }
 

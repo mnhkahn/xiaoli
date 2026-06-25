@@ -96,6 +96,7 @@ func newEinoAgent(cfg Config, reminderStore *agentworkflow.ReminderStore) *EinoA
 			MaxOutputBytes: cfg.BashMaxOutputBytes,
 		},
 		ReminderStore: reminderStore,
+		LogDir:        cfg.LogDir,
 		Timezone:      cfg.Timezone,
 	})
 }
@@ -1282,7 +1283,7 @@ func (s *AdminServer) runReminderAction(ctx context.Context, def agentworkflow.D
 	}
 	switch action {
 	case "speak":
-		return s.runSpeakAction(ctx, def, scheduledAt)
+		return s.sendReminderByChannel(ctx, def, scheduledAt)
 	case "agent":
 		return s.runStudyMonitorOnce(ctx, def, scheduledAt)
 	case "notify":
@@ -1293,7 +1294,7 @@ func (s *AdminServer) runReminderAction(ctx context.Context, def agentworkflow.D
 	}
 }
 
-// runSpeakAction 找在线设备播报 metadata.text
+// runSpeakAction 在 ESP32 设备上播报语音，设备不在线就返回错误等待重试
 func (s *AdminServer) runSpeakAction(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
 	text := metadataString(def.Metadata, "text", "")
 	if text == "" {
@@ -1310,7 +1311,7 @@ func (s *AdminServer) runSpeakAction(ctx context.Context, def agentworkflow.Defi
 	deviceIDs := metadataCSV(def.Metadata, "device_ids", nil)
 	deviceID := pickOnlineDevice(devices, deviceIDs)
 	if deviceID == "" {
-		// 返回错误，让一次性提醒不被标记完成，下次 tick 重试直到有设备在线
+		// 设备不在线，返回错误让下次 tick 重试
 		logger.Infof("[reminder] %q speak deferred at %s: no eligible device", def.ID, scheduledAt.Format(time.RFC3339))
 		return fmt.Errorf("no eligible device online")
 	}
@@ -1319,6 +1320,69 @@ func (s *AdminServer) runSpeakAction(ctx context.Context, def agentworkflow.Defi
 	}
 	logger.Infof("[reminder] %q spoke on %s at %s: %q", def.ID, deviceID, scheduledAt.Format(time.RFC3339), text)
 	return nil
+}
+
+// sendReminderByChannel 根据 channel 发送提醒到对应的渠道
+func (s *AdminServer) sendReminderByChannel(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
+	channel := def.Channel
+	if channel == "" {
+		// 旧数据没有 channel，先尝试 ESP32，不在线就 fallback 到飞书
+		channel = "esp32"
+	}
+
+	switch channel {
+	case "esp32":
+		if err := s.runSpeakAction(ctx, def, scheduledAt); err == nil {
+			return nil
+		}
+		// ESP32 不在线，fallback 到飞书（如果有配置）
+		if s.cfg.LarkWebhookURL != "" {
+			text := metadataString(def.Metadata, "text", def.Name)
+			if err := s.sendLarkStudyMessage(ctx, studyLarkPayloadInput{
+				AnalysisText: text,
+				CheckedAt:    scheduledAt,
+			}); err == nil {
+				logger.Infof("[reminder] %q fallback to lark webhook: %q", def.ID, text)
+				return nil
+			}
+		}
+		// 都失败了，返回错误让下次重试
+		return fmt.Errorf("ESP32 offline and lark webhook failed")
+
+	case "lark":
+		// 飞书创建的提醒，优先走飞书消息
+		if s.cfg.LarkWebhookURL != "" {
+			text := metadataString(def.Metadata, "text", def.Name)
+			if err := s.sendLarkStudyMessage(ctx, studyLarkPayloadInput{
+				AnalysisText: text,
+				CheckedAt:    scheduledAt,
+			}); err == nil {
+				logger.Infof("[reminder] %q sent via lark webhook: %q", def.ID, text)
+				return nil
+			}
+		}
+		return fmt.Errorf("lark webhook send failed")
+
+	case "wechat":
+		// TODO: 微信提醒需要保存 context token，暂未实现，先 fallback
+		fallthrough
+	default:
+		// 未知 channel，尝试所有可用渠道
+		if err := s.runSpeakAction(ctx, def, scheduledAt); err == nil {
+			return nil
+		}
+		if s.cfg.LarkWebhookURL != "" {
+			text := metadataString(def.Metadata, "text", def.Name)
+			if err := s.sendLarkStudyMessage(ctx, studyLarkPayloadInput{
+				AnalysisText: text,
+				CheckedAt:    scheduledAt,
+			}); err == nil {
+				logger.Infof("[reminder] %q fallback to lark webhook: %q", def.ID, text)
+				return nil
+			}
+		}
+		return fmt.Errorf("no channel available for reminder")
+	}
 }
 
 // runNotifyAction 发送飞书通知（webhook）

@@ -38,6 +38,7 @@ type Reminder struct {
 	Action    string          `json:"action"` // speak | agent | notify
 	Trigger   ReminderTrigger `json:"trigger"`
 	Text      string          `json:"text,omitempty"`
+	Channel   string          `json:"channel,omitempty"`  // 创建时的来源 channel
 	Metadata  map[string]any  `json:"metadata,omitempty"`
 	CreatedAt string          `json:"created_at,omitempty"`
 	FiredAt   string          `json:"fired_at,omitempty"` // once 执行后写入，非空表示已触发
@@ -207,6 +208,7 @@ func (r Reminder) ToDefinition() (Definition, bool) {
 		Name:    r.Name,
 		Enabled: r.Enabled,
 		Action:  r.Action,
+		Channel: r.Channel,
 		Trigger: Trigger{Kind: TriggerCron, Cron: &spec},
 		Metadata: metadata,
 	}, true
