@@ -29,11 +29,11 @@ RUN curl -fsSL -o /tmp/ort.tgz \
     && tar -xzf /tmp/ort.tgz -C /opt/onnxruntime --strip-components=1 \
     && rm /tmp/ort.tgz
 
-FROM golang:1.25-bookworm AS skill-build
+FROM node:22-bookworm-slim AS skill-build
 
 ARG XIAOLI_SKILLS="mnhkahn/cyeam-cli https://open.feishu.cn"
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git tar nodejs npm \
+    && apt-get install -y --no-install-recommends ca-certificates curl git tar golang-go \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /skill-src
