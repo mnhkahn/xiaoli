@@ -29,11 +29,13 @@ RUN curl -fsSL -o /tmp/ort.tgz \
     && tar -xzf /tmp/ort.tgz -C /opt/onnxruntime --strip-components=1 \
     && rm /tmp/ort.tgz
 
-FROM node:22-bookworm-slim AS skill-build
+FROM golang:1.25-bookworm AS skill-build
 
 ARG XIAOLI_SKILLS="mnhkahn/cyeam-cli https://open.feishu.cn"
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git tar golang-go \
+    && apt-get install -y --no-install-recommends ca-certificates curl git tar \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /skill-src
@@ -91,8 +93,8 @@ RUN ldconfig
 COPY --from=go-build /out/xiaoli-admin /usr/local/bin/xiaoli-admin
 COPY --from=skill-build /skill-bin/ /usr/local/bin/
 COPY --from=skill-build /skills /opt/xiaoli/skills
-COPY --from=skill-build /usr/local/bin/node /usr/local/bin/node
-COPY --from=skill-build /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=skill-build /usr/bin/node /usr/local/bin/node
+COPY --from=skill-build /usr/lib/node_modules /usr/local/lib/node_modules
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 RUN mkdir -p /root/.config && if [ -f /opt/xiaoli/skills/skills-lock.json ]; then cp /opt/xiaoli/skills/skills-lock.json /root/.config/skills-lock.json; fi
