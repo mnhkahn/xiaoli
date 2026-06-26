@@ -1332,57 +1332,64 @@ func (s *AdminServer) sendReminderByChannel(ctx context.Context, def agentworkfl
 
 	switch channel {
 	case "esp32":
-		if err := s.runSpeakAction(ctx, def, scheduledAt); err == nil {
-			return nil
-		}
-		// ESP32 不在线，fallback 到飞书（如果有配置）
-		if s.cfg.LarkWebhookURL != "" {
-			text := metadataString(def.Metadata, "text", def.Name)
-			if err := s.sendLarkStudyMessage(ctx, studyLarkPayloadInput{
-				AnalysisText: text,
-				CheckedAt:    scheduledAt,
-			}); err == nil {
-				logger.Infof("[reminder] %q fallback to lark webhook: %q", def.ID, text)
-				return nil
-			}
-		}
-		// 都失败了，返回错误让下次重试
-		return fmt.Errorf("ESP32 offline and lark webhook failed")
-
+		return s.sendReminderToESP32(ctx, def, scheduledAt)
 	case "lark":
-		// 飞书创建的提醒，优先走飞书消息
-		if s.cfg.LarkWebhookURL != "" {
-			text := metadataString(def.Metadata, "text", def.Name)
-			if err := s.sendLarkStudyMessage(ctx, studyLarkPayloadInput{
-				AnalysisText: text,
-				CheckedAt:    scheduledAt,
-			}); err == nil {
-				logger.Infof("[reminder] %q sent via lark webhook: %q", def.ID, text)
-				return nil
-			}
-		}
-		return fmt.Errorf("lark webhook send failed")
-
+		return s.sendReminderToLark(ctx, def, scheduledAt)
 	case "wechat":
-		// TODO: 微信提醒需要保存 context token，暂未实现，先 fallback
-		fallthrough
+		// TODO: 微信提醒需要保存 context token，暂未实现
+		return s.sendReminderToWechat(ctx, def, scheduledAt)
 	default:
-		// 未知 channel，尝试所有可用渠道
-		if err := s.runSpeakAction(ctx, def, scheduledAt); err == nil {
+		// 未知 channel，尝试 ESP32，不在线就 fallback 到飞书
+		return s.sendReminderToESP32(ctx, def, scheduledAt)
+	}
+}
+
+// sendReminderToESP32 发送提醒到 ESP32 设备语音播报
+func (s *AdminServer) sendReminderToESP32(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
+	if err := s.runSpeakAction(ctx, def, scheduledAt); err == nil {
+		return nil
+	}
+	// ESP32 不在线，fallback 到飞书（如果有配置）
+	if s.cfg.LarkAppID != "" && s.cfg.LarkAppToken != "" && def.SenderID != "" {
+		if err := s.sendReminderLarkMessage(ctx, def); err == nil {
+			logger.Infof("[reminder] %q fallback to lark message: %q", def.ID, def.Name)
 			return nil
 		}
-		if s.cfg.LarkWebhookURL != "" {
-			text := metadataString(def.Metadata, "text", def.Name)
-			if err := s.sendLarkStudyMessage(ctx, studyLarkPayloadInput{
-				AnalysisText: text,
-				CheckedAt:    scheduledAt,
-			}); err == nil {
-				logger.Infof("[reminder] %q fallback to lark webhook: %q", def.ID, text)
-				return nil
-			}
-		}
-		return fmt.Errorf("no channel available for reminder")
 	}
+	// 都失败了，返回错误让下次重试
+	return fmt.Errorf("ESP32 offline and lark message failed")
+}
+
+// sendReminderToLark 发送提醒到飞书，使用机器人 API 给用户发消息
+func (s *AdminServer) sendReminderToLark(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
+	if def.SenderID == "" {
+		return fmt.Errorf("lark reminder missing sender_id")
+	}
+	if s.cfg.LarkAppID == "" || s.cfg.LarkAppToken == "" {
+		return fmt.Errorf("lark app not configured")
+	}
+	if err := s.sendReminderLarkMessage(ctx, def); err == nil {
+		logger.Infof("[reminder] %q sent via lark message: %q", def.ID, def.Name)
+		return nil
+	}
+	return fmt.Errorf("lark message send failed")
+}
+
+// sendReminderToWechat 发送提醒到微信（暂未实现）
+func (s *AdminServer) sendReminderToWechat(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
+	// TODO: 微信提醒需要保存 context token，暂未实现
+	// fallback 到 ESP32，如果也失败返回错误
+	if err := s.runSpeakAction(ctx, def, scheduledAt); err == nil {
+		return nil
+	}
+	return fmt.Errorf("wechat reminder not implemented and ESP32 offline")
+}
+
+// sendReminderLarkMessage 使用飞书机器人 API 发送提醒文本
+func (s *AdminServer) sendReminderLarkMessage(ctx context.Context, def agentworkflow.Definition) error {
+	cli := s.newLarkClient()
+	text := metadataString(def.Metadata, "text", def.Name)
+	return cli.CreateTextMessage(ctx, def.SenderID, "🔔 提醒："+text)
 }
 
 // runNotifyAction 发送飞书通知（webhook）

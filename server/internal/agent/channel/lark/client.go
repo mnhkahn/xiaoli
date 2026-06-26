@@ -106,6 +106,55 @@ func (c *Client) reply(ctx context.Context, messageID string, msgType string, co
 	return nil
 }
 
+// CreateTextMessage 主动给用户发文本消息，receiveIDType 默认为 open_id
+func (c *Client) CreateTextMessage(ctx context.Context, receiveID string, text string) error {
+	return c.createMessage(ctx, receiveID, "text", map[string]string{"text": text})
+}
+
+// createMessage 主动发消息通用接口
+func (c *Client) createMessage(ctx context.Context, receiveID string, msgType string, content any) error {
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return err
+	}
+	contentJSON, err := json.Marshal(content)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]string{
+		"receive_id": receiveID,
+		"msg_type":   msgType,
+		"content":    string(contentJSON),
+	})
+	if err != nil {
+		return err
+	}
+	endpoint := "https://open.larksuite.com/open-apis/im/v1/messages?receive_id_type=open_id"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+		return fmt.Errorf("lark create message failed: %d %s", resp.StatusCode, string(raw))
+	}
+	var payload map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return err
+	}
+	if code, _ := int64Value(payload["code"]); code != 0 {
+		return fmt.Errorf("lark create message failed: %v", payload)
+	}
+	return nil
+}
+
 func markdownToPostContent(title string, markdown string) map[string]any {
 	if title == "" {
 		title = "消息"

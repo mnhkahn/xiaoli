@@ -38,10 +38,11 @@ type Reminder struct {
 	Action    string          `json:"action"` // speak | agent | notify
 	Trigger   ReminderTrigger `json:"trigger"`
 	Text      string          `json:"text,omitempty"`
-	Channel   string          `json:"channel,omitempty"`  // 创建时的来源 channel
+	Channel   string          `json:"channel,omitempty"`   // 创建时的来源 channel
+	SenderID  string          `json:"sender_id,omitempty"` // 发送者 ID：飞书 open_id / ESP32 device_id
 	Metadata  map[string]any  `json:"metadata,omitempty"`
 	CreatedAt string          `json:"created_at,omitempty"`
-	FiredAt   string          `json:"fired_at,omitempty"` // once 执行后写入，非空表示已触发
+	FiredAt   string          `json:"fired_at,omitempty"`  // once 执行后写入，非空表示已触发
 }
 
 // ReminderStore 读写 reminders.json（JSON 数组），并发安全 + 原子写
@@ -204,12 +205,13 @@ func (r Reminder) ToDefinition() (Definition, bool) {
 	}
 
 	return Definition{
-		ID:      r.ID,
-		Name:    r.Name,
-		Enabled: r.Enabled,
-		Action:  r.Action,
-		Channel: r.Channel,
-		Trigger: Trigger{Kind: TriggerCron, Cron: &spec},
+		ID:       r.ID,
+		Name:     r.Name,
+		Enabled:  r.Enabled,
+		Action:   r.Action,
+		Channel:  r.Channel,
+		SenderID: r.SenderID,
+		Trigger:  Trigger{Kind: TriggerCron, Cron: &spec},
 		Metadata: metadata,
 	}, true
 }

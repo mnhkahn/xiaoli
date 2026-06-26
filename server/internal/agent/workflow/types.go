@@ -42,6 +42,7 @@ type Definition struct {
 	Enabled     bool
 	Action      string // speak | agent | notify（空则按 ID 走兼容逻辑）
 	Channel     string // 来源 channel，用于发送时优先选择
+	SenderID    string // 发送者 ID：飞书 open_id / ESP32 device_id
 	Trigger     Trigger
 	Agent       AgentSpec
 	Metadata    map[string]any

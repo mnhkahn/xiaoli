@@ -1,13 +1,16 @@
 package admin
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -199,7 +202,7 @@ func parseBuiltinCommand(text string) (builtinCommand, bool) {
 		return builtinCommand{}, false
 	}
 	switch cmd.Name {
-	case "skills", "model", "channel", "help":
+	case "skills", "model", "channel", "help", "log":
 		return cmd, true
 	default:
 		return builtinCommand{}, false
@@ -634,7 +637,21 @@ func (d adminSlashDeps) ReminderList(_ context.Context) string {
 	return b.String()
 }
 
-func (d adminSlashDeps) ReminderAdd(_ context.Context, at, text string) string {
+// normalizeReminderChannel 将 slash channel 映射为提醒使用的渠道名
+func normalizeReminderChannel(slashChannel string) string {
+	switch slashChannel {
+	case "lark_text":
+		return "lark"
+	case "wechat_text":
+		return "wechat"
+	case "device_voice":
+		return "esp32"
+	default:
+		return slashChannel
+	}
+}
+
+func (d adminSlashDeps) ReminderAdd(ctx context.Context, at, text string) string {
 	parsed, err := parseReminderTime(at, d.s.cfg.Timezone)
 	if err != nil {
 		return "时间格式不对：" + err.Error() + "\n支持 RFC3339 或 \"2006-01-02 15:04\"。"
@@ -643,6 +660,7 @@ func (d adminSlashDeps) ReminderAdd(_ context.Context, at, text string) string {
 	if parsed.Before(now) {
 		return "提醒时间已过，请用将来的时间。"
 	}
+	channel := normalizeReminderChannel(slash.ChannelNameFromContext(ctx))
 	r := agentworkflow.Reminder{
 		ID:      fmt.Sprintf("rmd_%d", now.UnixNano()),
 		Name:    text,
@@ -654,6 +672,11 @@ func (d adminSlashDeps) ReminderAdd(_ context.Context, at, text string) string {
 		},
 		Text:      text,
 		CreatedAt: now.Format(time.RFC3339),
+		Channel:   channel,
+		SenderID:  slash.DeviceIDFromContext(ctx),
+	}
+	if channel == "esp32" && r.SenderID != "" {
+		r.Metadata = map[string]any{"device_ids": r.SenderID}
 	}
 	if err := d.s.reminderStore().Add(r); err != nil {
 		return "保存提醒失败：" + err.Error()
@@ -1068,4 +1091,106 @@ func extractMCPText(value any) string {
 
 func assistantAudioSendDeadline(pacedStart time.Time, packetIndex int, frameDuration time.Duration) time.Time {
 	return agentesp32.AssistantAudioSendDeadline(pacedStart, packetIndex, frameDuration)
+}
+
+func (d adminSlashDeps) LogSearch(ctx context.Context, keyword string, maxLines int) string {
+	logDir := d.s.cfg.LogDir
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		return fmt.Sprintf("日志目录不存在：%s", logDir)
+	}
+
+	logFiles, err := filepath.Glob(filepath.Join(logDir, "*.log"))
+	if err != nil {
+		return fmt.Sprintf("查找日志文件失败：%v", err)
+	}
+	if len(logFiles) == 0 {
+		return fmt.Sprintf("日志目录 %s 中没有 .log 文件", logDir)
+	}
+
+	sort.Slice(logFiles, func(i, j int) bool {
+		fi, _ := os.Stat(logFiles[i])
+		fj, _ := os.Stat(logFiles[j])
+		return fi.ModTime().After(fj.ModTime())
+	})
+
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	startTime := time.Now().Add(-time.Hour)
+	var results []string
+	scannedCount := 0
+	matchedCount := 0
+
+	for _, logFile := range logFiles {
+		if len(results) >= maxLines {
+			break
+		}
+
+		file, err := os.Open(logFile)
+		if err != nil {
+			continue
+		}
+
+		scanner := bufio.NewScanner(file)
+		var lines []string
+		for scanner.Scan() {
+			lines = append(lines, scanner.Text())
+		}
+		file.Close()
+
+		for i := len(lines) - 1; i >= 0; i-- {
+			if len(results) >= maxLines {
+				break
+			}
+
+			line := lines[i]
+			scannedCount++
+
+			if logTime, ok := parseLogTime(line); ok {
+				if logTime.Before(startTime) {
+					continue
+				}
+			}
+
+			if keyword != "" && !strings.Contains(strings.ToLower(line), keyword) {
+				continue
+			}
+
+			matchedCount++
+			results = append(results, line)
+		}
+	}
+
+	if len(results) == 0 {
+		if keyword == "" {
+			return "没有找到日志"
+		}
+		return fmt.Sprintf("搜索关键词 %q 没有匹配的日志", keyword)
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("共扫描 %d 行，匹配 %d 行，显示最近 %d 行：\n", scannedCount, matchedCount, len(results)))
+	for i := len(results) - 1; i >= 0; i-- {
+		b.WriteString(results[i])
+		b.WriteByte('\n')
+	}
+
+	return b.String()
+}
+
+func parseLogTime(line string) (time.Time, bool) {
+	if len(line) < 24 {
+		return time.Time{}, false
+	}
+
+	parts := strings.SplitN(line, " ", 4)
+	if len(parts) < 4 {
+		return time.Time{}, false
+	}
+
+	timeStr := parts[1] + " " + parts[2]
+	t, err := time.ParseInLocation("2006/01/02 15:04:05", timeStr, time.Local)
+	if err != nil {
+		return time.Time{}, false
+	}
+
+	return t, true
 }

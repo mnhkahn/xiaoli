@@ -73,6 +73,7 @@ type Dependencies interface {
 	TaskStatusList(ctx context.Context) string
 	TaskStatusByID(ctx context.Context, id string) string
 	TaskStatusListGrouped(ctx context.Context) string
+	LogSearch(ctx context.Context, keyword string, maxLines int) string
 }
 
 type Handler struct {
@@ -138,6 +139,8 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 			return h.deps.TaskStatusListGrouped(ctx), true
 		}
 		return h.taskStatus(ctx, cmd.Args), true
+	case "log":
+		return h.deps.LogSearch(ctx, cmd.Args, 50), true
 	case "help":
 		return helpText(), true
 	default:
@@ -429,6 +432,7 @@ func helpText() string {
 	/sessions   - 列出所有会话
 	/session    - 查看会话上下文，/session <id>
 	/new        - 新建会话
+	/log        - 搜索服务器日志，/log <关键词>
 	/help       - 显示此帮助信息`
 }
 

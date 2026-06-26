@@ -56,21 +56,14 @@ RUN set -eux; \
     count=$(find /skills -name SKILL.md | wc -l); \
     echo "skills installed: $count"
 
-ARG CYEAM_CLI_VERSION=latest
-
+# 从源码编译 cyeam，保证最新版本
 RUN set -eux; \
     mkdir -p /skill-bin; \
+    git clone https://github.com/mnhkahn/cyeam-cli.git /tmp/cyeam-cli; \
+    cd /tmp/cyeam-cli; \
+    go build -o /skill-bin/cyeam ./cmd/cyeam; \
+    rm -rf /tmp/cyeam-cli; \
     find /skills -path '*/bin/*' -type f -perm /111 -exec cp -a {} /skill-bin/ \; ; \
-    if [ ! -x /skill-bin/cyeam ]; then \
-        if [ "${CYEAM_CLI_VERSION}" = "latest" ]; then \
-            url="https://github.com/mnhkahn/cyeam-cli/releases/latest/download/cyeam_Linux_x86_64.tar.gz"; \
-        else \
-            url="https://github.com/mnhkahn/cyeam-cli/releases/download/${CYEAM_CLI_VERSION}/cyeam_Linux_x86_64.tar.gz"; \
-        fi; \
-        curl -fsSL -o /tmp/cyeam.tgz "$url"; \
-        tar -xzf /tmp/cyeam.tgz -C /skill-bin cyeam; \
-        rm /tmp/cyeam.tgz; \
-    fi; \
     find /skill-bin -type f -exec chmod +x {} \;
 
 ARG LARK_CLI_VERSION=latest
@@ -114,6 +107,7 @@ ENV XIAOLI_ADMIN_HOST=0.0.0.0
 ENV XIAOLI_ADMIN_PORT=8080
 ENV XIAOLI_DIRECT_DEVICE_SERVER=true
 ENV XIAOLI_ONNXRUNTIME_PATH=/usr/local/lib/libonnxruntime.so
+ENV XIAOLI_REPO_URL=github.com/mnhkahn/xiaoli-esp32
 
 EXPOSE 8080
 

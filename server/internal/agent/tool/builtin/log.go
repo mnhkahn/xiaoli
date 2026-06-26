@@ -82,6 +82,8 @@ func (t *LogSearchTool) InvokableRun(ctx context.Context, argumentsInJSON string
 		if err != nil {
 			return "", fmt.Errorf("start_time 格式错误：%v，使用格式 2006-01-02 15:04", err)
 		}
+	} else {
+		startTime = time.Now().Add(-time.Hour)
 	}
 	if args.EndTime != "" {
 		endTime, err = time.ParseInLocation("2006-01-02 15:04", args.EndTime, time.Local)
