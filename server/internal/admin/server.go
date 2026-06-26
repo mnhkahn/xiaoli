@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	agentevent "xiaoli/server/internal/event"
 	"xiaoli/server/internal/agent/session"
 	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
@@ -91,10 +92,11 @@ func NewServer(cfg Config) *AdminServer {
 	}
 	client := &http.Client{Timeout: 125 * time.Second}
 	stream := newStreamHub()
+	eventBus := agentevent.NewBus()
 	audioStore := newAudioStore(cfg.now)
 	asr := newOpenAITranscriber(cfg)
 	reminderStore := agentworkflow.NewReminderStore(reminderPathForDir(cfg.DataDir))
-	agent := newEinoAgent(cfg, reminderStore)
+	agent := newEinoAgent(cfg, reminderStore, eventBus)
 	var memory memoryReader
 	if agent != nil && agent.MemoryReader() != nil {
 		memory = agent.MemoryReader()

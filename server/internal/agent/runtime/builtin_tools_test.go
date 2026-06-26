@@ -43,6 +43,7 @@ func TestToolsForChatIncludesTaskToolWhenSet(t *testing.T) {
 		func(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt *agentbuiltin.SubAgentRuntime, prompt string) (string, error) {
 			return "", nil
 		},
+		nil,
 	)
 	tools := agent.toolsForChat(context.Background(), "", "", "")
 	found := false

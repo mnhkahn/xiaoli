@@ -16,6 +16,7 @@ import (
 	"github.com/mnhkahn/gogogo/logger"
 
 	agentchannel "xiaoli/server/internal/agent/channel"
+	agentevent "xiaoli/server/internal/event"
 	agentmodel "xiaoli/server/internal/agent/model"
 	agentsession "xiaoli/server/internal/agent/session"
 	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
@@ -53,6 +54,14 @@ type Agent struct {
 	askData       map[string]*agentbuiltin.AskData
 	askDataMu     sync.Mutex
 	taskTool      *agentbuiltin.TaskTool
+	eventBus      agentevent.Publisher
+}
+
+// noopEventPublisher is a no-op event publisher for backward compatibility
+type noopEventPublisher struct{}
+
+func (n noopEventPublisher) Publish(ctx context.Context, e agentevent.Event) error {
+	return nil
 }
 
 func (a *Agent) MCPStatus() []MCPEndpointStatus {
@@ -73,7 +82,10 @@ func (a *Agent) TaskStatusByID(id string) *agentbuiltin.BackgroundJob {
 	return a.taskTool.QueryJob(id)
 }
 
-func NewAgent(cfg Config) *Agent {
+func NewAgent(cfg Config, eventBus agentevent.Publisher) *Agent {
+	if eventBus == nil {
+		eventBus = noopEventPublisher{}
+	}
 	selected := cfg.selectedLLMModelConfig()
 	if selected.APIKey == "" {
 		return nil
@@ -180,11 +192,13 @@ func NewAgent(cfg Config) *Agent {
 		agentRoots = agentbuiltin.FileAgentRoots()
 	}
 	agentRegistry.LoadAgentFiles(agentRoots)
+	a.eventBus = eventBus
 	taskTool := agentbuiltin.NewTaskTool(
 		agentRegistry.ListSpecs(),
 		func(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt *agentbuiltin.SubAgentRuntime, prompt string) (string, error) {
 			return a.SubAgent(ctx, spec, *rt, prompt)
 		},
+		eventBus,
 	)
 	taskTool.SetInjectFn(func(ctx context.Context, taskID, state, content string) error {
 		job := a.taskTool.QueryJob(taskID)

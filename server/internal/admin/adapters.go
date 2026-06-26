@@ -23,6 +23,7 @@ import (
 	"github.com/mnhkahn/gogogo/logger"
 
 	agentchannel "xiaoli/server/internal/agent/channel"
+	agentevent "xiaoli/server/internal/event"
 	agentlark "xiaoli/server/internal/agent/channel/lark"
 	agentwechat "xiaoli/server/internal/agent/channel/wechat"
 	agentmedia "xiaoli/server/internal/agent/media"
@@ -66,7 +67,7 @@ func newGoVisionClient(cfg Config) VisionAnalyzer {
 	})
 }
 
-func newEinoAgent(cfg Config, reminderStore *agentworkflow.ReminderStore) *EinoAgent {
+func newEinoAgent(cfg Config, reminderStore *agentworkflow.ReminderStore, eventBus agentevent.Publisher) *EinoAgent {
 	return agentruntime.NewAgent(agentruntime.Config{
 		LLMURL:                  cfg.GoLLMURL,
 		LLMAPIKey:               cfg.GoLLMAPIKey,
@@ -98,7 +99,7 @@ func newEinoAgent(cfg Config, reminderStore *agentworkflow.ReminderStore) *EinoA
 		ReminderStore: reminderStore,
 		LogDir:        cfg.LogDir,
 		Timezone:      cfg.Timezone,
-	})
+	}, eventBus)
 }
 
 func runtimeLLMModelConfigs(models map[string]LLMModelConfig) map[string]agentruntime.LLMModelConfig {

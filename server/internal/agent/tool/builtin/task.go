@@ -10,6 +10,8 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+
+	"xiaoli/server/internal/event"
 )
 
 type SubAgentSpec struct {
@@ -66,6 +68,7 @@ type TaskTool struct {
 	subAgents     map[string]SubAgentSpec
 	runSubAgent   func(ctx context.Context, spec SubAgentSpec, rt *SubAgentRuntime, prompt string) (string, error)
 	injectResult  func(ctx context.Context, taskID, state, content string) error
+	eventBus      event.Publisher
 	mu            sync.Mutex
 	jobs          map[string]*BackgroundJob
 	activeJobs    int32
@@ -74,14 +77,25 @@ type TaskTool struct {
 	resolveCfg    ResolveConfig
 }
 
-func NewTaskTool(subAgents map[string]SubAgentSpec, fn func(ctx context.Context, spec SubAgentSpec, rt *SubAgentRuntime, prompt string) (string, error)) *TaskTool {
+func NewTaskTool(subAgents map[string]SubAgentSpec, fn func(ctx context.Context, spec SubAgentSpec, rt *SubAgentRuntime, prompt string) (string, error), eventBus event.Publisher) *TaskTool {
+	if eventBus == nil {
+		eventBus = noopPublisher{}
+	}
 	return &TaskTool{
 		subAgents:     subAgents,
 		runSubAgent:   fn,
 		jobs:          make(map[string]*BackgroundJob),
 		maxConcurrent: 5,
 		resolveCfg:    ResolveConfig{AllowedRoots: nil, MaxFileBytes: 64 * 1024},
+		eventBus:      eventBus,
 	}
+}
+
+// noopPublisher is a no-op event publisher for backward compatibility
+type noopPublisher struct{}
+
+func (n noopPublisher) Publish(ctx context.Context, e event.Event) error {
+	return nil
 }
 
 func (t *TaskTool) SetInjectFn(fn func(ctx context.Context, taskID, state, content string) error) {
@@ -277,6 +291,9 @@ Fork         bool   `json:"fork,omitempty"`
 		t.jobs[effectiveTaskID] = job
 		t.mu.Unlock()
 
+		// Publish event when task starts
+		t.publishTodoUpdate(ctx, parentSession, effectiveTaskID)
+
 		bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		go func() {
 			startTime := time.Now()
@@ -294,6 +311,9 @@ Fork         bool   `json:"fork,omitempty"`
 					close(job.Done)
 					t.releaseSlot()
 					t.cleanupOldJobs()
+
+					// Publish event on panic
+					t.publishTodoUpdate(bgCtx, parentSession, effectiveTaskID)
 				}
 			}()
 
@@ -344,6 +364,9 @@ Fork         bool   `json:"fork,omitempty"`
 			close(job.Done)
 			t.releaseSlot()
 			t.cleanupOldJobs()
+
+			// Publish event when task completes
+			t.publishTodoUpdate(bgCtx, parentSession, effectiveTaskID)
 		}()
 
 		return taskResult("running", effectiveTaskID), nil
@@ -373,10 +396,59 @@ func (t *TaskTool) releaseSlot() {
 	t.mu.Unlock()
 }
 
+// publishTodoUpdate publishes a todo.updated event.
+// If parentSession is provided, only jobs for that session are included.
+// If changedTaskID is provided, it identifies which specific task triggered the update.
+func (t *TaskTool) publishTodoUpdate(ctx context.Context, parentSession string, changedTaskID string) {
+	jobs := t.ListJobs()
+
+	// Filter to only the affected session if known
+	var filteredJobs []JobSummary
+	if parentSession != "" {
+		for _, j := range jobs {
+			if j.ParentSession == parentSession {
+				filteredJobs = append(filteredJobs, j)
+			}
+		}
+	} else {
+		filteredJobs = jobs
+	}
+
+	todos := make([]event.Todo, 0, len(filteredJobs))
+	for _, j := range filteredJobs {
+		todos = append(todos, event.Todo{
+			ID:            j.ID,
+			Title:         j.Description,
+			Status:        j.Status,
+			SessionID:     j.ParentSession,
+			ParentSession: j.ParentSession,
+			StartedAt:     j.StartedAt.Unix(),
+			CompletedAt: func() int64 {
+				if j.FinishedAt != nil {
+					return j.FinishedAt.Unix()
+				}
+				return 0
+			}(),
+		})
+	}
+
+	_ = t.eventBus.Publish(ctx, event.Event{
+		Type:      event.TypeTodoUpdated,
+		SessionID: parentSession,
+		Data: event.TodoUpdatedData{
+			SessionID:     parentSession,
+			ChangedTaskID: changedTaskID,
+			Todos:         todos,
+		},
+	})
+}
+
 type JobSummary struct {
 	ID            string
 	Status        string
 	CreatedAt     time.Time
+	StartedAt     time.Time
+	FinishedAt    *time.Time
 	ParentSession string
 	AgentName     string
 	AgentType     string
@@ -394,6 +466,8 @@ func (t *TaskTool) ListJobs() []JobSummary {
 			ID:            snap.ID,
 			Status:        snap.Status,
 			CreatedAt:     snap.CreatedAt,
+			StartedAt:     snap.StartedAt,
+			FinishedAt:    snap.FinishedAt,
 			ParentSession: snap.ParentSession,
 			AgentName:     snap.AgentName,
 			AgentType:     snap.AgentType,
