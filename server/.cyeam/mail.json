@@ -2,43 +2,21 @@
   "accounts": [
     {
       "name": "cyeam",
-      "imap": {
-        "host": "imap.zoho.com",
-        "port": 993,
-        "username_env": "CYEAM_MAIL_USERNAME",
-        "password_env": "CYEAM_MAIL_PASSWORD"
-      },
-      "smtp": {
-        "host": "smtp.zoho.com",
-        "port": 465,
-        "username_env": "CYEAM_MAIL_USERNAME",
-        "password_env": "CYEAM_MAIL_PASSWORD",
-        "ssl": true
-      },
-      "from": {
-        "name": "小李",
-        "address_env": "CYEAM_MAIL_USERNAME"
-      }
+      "imap_host": "imap.zoho.com",
+      "imap_port": 993,
+      "username_env": "CYEAM_MAIL_USERNAME",
+      "password_env": "CYEAM_MAIL_PASSWORD",
+      "smtp_host": "smtp.zoho.com",
+      "smtp_port": 465
     },
     {
       "name": "gmail",
-      "imap": {
-        "host": "imap.gmail.com",
-        "port": 993,
-        "username_env": "GMAIL_USERNAME",
-        "password_env": "GMAIL_APP_PASSWORD"
-      },
-      "smtp": {
-        "host": "smtp.gmail.com",
-        "port": 465,
-        "username_env": "GMAIL_USERNAME",
-        "password_env": "GMAIL_APP_PASSWORD",
-        "ssl": true
-      },
-      "from": {
-        "name": "小李助手",
-        "address_env": "GMAIL_USERNAME"
-      }
+      "imap_host": "imap.gmail.com",
+      "imap_port": 993,
+      "username_env": "GMAIL_USERNAME",
+      "password_env": "GMAIL_APP_PASSWORD",
+      "smtp_host": "smtp.gmail.com",
+      "smtp_port": 465
     }
   ]
 }
