@@ -322,6 +322,7 @@ const (
 	ChannelDeviceVoice ConversationChannel = "device_voice"
 	ChannelLarkText    ConversationChannel = "lark_text"
 	ChannelWechatText  ConversationChannel = "wechat_text"
+	ChannelA2A         ConversationChannel = "a2a"
 )
 
 type ConversationTurn struct {

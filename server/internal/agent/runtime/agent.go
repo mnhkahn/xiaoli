@@ -1113,6 +1113,16 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 	if a.cfg.BuiltinWebFetchEnabled {
 		filter |= agentbuiltin.ToolWebFetch
 	}
+
+	// A2A channel: NO bash, NO ask_user_question, NO memory tools
+	isA2A := channelName == "a2a"
+	if isA2A {
+		filter = agentbuiltin.ToolWebSearch
+		if a.cfg.BuiltinWebFetchEnabled {
+			filter |= agentbuiltin.ToolWebFetch
+		}
+	}
+
 	if a.cfg.BashConfig.Enabled && channelName == string(agentchannel.TypeLark) {
 		filter |= agentbuiltin.ToolBash
 	}
@@ -1123,7 +1133,7 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 			MaxOutputBytes: a.cfg.BashConfig.MaxOutputBytes,
 		}
 	}
-	if a.memory != nil && channelName != "" && deviceID != "" {
+	if a.memory != nil && channelName != "" && deviceID != "" && !isA2A {
 		filter |= agentbuiltin.ToolMemorySave | agentbuiltin.ToolMemoryForget | agentbuiltin.ToolMemoryList
 		globalB := agentbuiltin.NewMemoryBackendScoped(a.memory.Client(), a.memory.Prefix(), channelName, deviceID, "global")
 		channelB := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
