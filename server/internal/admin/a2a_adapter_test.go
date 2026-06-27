@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	a2a "xiaoli/server/internal/a2a"
@@ -44,8 +45,8 @@ func TestA2APipelineRoutesProfileRequestToPromptProfile(t *testing.T) {
 	if agent.profileCalls != 1 || agent.subAgentCalls != 0 {
 		t.Fatalf("calls profile=%d subagent=%d, want profile only", agent.profileCalls, agent.subAgentCalls)
 	}
-	if agent.lastProfile.Name != "encouragement" || agent.lastProfile.ChannelName != "a2a" || agent.lastProfile.AllowTools {
-		t.Fatalf("lastProfile = %#v, want encouragement profile without tools", agent.lastProfile)
+	if agent.lastProfile.Name != "encouragement" || agent.lastProfile.ChannelName != "a2a" || !agent.lastProfile.AllowTools {
+		t.Fatalf("lastProfile = %#v, want encouragement profile with tools", agent.lastProfile)
 	}
 }
 
@@ -117,11 +118,11 @@ func TestA2APromptProfilesDefineEncouragementAndArchitect(t *testing.T) {
 	if !ok {
 		t.Fatal("encouragement profile missing")
 	}
-	if encouragement.AllowTools {
-		t.Fatal("encouragement profile should not allow tools")
+	if !encouragement.AllowTools {
+		t.Fatal("encouragement profile should allow holiday skill")
 	}
-	if encouragement.SystemPrompt == "" {
-		t.Fatal("encouragement profile should define system prompt")
+	if !strings.Contains(encouragement.SystemPrompt, "holiday") || !strings.Contains(encouragement.SystemPrompt, "只接收 date") {
+		t.Fatalf("encouragement prompt = %q, want date-only input and holiday skill guidance", encouragement.SystemPrompt)
 	}
 
 	architect, ok := a2aPromptProfile("architect")

@@ -128,15 +128,16 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 	case "encouragement":
 		return a2aPromptProfileSpec{
 			Name: "encouragement",
-			SystemPrompt: "你是一个中文鼓励师。根据用户提供的日期信息，生成一句简短有力的中文鼓励语，适合放在开发者导航首页。\n" +
+			SystemPrompt: "你是一个中文鼓励师。客户端只接收 date 字段，例如 {\"date\":\"2026-06-27\"}。\n" +
 				"要求：\n" +
+				"- 先使用 holiday skill 查询 date 对应的是工作日、休息日还是调休补班\n" +
 				"- 只输出一句话\n" +
 				"- 不要解释，不要分段\n" +
 				"- 不要提及具体日期或星期\n" +
 				"- 自然、真诚、有力\n" +
 				"- 结合当天类型调整鼓励方向：工作日/调休补班鼓励踏实工作精进技术，休息日鼓励放松享受积蓄能量",
-			AllowTools: false,
-			MaxSteps:   1,
+			AllowTools: true,
+			MaxSteps:   4,
 		}, true
 	case "architect":
 		return a2aPromptProfileSpec{
