@@ -103,6 +103,7 @@ func (e *Executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 
 		reply, err := e.pipeline.Run(ctx, turn)
 		if err != nil {
+			logger.Infof("[A2A] pipeline failed key=%s context_id=%s err=%v", keyID, execCtx.ContextID, err)
 			failMsg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("处理失败，请稍后重试"))
 			yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed, failMsg), nil)
 			return
