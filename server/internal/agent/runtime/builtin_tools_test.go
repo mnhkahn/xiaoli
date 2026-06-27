@@ -59,6 +59,27 @@ func TestToolsForChatIncludesTaskToolWhenSet(t *testing.T) {
 	}
 }
 
+func TestToolsForChatIncludesChannelSendToolWhenConfigured(t *testing.T) {
+	agent := &Agent{cfg: Config{BuiltinWebFetchEnabled: true}}
+	agent.SetChannelSenders(ChannelSendersConfig{AllowedRoots: []string{t.TempDir()}})
+
+	tools := agent.toolsForChat(context.Background(), "", "", "")
+	found := false
+	for _, tb := range tools {
+		info, err := tb.Info(context.Background())
+		if err != nil {
+			t.Fatalf("Info() error = %v", err)
+		}
+		if info.Name == "channel_send" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("toolsForChat should include channel_send when channel senders are configured")
+	}
+}
+
 func TestSubAgentToolsNotIncludesInteractiveTools(t *testing.T) {
 	agent := &Agent{cfg: Config{BuiltinWebFetchEnabled: true}}
 	tools := agent.subAgentTools(context.Background(), true)

@@ -10,22 +10,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/cloudwego/eino/schema"
-	"github.com/mnhkahn/gogogo/logger"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	agentevent "xiaoli/server/internal/event"
+	"github.com/cloudwego/eino/schema"
+	"github.com/mnhkahn/gogogo/logger"
+
+	agentesp32 "xiaoli/server/internal/agent/channel/esp32"
+	agentlark "xiaoli/server/internal/agent/channel/lark"
+	agentwechat "xiaoli/server/internal/agent/channel/wechat"
+	agentruntime "xiaoli/server/internal/agent/runtime"
 	"xiaoli/server/internal/agent/session"
 	agentworkflow "xiaoli/server/internal/agent/workflow"
+	agentevent "xiaoli/server/internal/event"
 )
 
 const (
@@ -46,19 +52,20 @@ var hopByHopHeaders = map[string]struct{}{
 }
 
 type AdminServer struct {
-	cfg          Config
-	signer       *signer
-	bridge       *BridgeClient
-	httpClient   *http.Client
-	stream       *streamHub
-	audioStore   *audioStore
-	deviceHub    *DeviceHub
-	conversation *ConversationPipeline
-	memory       memoryReader
-	agent        *EinoAgent
-	imagesMu     sync.Mutex
-	images       map[string]imageRecord
-	imagesByDev  map[string][]string
+	cfg           Config
+	signer        *signer
+	bridge        *BridgeClient
+	httpClient    *http.Client
+	stream        *streamHub
+	audioStore    *audioStore
+	deviceHub     *DeviceHub
+	conversation  *ConversationPipeline
+	memory        memoryReader
+	agent         *EinoAgent
+	artifactStore *ArtifactStore
+	imagesMu      sync.Mutex
+	images        map[string]imageRecord
+	imagesByDev   map[string][]string
 	larkMu        sync.Mutex
 	larkEvents    map[string]time.Time
 	larkToken     string
@@ -67,8 +74,8 @@ type AdminServer struct {
 	reminderOnce  sync.Once
 	reminderSt    *agentworkflow.ReminderStore
 	oidcMu        sync.Mutex
-	oidc         *oidcConfig
-	oidcFetcher  func() (oidcConfig, error)
+	oidc          *oidcConfig
+	oidcFetcher   func() (oidcConfig, error)
 }
 
 type imageRecord struct {
@@ -92,6 +99,7 @@ func NewServer(cfg Config) *AdminServer {
 	}
 	client := &http.Client{Timeout: 125 * time.Second}
 	stream := newStreamHub()
+	artifactStore := NewArtifactStore(ArtifactConfig{})
 	eventBus := agentevent.NewBus()
 	audioStore := newAudioStore(cfg.now)
 	asr := newOpenAITranscriber(cfg)
@@ -111,21 +119,63 @@ func NewServer(cfg Config) *AdminServer {
 	}
 	conversation := newConversationPipeline(agent, deviceHub)
 	deviceHub.setConversation(conversation)
+
+	// Create channel senders for channel_send tool
+	if agent != nil {
+		baseURL := cfg.PublicBaseURL
+		larkClient := agentlark.NewClient(agentlark.ClientConfig{
+			AppID:      cfg.LarkAppID,
+			AppToken:   cfg.LarkAppToken,
+			HTTPClient: client,
+		})
+		larkSender := agentlark.NewSender(larkClient, baseURL)
+
+		// Create artifact store closure for ESP32 sender
+		storeArt := func(path, displayName, mimeType string, ttl time.Duration) (string, error) {
+			art, err := artifactStore.Store(path, displayName, mimeType, ttl)
+			if err != nil {
+				return "", err
+			}
+			return artifactStore.URL(baseURL, art), nil
+		}
+		esp32Sender := agentesp32.NewSender(deviceHub, baseURL, storeArt)
+
+		wechatClient := agentwechat.NewClient(agentwechat.ClientConfig{})
+		if cfg.WeChatBaseURL != "" {
+			wechatClient.BaseURL = cfg.WeChatBaseURL
+		}
+		wechatSender := agentwechat.NewSender(wechatClient)
+
+		// Set allowed roots for file operations. Include both /tmp and os.TempDir()
+		// because macOS often resolves temporary files under /var/folders.
+		allowedRoots := []string{"/tmp", os.TempDir()}
+		if cfg.DataDir != "" {
+			allowedRoots = append(allowedRoots, cfg.DataDir)
+		}
+
+		agent.SetChannelSenders(agentruntime.ChannelSendersConfig{
+			Lark:         larkSender,
+			ESP32:        esp32Sender,
+			WeChat:       wechatSender,
+			AllowedRoots: allowedRoots,
+		})
+	}
 	s := &AdminServer{
-		cfg:          cfg,
-		signer:       newSigner(cfg.SessionSecret, cfg.now),
-		httpClient:   client,
-		bridge:       NewBridgeClient(cfg.BridgeBaseURL, client),
-		stream:       stream,
-		audioStore:   audioStore,
-		agent:        agent,
-		deviceHub:    deviceHub,
-		conversation: conversation,
-		memory:       memory,
-		images:       map[string]imageRecord{},
-		imagesByDev:  map[string][]string{},
-		larkEvents:   map[string]time.Time{},
-		reminderSt:   reminderStore,
+		cfg:           cfg,
+		signer:        newSigner(cfg.SessionSecret, cfg.now),
+		httpClient:    client,
+		bridge:        NewBridgeClient(cfg.BridgeBaseURL, client),
+		stream:        stream,
+		artifactStore: artifactStore,
+		audioStore:    audioStore,
+		agent:         agent,
+		deviceHub:     deviceHub,
+		conversation:  conversation,
+		memory:        memory,
+		images:        map[string]imageRecord{},
+		imagesByDev:   map[string][]string{},
+		larkEvents:    map[string]time.Time{},
+		reminderSt:    reminderStore,
 	}
 	s.oidcFetcher = s.fetchOIDCConfig
 	return s
@@ -138,6 +188,8 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Expires", "0")
 	}
 	switch {
+	case strings.HasPrefix(r.URL.Path, "/artifacts/"):
+		s.handleArtifact(w, r)
 	case r.URL.Path == "/health":
 		s.handleHealth(w, r)
 	case r.URL.Path == "/xiaozhi/ota/" || r.URL.Path == "/xiaozhi/ota":

@@ -23,7 +23,6 @@ import (
 	"github.com/mnhkahn/gogogo/logger"
 
 	agentchannel "xiaoli/server/internal/agent/channel"
-	agentevent "xiaoli/server/internal/event"
 	agentlark "xiaoli/server/internal/agent/channel/lark"
 	agentwechat "xiaoli/server/internal/agent/channel/wechat"
 	agentmedia "xiaoli/server/internal/agent/media"
@@ -33,6 +32,7 @@ import (
 	agentworkflow "xiaoli/server/internal/agent/workflow"
 	agentesp32 "xiaoli/server/internal/esp32"
 	esp32audio "xiaoli/server/internal/esp32/audio"
+	agentevent "xiaoli/server/internal/event"
 )
 
 type SpeechRecognizer = agentmedia.SpeechRecognizer
@@ -331,6 +331,7 @@ type ConversationTurn struct {
 	Text           string
 	UseDeviceTools bool
 	Formatter      agentchannel.ChannelFormatter
+	SendTarget     agentchannel.SendTarget
 }
 
 type ConversationReply struct {
@@ -348,6 +349,10 @@ func (DeviceVoiceFactory) Build(deviceID string, text string) ConversationTurn {
 		Text:           text,
 		UseDeviceTools: true,
 		Formatter:      deviceVoiceFormatter{},
+		SendTarget: agentchannel.SendTarget{
+			Channel:  "esp32",
+			DeviceID: deviceID,
+		},
 	}
 }
 
@@ -363,12 +368,18 @@ func (deviceVoiceFormatter) Send(context.Context, string) error {
 
 type LarkTextFactory struct{}
 
-func (LarkTextFactory) Build(chatID string, senderID string, text string) ConversationTurn {
+func (LarkTextFactory) Build(chatID string, senderID string, text string, messageID string) ConversationTurn {
 	return ConversationTurn{
 		Channel:        ChannelLarkText,
 		ConversationID: "lark:" + chatID + ":" + senderID,
 		DeviceID:       senderID,
 		Text:           text,
+		SendTarget: agentchannel.SendTarget{
+			Channel:          "lark",
+			ChatID:           chatID,
+			UserID:           senderID,
+			ReplyToMessageID: messageID,
+		},
 	}
 }
 
@@ -380,6 +391,11 @@ func (WechatTextFactory) Build(contextToken string, fromUserID string, text stri
 		ConversationID: "wechat:" + contextToken + ":" + fromUserID,
 		DeviceID:       fromUserID,
 		Text:           text,
+		SendTarget: agentchannel.SendTarget{
+			Channel:      "wechat",
+			UserID:       fromUserID,
+			ContextToken: contextToken,
+		},
 	}
 }
 
@@ -436,6 +452,7 @@ func (p *ConversationPipeline) Run(ctx context.Context, turn ConversationTurn) (
 			DeviceID:       turn.DeviceID,
 			Text:           turn.Text,
 			UseDeviceTools: turn.UseDeviceTools,
+			Metadata:       sendTargetMetadata(turn.SendTarget),
 		})
 		if err == nil {
 			text := strings.TrimSpace(run.Output.Text)
@@ -524,6 +541,7 @@ func (a conversationWorkflowAgent) Run(ctx context.Context, request agentworkflo
 		DeviceID:       request.Input.DeviceID,
 		Text:           request.Input.Text,
 		UseDeviceTools: request.Input.UseDeviceTools,
+		SendTarget:     sendTargetFromMetadata(request.Input.Metadata),
 	}
 	if request.LastError != "" {
 		turn.Text = strings.TrimSpace(turn.Text + "\n\n上一次执行失败：" + request.LastError + "\n请换一种方式继续完成。")
@@ -537,7 +555,7 @@ func (a conversationWorkflowAgent) Run(ctx context.Context, request agentworkflo
 
 func (p *ConversationPipeline) chatWithChannel(ctx context.Context, turn ConversationTurn) (string, error) {
 	if chat, ok := p.chat.(conversationChatWithOptions); ok {
-		return chat.ChatWithOptions(ctx, turn, ChatOptions{Channel: string(turn.Channel)})
+		return chat.ChatWithOptions(ctx, turn, ChatOptions{Channel: string(turn.Channel), SendTarget: turn.SendTarget})
 	}
 	return p.chat.Chat(ctx, turn)
 }
@@ -550,7 +568,7 @@ func (p *ConversationPipeline) runWorkflowStep(ctx context.Context, turn Convers
 		return ConversationReply{Text: "我现在还没有配置语言模型。"}, nil
 	}
 	if chat, ok := p.chat.(conversationChatWithOptions); ok {
-		answer, err := chat.ChatWithOptions(ctx, turn, ChatOptions{MaxIterations: maxSteps, Channel: string(turn.Channel)})
+		answer, err := chat.ChatWithOptions(ctx, turn, ChatOptions{MaxIterations: maxSteps, Channel: string(turn.Channel), SendTarget: turn.SendTarget})
 		if err != nil {
 			return ConversationReply{}, err
 		}
@@ -580,6 +598,39 @@ func formattedUserText(turn ConversationTurn) string {
 		return turn.Text
 	}
 	return "回复格式要求：\n" + instruction + "\n\n用户问题：\n" + turn.Text
+}
+
+func sendTargetMetadata(target agentchannel.SendTarget) map[string]any {
+	if target.Channel == "" {
+		return nil
+	}
+	return map[string]any{
+		"send_target_channel":             string(target.Channel),
+		"send_target_user_id":             target.UserID,
+		"send_target_chat_id":             target.ChatID,
+		"send_target_device_id":           target.DeviceID,
+		"send_target_reply_to_message_id": target.ReplyToMessageID,
+		"send_target_context_token":       target.ContextToken,
+	}
+}
+
+func sendTargetFromMetadata(metadata map[string]any) agentchannel.SendTarget {
+	if len(metadata) == 0 {
+		return agentchannel.SendTarget{}
+	}
+	return agentchannel.SendTarget{
+		Channel:          agentchannel.Type(stringFromMetadata(metadata, "send_target_channel")),
+		UserID:           stringFromMetadata(metadata, "send_target_user_id"),
+		ChatID:           stringFromMetadata(metadata, "send_target_chat_id"),
+		DeviceID:         stringFromMetadata(metadata, "send_target_device_id"),
+		ReplyToMessageID: stringFromMetadata(metadata, "send_target_reply_to_message_id"),
+		ContextToken:     stringFromMetadata(metadata, "send_target_context_token"),
+	}
+}
+
+func stringFromMetadata(metadata map[string]any, key string) string {
+	value, _ := metadata[key].(string)
+	return value
 }
 
 type larkCallback = agentlark.Callback
@@ -732,7 +783,7 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 		}()
 	}
 
-	turn := LarkTextFactory{}.Build(event.Message.ChatID, senderID, text)
+	turn := LarkTextFactory{}.Build(event.Message.ChatID, senderID, text, event.Message.MessageID)
 	turn.Formatter = formatter
 	reply, err := s.conversation.Run(ctx, turn)
 	if err != nil {
@@ -819,7 +870,7 @@ func (s *AdminServer) handleLarkCardAction(ctx context.Context, w http.ResponseW
 				}
 			}
 		}
-		turn := LarkTextFactory{}.Build(chatID, senderID, selected)
+		turn := LarkTextFactory{}.Build(chatID, senderID, selected, actionEvent.OpenMessageID)
 		turn.Formatter = formatter
 		reply, err := s.conversation.Run(ctx, turn)
 		if err != nil {

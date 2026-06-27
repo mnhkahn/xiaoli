@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -98,6 +100,55 @@ func TestReplyPostSendsLarkPostMessage(t *testing.T) {
 	}
 	if parsed.ZhCN.Title != "技能列表" {
 		t.Fatalf("title = %q, want 技能列表", parsed.ZhCN.Title)
+	}
+}
+
+func TestUploadImageUsesLarkImageAPI(t *testing.T) {
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "photo.png")
+	if err := os.WriteFile(imagePath, []byte("png-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var sawUpload bool
+	c := NewClient(ClientConfig{
+		AppID:    "app-id",
+		AppToken: "app-token",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/open-apis/auth/v3/tenant_access_token/internal":
+				return jsonResponse(http.StatusOK, map[string]any{"code": 0, "tenant_access_token": "tenant-token"}), nil
+			case "/open-apis/im/v1/images":
+				sawUpload = true
+				if got := req.Header.Get("Authorization"); got != "Bearer tenant-token" {
+					t.Fatalf("Authorization = %q, want bearer token", got)
+				}
+				if err := req.ParseMultipartForm(1024 * 1024); err != nil {
+					t.Fatalf("ParseMultipartForm() error = %v", err)
+				}
+				if got := req.FormValue("image_type"); got != "message" {
+					t.Fatalf("image_type = %q, want message", got)
+				}
+				files := req.MultipartForm.File["image"]
+				if len(files) != 1 || files[0].Filename != "photo.png" {
+					t.Fatalf("image files = %#v, want photo.png", files)
+				}
+				return jsonResponse(http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"image_key": "img_key"}}), nil
+			default:
+				t.Fatalf("unexpected path = %s", req.URL.Path)
+				return nil, nil
+			}
+		})},
+	})
+
+	key, err := c.UploadImage(context.Background(), imagePath)
+	if err != nil {
+		t.Fatalf("UploadImage() error = %v", err)
+	}
+	if !sawUpload {
+		t.Fatal("image upload endpoint was not called")
+	}
+	if key != "img_key" {
+		t.Fatalf("key = %q, want img_key", key)
 	}
 }
 

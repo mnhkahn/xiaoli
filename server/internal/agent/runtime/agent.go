@@ -16,12 +16,12 @@ import (
 	"github.com/mnhkahn/gogogo/logger"
 
 	agentchannel "xiaoli/server/internal/agent/channel"
-	agentevent "xiaoli/server/internal/event"
 	agentmodel "xiaoli/server/internal/agent/model"
 	agentsession "xiaoli/server/internal/agent/session"
 	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
 	agentmcp "xiaoli/server/internal/agent/tool/mcp"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
+	agentevent "xiaoli/server/internal/event"
 )
 
 type DeviceTools interface {
@@ -39,22 +39,23 @@ type MCPEndpointStatus struct {
 }
 
 type Agent struct {
-	modelMu       sync.Mutex
-	chatModels    map[string]*openai.ChatModel
-	modelSelector *agentmodel.Selector
-	memory        *Memory
-	cfg           Config
-	hub           DeviceTools
-	extMCPs       []*agentmcp.Client
-	extToolSets   [][]tool.BaseTool
-	extMCPStatus  []MCPEndpointStatus
-	skillMW       adk.ChatModelAgentMiddleware
-	recorder      *Recorder
-	sessionMgr    *agentsession.Manager
-	askData       map[string]*agentbuiltin.AskData
-	askDataMu     sync.Mutex
-	taskTool      *agentbuiltin.TaskTool
-	eventBus      agentevent.Publisher
+	modelMu         sync.Mutex
+	chatModels      map[string]*openai.ChatModel
+	modelSelector   *agentmodel.Selector
+	memory          *Memory
+	cfg             Config
+	hub             DeviceTools
+	extMCPs         []*agentmcp.Client
+	extToolSets     [][]tool.BaseTool
+	extMCPStatus    []MCPEndpointStatus
+	skillMW         adk.ChatModelAgentMiddleware
+	recorder        *Recorder
+	sessionMgr      *agentsession.Manager
+	askData         map[string]*agentbuiltin.AskData
+	askDataMu       sync.Mutex
+	taskTool        *agentbuiltin.TaskTool
+	eventBus        agentevent.Publisher
+	channelSendTool tool.InvokableTool
 }
 
 // noopEventPublisher is a no-op event publisher for backward compatibility
@@ -328,6 +329,24 @@ func (a *Agent) SetDeviceTools(hub DeviceTools) {
 	a.hub = hub
 }
 
+// ChannelSendersConfig holds the senders for each channel type
+type ChannelSendersConfig struct {
+	Lark         agentchannel.Sender
+	ESP32        agentchannel.Sender
+	WeChat       agentchannel.Sender
+	AllowedRoots []string // Trusted directories for file operations
+}
+
+// SetChannelSenders sets up the channel_send tool with the provided senders
+func (a *Agent) SetChannelSenders(cfg ChannelSendersConfig) {
+	a.channelSendTool = agentbuiltin.NewChannelSendTool(agentbuiltin.ChannelSendConfig{
+		Lark:         cfg.Lark,
+		ESP32:        cfg.ESP32,
+		WeChat:       cfg.WeChat,
+		AllowedRoots: cfg.AllowedRoots,
+	})
+}
+
 func (a *Agent) Chat(ctx context.Context, deviceID string, userText string) (string, error) {
 	return a.ChatWithContext(ctx, deviceID, deviceID, userText)
 }
@@ -414,6 +433,7 @@ func (a *Agent) NewSession(ctx context.Context, channelName, deviceID string) (s
 type ChatOptions struct {
 	MaxIterations int
 	Channel       string
+	SendTarget    agentchannel.SendTarget
 }
 
 func (a *Agent) ChatWithContext(ctx context.Context, conversationID string, deviceID string, userText string) (string, error) {
@@ -491,6 +511,9 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, memoryID)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentDeviceIDKey, deviceID)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentChannelKey, channelName)
+	if opts.SendTarget.Channel != "" {
+		ctx = agentchannel.WithSendTarget(ctx, opts.SendTarget)
+	}
 
 	einoTools := a.toolsForChat(ctx, memoryID, deviceID, channelName)
 
@@ -662,6 +685,10 @@ func (a *Agent) toolGuide(interactive bool) string {
 • memory_list — 列出所有用户记忆。
 • task — 子代理任务。将复杂、多步骤或独立的工作委托给子代理执行。子代理当前使用的模型是 ` + current + `，有独立的会话和工具集。
 • device tools — 设备端工具（如拍照），用于需要摄像头或硬件交互的场景。仅在 ESP32 设备可用。`)
+		if a.channelSendTool != nil {
+			b.WriteString(`
+• channel_send — 向当前对话渠道发送文本或本地文件。工具或 skill 生成用户需要的 PDF、图片、文件后，用 target=current 和 file_path 发给用户；中间产物、日志或敏感文件不要自动发送。`)
+		}
 	}
 	b.WriteString(`
 • MCP tools — 外部 MCP 协议工具，按需调用。`)
@@ -1114,6 +1141,9 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, opts))
 	if a.taskTool != nil {
 		einoTools = append(einoTools, a.WrapTool(a.taskTool, "builtin"))
+	}
+	if a.channelSendTool != nil {
+		einoTools = append(einoTools, a.WrapTool(a.channelSendTool, "builtin"))
 	}
 	if a.hub != nil && deviceID != "" {
 		if rawTools, ok := a.hub.ToolSnapshot(deviceID); ok {

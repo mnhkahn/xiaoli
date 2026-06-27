@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +61,22 @@ func (c *Client) ReplyText(ctx context.Context, messageID string, text string) e
 		return err
 	}
 	return c.reply(ctx, messageID, "text", string(content))
+}
+
+func (c *Client) ReplyImage(ctx context.Context, messageID string, imageKey string) error {
+	content, err := json.Marshal(map[string]string{"image_key": imageKey})
+	if err != nil {
+		return err
+	}
+	return c.reply(ctx, messageID, "image", string(content))
+}
+
+func (c *Client) ReplyFile(ctx context.Context, messageID string, fileKey string) error {
+	content, err := json.Marshal(map[string]string{"file_key": fileKey})
+	if err != nil {
+		return err
+	}
+	return c.reply(ctx, messageID, "file", string(content))
 }
 
 func (c *Client) ReplyPost(ctx context.Context, messageID string, title string, markdown string) error {
@@ -423,4 +442,123 @@ func int64Value(v any) (int64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// UploadImage uploads an image to Lark and returns image_key
+func (c *Client) UploadImage(ctx context.Context, path string) (string, error) {
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("image_type", "message")
+	part, err := writer.CreateFormFile("image", filepath.Base(path))
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return "", err
+	}
+	writer.Close()
+
+	uri := "https://open.larksuite.com/open-apis/im/v1/images"
+	req, err := http.NewRequestWithContext(ctx, "POST", uri, &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	var result struct {
+		Code int `json:"code"`
+		Data struct {
+			ImageKey string `json:"image_key"`
+		} `json:"data"`
+		Msg string `json:"msg"`
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if result.Code != 0 {
+		return "", fmt.Errorf("lark api error: %s", result.Msg)
+	}
+	return result.Data.ImageKey, nil
+}
+
+// UploadFile uploads a file to Lark and returns file_key
+func (c *Client) UploadFile(ctx context.Context, path, fileName string) (string, error) {
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("file_type", "stream")
+	_ = writer.WriteField("file_name", fileName)
+	part, err := writer.CreateFormFile("file", fileName)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return "", err
+	}
+	writer.Close()
+
+	uri := "https://open.larksuite.com/open-apis/im/v1/files"
+	req, err := http.NewRequestWithContext(ctx, "POST", uri, &body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	var result struct {
+		Code int `json:"code"`
+		Data struct {
+			FileKey string `json:"file_key"`
+		} `json:"data"`
+		Msg string `json:"msg"`
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if result.Code != 0 {
+		return "", fmt.Errorf("lark api error: %s", result.Msg)
+	}
+	return result.Data.FileKey, nil
+}
+
+// SendImage sends an image message
+func (c *Client) SendImage(ctx context.Context, receiveID, imageKey string) error {
+	return c.createMessage(ctx, receiveID, "image", map[string]string{"image_key": imageKey})
+}
+
+// SendFile sends a file message
+func (c *Client) SendFile(ctx context.Context, receiveID, fileKey string) error {
+	return c.createMessage(ctx, receiveID, "file", map[string]string{"file_key": fileKey})
 }

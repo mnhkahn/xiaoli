@@ -164,6 +164,9 @@ func TestLarkTextEventUsesSharedPipelineAndReplies(t *testing.T) {
 	if turn.Text != "你好" {
 		t.Fatalf("turn.Text = %q, want 你好", turn.Text)
 	}
+	if turn.SendTarget.Channel != "lark" || turn.SendTarget.UserID != "ou_user" || turn.SendTarget.ChatID != "oc_chat" || turn.SendTarget.ReplyToMessageID != "om_123" {
+		t.Fatalf("turn.SendTarget = %#v, want current Lark target", turn.SendTarget)
+	}
 	authBody := <-authBodies
 	if authBody["app_id"] != "cli_test" || authBody["app_secret"] != "token_test" {
 		t.Fatalf("auth body = %#v, want app_id and LARK_APP_TOKEN as app_secret", authBody)
