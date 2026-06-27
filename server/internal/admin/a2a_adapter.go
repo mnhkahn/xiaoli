@@ -138,7 +138,6 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 				"- 自然、真诚、有力\n" +
 				"- 结合当天类型调整鼓励方向：工作日/调休补班鼓励踏实工作精进技术，休息日鼓励放松享受积蓄能量",
 			AllowTools: true,
-			MaxSteps:   4,
 		}, true
 	case "architect":
 		return a2aPromptProfileSpec{
@@ -151,7 +150,6 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 				"- 信息不足时先指出假设，再给出保守建议\n" +
 				"- 不访问个人数据、设备数据或私有会话",
 			AllowTools: true,
-			MaxSteps:   6,
 		}, true
 	default:
 		return a2aPromptProfileSpec{}, false

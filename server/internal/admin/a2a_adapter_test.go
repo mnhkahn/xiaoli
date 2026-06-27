@@ -121,6 +121,9 @@ func TestA2APromptProfilesDefineEncouragementAndArchitect(t *testing.T) {
 	if !encouragement.AllowTools {
 		t.Fatal("encouragement profile should allow holiday skill")
 	}
+	if encouragement.MaxSteps != 0 {
+		t.Fatalf("encouragement MaxSteps = %d, want 0 to use runtime default", encouragement.MaxSteps)
+	}
 	if !strings.Contains(encouragement.SystemPrompt, "holiday") || !strings.Contains(encouragement.SystemPrompt, "只接收 date") {
 		t.Fatalf("encouragement prompt = %q, want date-only input and holiday skill guidance", encouragement.SystemPrompt)
 	}
@@ -131,6 +134,9 @@ func TestA2APromptProfilesDefineEncouragementAndArchitect(t *testing.T) {
 	}
 	if !architect.AllowTools {
 		t.Fatal("architect profile should allow MCP tools")
+	}
+	if architect.MaxSteps != 0 {
+		t.Fatalf("architect MaxSteps = %d, want 0 to use runtime default", architect.MaxSteps)
 	}
 	if architect.SystemPrompt == "" {
 		t.Fatal("architect profile should define system prompt")

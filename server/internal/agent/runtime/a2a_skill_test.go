@@ -8,7 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	einoskill "github.com/cloudwego/eino/adk/middlewares/skill"
+	"github.com/cloudwego/eino/schema"
+	"github.com/redis/go-redis/v9"
+
+	agentsession "xiaoli/server/internal/agent/session"
 )
 
 func TestNewAgentInitializesA2ASkillsIndependentlyFromDefaultSkills(t *testing.T) {
@@ -64,6 +69,70 @@ func TestA2ASkillContentBuilderAllowsAllowedSkillCommands(t *testing.T) {
 	}
 	if !strings.Contains(got, "completed") || !strings.Contains(got, "argv:news search OpenAI") {
 		t.Fatalf("BuildContent(cmd) = %q, want executed cyeam command with query argument", got)
+	}
+}
+
+func TestPromptProfileDefaultMaxStepsMatchesAgentDefault(t *testing.T) {
+	if got := promptProfileMaxSteps(0); got != defaultAgentMaxIterations {
+		t.Fatalf("promptProfileMaxSteps(0) = %d, want %d", got, defaultAgentMaxIterations)
+	}
+	if got := promptProfileMaxSteps(3); got != 3 {
+		t.Fatalf("promptProfileMaxSteps(3) = %d, want explicit value", got)
+	}
+}
+
+func TestA2APromptProfileHistoryLoadsAndSavesIsolatedSession(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	mem := &Memory{client: client, prefix: "test:", ttl: time.Hour}
+	mgr := agentsession.NewManager(client, "test:")
+	agent := &Agent{
+		memory:     mem,
+		sessionMgr: mgr,
+		cfg:        Config{LLMModel: "test-model"},
+	}
+
+	sessionKey := "a2a:partner:ctx-1"
+	sessionID, _, err := mgr.GetOrCreate(ctx, "a2a_profile", sessionKey, "test-model")
+	if err != nil {
+		t.Fatalf("GetOrCreate() error = %v", err)
+	}
+	if err := mem.Save(ctx, sessionID, []*schema.Message{
+		schema.UserMessage(`{"date":"2026-06-26"}`),
+		{Role: schema.Assistant, Content: "上一句鼓励"},
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "提示", "新的输入", "a2a", sessionKey)
+	if loadedSession != sessionID {
+		t.Fatalf("loadedSession = %q, want %q", loadedSession, sessionID)
+	}
+	if len(msgs) != 4 {
+		t.Fatalf("len(msgs) = %d, want system + 2 history + user", len(msgs))
+	}
+	if msgs[1].Content != `{"date":"2026-06-26"}` || msgs[2].Content != "上一句鼓励" || msgs[3].Content != "新的输入" {
+		t.Fatalf("msgs = %#v, want history before current user input", msgs)
+	}
+
+	agent.savePromptProfileHistory(ctx, loadedSession, msgs, "新的回复")
+	saved := mem.Load(ctx, sessionID)
+	if len(saved) != 4 {
+		t.Fatalf("len(saved) = %d, want previous 2 + current user/assistant without system; saved=%#v", len(saved), saved)
+	}
+	if saved[len(saved)-2].Content != "新的输入" || saved[len(saved)-1].Content != "新的回复" {
+		t.Fatalf("saved tail = %#v, want current user and assistant", saved[len(saved)-2:])
+	}
+
+	info, err := mgr.Get(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("Get(session) error = %v", err)
+	}
+	if info.ChannelName != "a2a_profile" || info.ChannelUser != sessionKey || info.Count != len(saved) {
+		t.Fatalf("session info = %#v, want isolated a2a profile session with count %d", info, len(saved))
 	}
 }
 

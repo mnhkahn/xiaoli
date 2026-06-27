@@ -64,6 +64,8 @@ type Agent struct {
 	channelSendTool tool.InvokableTool
 }
 
+const defaultAgentMaxIterations = 10
+
 // noopEventPublisher is a no-op event publisher for backward compatibility
 type noopEventPublisher struct{}
 
@@ -685,7 +687,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 
 	maxIterations := opts.MaxIterations
 	if maxIterations <= 0 {
-		maxIterations = 10
+		maxIterations = defaultAgentMaxIterations
 	}
 	agentCfg := &adk.ChatModelAgentConfig{
 		Name:             "xiaoli",
@@ -940,19 +942,13 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 	if userText == "" {
 		return "", fmt.Errorf("profile user text is required")
 	}
-	msgs := []*schema.Message{
-		schema.SystemMessage(req.SystemPrompt),
-		schema.UserMessage(userText),
-	}
+	msgs, profileSessionID := a.buildPromptProfileMessages(ctx, req.SystemPrompt, userText, req.ChannelName, req.SessionKey)
 
 	chatModel, modelID, err := a.chatModel(ctx)
 	if err != nil {
 		return "", fmt.Errorf("create chat model: %w", err)
 	}
-	maxSteps := req.MaxSteps
-	if maxSteps <= 0 {
-		maxSteps = 4
-	}
+	maxSteps := promptProfileMaxSteps(req.MaxSteps)
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		name = "a2a_profile"
@@ -1015,7 +1011,65 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 	if result == "" {
 		return "", fmt.Errorf("profile agent returned empty response")
 	}
+	a.savePromptProfileHistory(ctx, profileSessionID, msgs, result)
 	return result, nil
+}
+
+func promptProfileMaxSteps(value int) int {
+	if value > 0 {
+		return value
+	}
+	return defaultAgentMaxIterations
+}
+
+func (a *Agent) buildPromptProfileMessages(ctx context.Context, systemPrompt, userText, channelName, sessionKey string) ([]*schema.Message, string) {
+	msgs := make([]*schema.Message, 0, 4)
+	msgs = append(msgs, schema.SystemMessage(systemPrompt))
+
+	sessionID := ""
+	if strings.TrimSpace(sessionKey) != "" && a != nil && a.sessionMgr != nil && a.memory != nil {
+		modelID := strings.TrimSpace(a.CurrentLLMModel())
+		if modelID == "" {
+			modelID = strings.TrimSpace(a.cfg.LLMModel)
+		}
+		if id, _, err := a.sessionMgr.GetOrCreate(ctx, promptProfileSessionChannel(channelName), sessionKey, modelID); err == nil {
+			sessionID = id
+			msgs = append(msgs, a.memory.Load(ctx, sessionID)...)
+		} else {
+			logger.Infof("profile session get/create failed: %v", err)
+		}
+	}
+
+	msgs = append(msgs, schema.UserMessage(userText))
+	return msgs, sessionID
+}
+
+func promptProfileSessionChannel(channelName string) string {
+	if channelName == "a2a" {
+		return "a2a_profile"
+	}
+	return "profile"
+}
+
+func (a *Agent) savePromptProfileHistory(ctx context.Context, sessionID string, msgs []*schema.Message, result string) {
+	if strings.TrimSpace(sessionID) == "" || a == nil || a.memory == nil {
+		return
+	}
+	updated := make([]*schema.Message, 0, len(msgs)+1)
+	for _, msg := range msgs {
+		if msg == nil || msg.Role == schema.System {
+			continue
+		}
+		updated = append(updated, msg)
+	}
+	updated = append(updated, &schema.Message{Role: schema.Assistant, Content: result})
+	if err := a.memory.Save(ctx, sessionID, updated); err != nil {
+		logger.Infof("profile memory save failed: %v", err)
+		return
+	}
+	if a.sessionMgr != nil {
+		a.sessionMgr.UpdateAfterChat(ctx, sessionID, len(updated))
+	}
 }
 
 // RunNamedSubAgent invokes a registered subagent by name with the given

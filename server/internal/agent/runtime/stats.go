@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -26,6 +27,8 @@ type minuteBucket struct {
 type modelIDKeyType struct{}
 
 var modelIDKey = modelIDKeyType{}
+
+type modelStartTimeKey struct{}
 
 type Recorder struct {
 	mu      sync.Mutex
@@ -78,28 +81,45 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 			if info == nil || info.Component != components.ComponentOfChatModel {
 				return ctx
 			}
-			st := traceFromContext(ctx)
-			if st == nil {
+			mi := model.ConvCallbackInput(input)
+			if mi == nil {
 				return ctx
 			}
-			run := st.nextModelRun()
-			mi := model.ConvCallbackInput(input)
-			msgCount := 0
-			toolNames := []string(nil)
-			if mi != nil {
-				msgCount = len(mi.Messages)
-				if len(mi.Tools) > 0 {
-					toolNames = make([]string, 0, len(mi.Tools))
-					for _, t := range mi.Tools {
-						if t != nil && t.Name != "" {
-							toolNames = append(toolNames, t.Name)
-						}
+
+			// ========== 打印完整的工具定义 - 确认 skill 有没有传进来 ==========
+			if len(mi.Tools) > 0 {
+				logger.Infof("[LLM] ========== TOOLS DEFINITION (%d tools) ==========", len(mi.Tools))
+				for i, t := range mi.Tools {
+					if t == nil {
+						continue
 					}
-					sortStrings(toolNames)
+					toolJSON, _ := json.Marshal(t)
+					logger.Infof("[LLM] TOOL #%d: %s", i+1, string(toolJSON))
+				}
+				logger.Infof("[LLM] ================================================")
+			} else {
+				logger.Infof("[LLM] ========== NO TOOLS PROVIDED ==========")
+			}
+
+			// ========== 打印完整的消息历史 ==========
+			logger.Infof("[LLM] ========== MESSAGES (%d messages) ==========", len(mi.Messages))
+			for i, msg := range mi.Messages {
+				if msg == nil {
+					continue
+				}
+				logger.Infof("[LLM] MSG #%d (role=%s): %s", i+1, msg.Role, msg.Content)
+				if len(msg.ToolCalls) > 0 {
+					for j, tc := range msg.ToolCalls {
+						logger.Infof("[LLM]   TOOL_CALL #%d: name=%q args=%s", j+1, tc.Function.Name, tc.Function.Arguments)
+					}
+				}
+				if msg.ToolCallID != "" {
+					logger.Infof("[LLM]   TOOL_RESULT id=%q name=%q", msg.ToolCallID, msg.Name)
 				}
 			}
-			logger.Infof("%s model.start step=%d name=%s type=%s messages=%d tools=%v", tracePrefix(st), run.Step, info.Name, info.Type, msgCount, toolNames)
-			return context.WithValue(ctx, traceRunKey{}, run)
+			logger.Infof("[LLM] ================================================")
+
+			return context.WithValue(ctx, modelStartTimeKey{}, time.Now())
 		}).
 		OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
 			if info == nil || info.Component != components.ComponentOfChatModel {
@@ -110,30 +130,20 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 			if mo != nil {
 				r.record(mid, mo)
 			}
-			st := traceFromContext(ctx)
-			if st != nil {
-				run, _ := ctx.Value(traceRunKey{}).(traceRun)
-				msgLen := 0
-				toolCalls := []string(nil)
-				if mo != nil && mo.Message != nil {
-					_, msgLen, toolCalls, _ = traceMessageSummary(mo.Message)
-				}
-				promptTokens, completionTokens, totalTokens := 0, 0, 0
-				if mo != nil && mo.TokenUsage != nil {
-					promptTokens = mo.TokenUsage.PromptTokens
-					completionTokens = mo.TokenUsage.CompletionTokens
-					totalTokens = mo.TokenUsage.TotalTokens
-				}
-				elapsed := time.Duration(0)
-				if !run.Start.IsZero() {
-					elapsed = time.Since(run.Start)
-				}
-				msg := fmt.Sprintf("%s model.end step=%d name=%s type=%s output_len=%d tool_calls=%v tokens={prompt:%d completion:%d total:%d} elapsed=%v", tracePrefix(st), run.Step, info.Name, info.Type, msgLen, toolCalls, promptTokens, completionTokens, totalTokens, elapsed)
-				if st.Options.LogOutputs && mo != nil && mo.Message != nil && mo.Message.Content != "" {
-					msg += fmt.Sprintf(" output=%q", traceTruncate(mo.Message.Content, st.Options.MaxValueLength))
-				}
-				logger.Infof("%s", msg)
+
+			start, _ := ctx.Value(modelStartTimeKey{}).(time.Time)
+			elapsed := time.Since(start)
+
+			promptTokens, completionTokens, totalTokens := 0, 0, 0
+			if mo != nil && mo.TokenUsage != nil {
+				promptTokens = mo.TokenUsage.PromptTokens
+				completionTokens = mo.TokenUsage.CompletionTokens
+				totalTokens = mo.TokenUsage.TotalTokens
 			}
+
+			logger.Infof("[LLM] END tokens={prompt:%d completion:%d total:%d} elapsed=%v",
+				promptTokens, completionTokens, totalTokens, elapsed)
+
 			return ctx
 		}).
 		OnErrorFn(func(ctx context.Context, info *callbacks.RunInfo, err error) context.Context {
@@ -142,14 +152,11 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 			}
 			mid := r.resolveModelID(ctx, nil)
 			r.recordError(mid)
-			if st := traceFromContext(ctx); st != nil {
-				run, _ := ctx.Value(traceRunKey{}).(traceRun)
-				elapsed := time.Duration(0)
-				if !run.Start.IsZero() {
-					elapsed = time.Since(run.Start)
-				}
-				logger.Infof("%s model.error step=%d name=%s type=%s elapsed=%v err=%v", tracePrefix(st), run.Step, info.Name, info.Type, elapsed, err)
-			}
+
+			start, _ := ctx.Value(modelStartTimeKey{}).(time.Time)
+			elapsed := time.Since(start)
+
+			logger.Infof("[LLM] ERROR model=%s elapsed=%v err=%v", info.Name, elapsed, err)
 			return ctx
 		}).
 		Build()
