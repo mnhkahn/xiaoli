@@ -53,7 +53,8 @@ type Agent struct {
 	extToolSets     [][]tool.BaseTool
 	extMCPNames     []string
 	extMCPStatus    []MCPEndpointStatus
-	skillMW         adk.ChatModelAgentMiddleware
+	skillMW         adk.ChatModelAgentMiddleware // 普通 channel 用
+	a2aSkillMW      adk.ChatModelAgentMiddleware // A2A channel 用（skill 白名单）
 	recorder        *Recorder
 	sessionMgr      *agentsession.Manager
 	askData         map[string]*agentbuiltin.AskData
@@ -191,8 +192,9 @@ func NewAgent(cfg Config, eventBus agentevent.Publisher) *Agent {
 			logger.Infof("skill backend empty: roots=%v", cfg.SkillRoots)
 		}
 	}
+	a2aSkillMW := newA2ASkillMiddleware(ctx, cfg, recorder)
 
-	a := &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, extMCPNames: extMCPNames, extMCPStatus: extMCPStatus, skillMW: skillMW, recorder: recorder, sessionMgr: sessionMgr}
+	a := &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, extMCPNames: extMCPNames, extMCPStatus: extMCPStatus, skillMW: skillMW, a2aSkillMW: a2aSkillMW, recorder: recorder, sessionMgr: sessionMgr}
 
 	agentRegistry := agentbuiltin.NewAgentRegistry()
 	agentRoots := cfg.AgentFileRoots
@@ -266,6 +268,61 @@ func newModelSelector(cfg Config) *agentmodel.Selector {
 			agentmodel.RoleLLM: llmOptions,
 		},
 	)
+}
+
+func newA2ASkillMiddleware(ctx context.Context, cfg Config, recorder *Recorder) adk.ChatModelAgentMiddleware {
+	if len(cfg.SkillRoots) == 0 || len(cfg.A2AAllowedSkills) == 0 {
+		return nil
+	}
+	a2aBackend, err := agentskill.NewFileBackend(agentskill.BackendConfig{
+		Roots:    cfg.SkillRoots,
+		Enabled:  cfg.A2AAllowedSkills,
+		MaxBytes: cfg.SkillMaxBytes,
+	})
+	if err != nil {
+		logger.Infof("A2A skill backend init failed: %v", err)
+		return nil
+	}
+	if a2aBackend.Count() == 0 {
+		logger.Infof("A2A skill backend empty: roots=%v skills=%v", cfg.SkillRoots, cfg.A2AAllowedSkills)
+		return nil
+	}
+	a2aMw, err := einoskill.NewMiddleware(ctx, &einoskill.Config{
+		Backend:               a2aBackend,
+		UseChinese:            true,
+		CustomToolDescription: agentskill.BuildToolDescription,
+		CustomToolParams:      agentskill.BuildToolParams,
+		BuildContent:          newA2ASkillContentBuilder(cfg, recorder),
+	})
+	if err != nil {
+		logger.Infof("A2A skill middleware init failed: %v", err)
+		return nil
+	}
+	logger.Infof("A2A skill backend ready: skills=%v", cfg.A2AAllowedSkills)
+	return a2aMw
+}
+
+func newA2ASkillContentBuilder(cfg Config, recorder *Recorder) func(context.Context, einoskill.Skill, string) (string, error) {
+	build := agentskill.NewContentBuilder(agentskill.ExecConfig{
+		Timeout:        cfg.SkillExecTimeout,
+		MaxOutputBytes: cfg.SkillExecMaxOutputBytes,
+		GlobalBinDirs:  cfg.SkillExecGlobalBinDirs,
+	})
+	if recorder == nil {
+		return build
+	}
+	return func(ctx context.Context, skill einoskill.Skill, rawArgs string) (string, error) {
+		skillName := skill.Name
+		if skillName == "" {
+			skillName = "skill"
+		}
+		recorder.RecordToolCall(skillName)
+		result, err := build(ctx, skill, rawArgs)
+		if err != nil {
+			recorder.RecordToolError(skillName)
+		}
+		return result, err
+	}
 }
 
 func (a *Agent) MemoryReader() MemoryReader {
@@ -927,8 +984,10 @@ func (a *Agent) runNormalSubAgent(ctx context.Context, spec agentbuiltin.SubAgen
 		MaxIterations:    maxSteps,
 		ModelRetryConfig: newLLMRetryConfig(),
 	}
-	// Disable skill middleware for A2A channel - prevents bypassing the tool allowlist
-	if a.skillMW != nil && rt.ChannelName != "a2a" {
+	// Skill middleware 选择：A2A 用 skill 白名单版本，其他用完整版
+	if rt.ChannelName == "a2a" && a.a2aSkillMW != nil {
+		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.a2aSkillMW}
+	} else if rt.ChannelName != "a2a" && a.skillMW != nil {
 		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
 	}
 	if len(einoTools) > 0 {
@@ -1019,8 +1078,10 @@ func (a *Agent) runForkSubAgent(ctx context.Context, spec agentbuiltin.SubAgentS
 		MaxIterations:    maxSteps,
 		ModelRetryConfig: newLLMRetryConfig(),
 	}
-	// Disable skill middleware for A2A channel - prevents bypassing the tool allowlist
-	if a.skillMW != nil && rt.ChannelName != "a2a" {
+	// Skill middleware 选择：A2A 用 skill 白名单版本，其他用完整版
+	if rt.ChannelName == "a2a" && a.a2aSkillMW != nil {
+		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.a2aSkillMW}
+	} else if rt.ChannelName != "a2a" && a.skillMW != nil {
 		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
 	}
 	if len(einoTools) > 0 {

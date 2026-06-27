@@ -123,6 +123,7 @@ type A2AConfig struct {
 	MaxInputChars       int
 	TimeoutSeconds      int
 	TaskTTLSeconds      int
+	AllowedSkills       []string
 	PublicBaseURL       string
 }
 
@@ -252,6 +253,7 @@ func LoadConfig() Config {
 		MaxInputChars:       settings.a2aMaxInputChars(),
 		TimeoutSeconds:      settings.a2aTimeoutSeconds(),
 		TaskTTLSeconds:      settings.a2aTaskTTLSeconds(),
+		AllowedSkills:       settings.a2aAllowedSkills(),
 		PublicBaseURL:       strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"),
 	}
 	cfg.LogDir = filepath.Join(cfg.DataDir, "logs")
@@ -303,6 +305,7 @@ type settingsA2AConfig struct {
 	RateLimitGlobal   *int              `json:"rate_limit_global_per_minute"`
 	MaxConcurrent     *int              `json:"max_concurrent"`
 	TaskTTLSeconds    *int              `json:"task_ttl_seconds"`
+	AllowedSkills     []string          `json:"allowed_skills"`
 }
 
 type settingsModels struct {
@@ -743,6 +746,10 @@ func (s settingsConfig) a2aTaskTTLSeconds() int {
 		return 1800 // default: 30 minutes
 	}
 	return *s.A2A.TaskTTLSeconds
+}
+
+func (s settingsConfig) a2aAllowedSkills() []string {
+	return s.A2A.AllowedSkills
 }
 
 func settingsAPIKey(envName string) string {

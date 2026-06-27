@@ -81,6 +81,7 @@
     "max_input_chars": 10000,
     "timeout_seconds": 120,
     "task_ttl_seconds": 3600,
+    "allowed_skills": ["holiday", "cyeam-cli", "news", "ai-models"],
     "keys": [
       {
         "id": "partner_a",

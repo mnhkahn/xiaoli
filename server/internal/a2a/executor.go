@@ -8,6 +8,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/mnhkahn/gogogo/logger"
 )
 
 // ConversationReply is the pipeline's response for an A2A turn.
@@ -56,6 +57,13 @@ func NewExecutor(pipeline ConversationPipeline, maxInputChars int) *Executor {
 // JSON-RPC error rather than a task_id.
 func (e *Executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 	return func(yield func(a2a.Event, error) bool) {
+		keyID, _ := authenticator(ctx)
+		msgLen := 0
+		if execCtx.Message != nil {
+			msgLen = len(extractText(execCtx.Message.Parts))
+		}
+		logger.Infof("[A2A] request key=%s context_id=%s msg_len=%d", keyID, execCtx.ContextID, msgLen)
+
 		if execCtx.Message == nil {
 			yield(nil, fmt.Errorf("%w: message is required", a2a.ErrInvalidParams))
 			return
@@ -85,7 +93,6 @@ func (e *Executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 			return
 		}
 
-		keyID, _ := authenticator(ctx)
 		sessionID := "a2a:" + keyID + ":" + execCtx.ContextID
 		turn := ConversationTurn{
 			Channel:        "a2a",

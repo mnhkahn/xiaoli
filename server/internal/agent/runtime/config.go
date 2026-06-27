@@ -64,6 +64,7 @@ type Config struct {
 	ReminderStore           *agentworkflow.ReminderStore
 	LogDir                  string
 	Timezone                string
+	A2AAllowedSkills        []string // A2A 通道允许的 skill 白名单
 }
 
 type LLMModelConfig struct {

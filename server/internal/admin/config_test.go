@@ -246,7 +246,8 @@ func TestLoadConfig_A2A(t *testing.T) {
 			"rate_limit_per_minute": 40,
 			"rate_limit_global_per_minute": 150,
 			"max_concurrent": 3,
-			"task_ttl_seconds": 2400
+			"task_ttl_seconds": 2400,
+			"allowed_skills": ["holiday", "news"]
 		}
 	}`), 0644)
 	assert.NoError(t, err)
@@ -263,6 +264,7 @@ func TestLoadConfig_A2A(t *testing.T) {
 	assert.Equal(t, 3000, cfg.A2A.MaxInputChars)
 	assert.Equal(t, 90, cfg.A2A.TimeoutSeconds)
 	assert.Equal(t, 2400, cfg.A2A.TaskTTLSeconds)
+	assert.Equal(t, []string{"holiday", "news"}, cfg.A2A.AllowedSkills)
 }
 
 func TestLoadConfig_A2AKeyIDValidation(t *testing.T) {
