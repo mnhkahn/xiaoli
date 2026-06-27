@@ -2,6 +2,8 @@ package admin
 
 import (
 	"encoding/json"
+	"regexp"
+
 	"github.com/mnhkahn/gogogo/logger"
 	"os"
 	"path/filepath"
@@ -85,6 +87,9 @@ type Config struct {
 	Timezone                string
 	Now                     func() time.Time
 
+	// A2A configuration
+	A2A A2AConfig
+
 	// Email configuration
 	EmailSMTPHost     string
 	EmailSMTPPort     int
@@ -105,6 +110,49 @@ type LLMModelConfig struct {
 	APIKey        string
 	MaxTokens     int
 	ContextLength int
+}
+
+// A2AConfig holds A2A (Agent-to-Agent) protocol configuration
+type A2AConfig struct {
+	Enabled             bool
+	PublicAgentCard     bool
+	APIKeys             map[string]string // key_id -> secret
+	RateLimitPerKey     int
+	RateLimitGlobal     int
+	MaxConcurrentPerKey int
+	MaxInputChars       int
+	TimeoutSeconds      int
+	TaskTTLSeconds      int
+	PublicBaseURL       string
+}
+
+var validKeyIDChars = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+func parseA2AAPIKeys(raw string) map[string]string {
+	result := make(map[string]string)
+	if raw == "" {
+		return result
+	}
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		parts := strings.SplitN(pair, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		keyID := strings.TrimSpace(parts[0])
+		secret := strings.TrimSpace(parts[1])
+		if keyID == "" || secret == "" {
+			continue
+		}
+		if !validKeyIDChars.MatchString(keyID) {
+			continue
+		}
+		result[keyID] = secret
+	}
+	return result
 }
 
 func LoadConfig() Config {
@@ -220,6 +268,18 @@ func LoadConfig() Config {
 		EmailUseSSL:       envBool("EMAIL_USE_SSL", true),
 		EmailFromName:     env("EMAIL_FROM_NAME", ""),
 		EmailFromAddress:  env("EMAIL_FROM_ADDRESS", ""),
+	}
+	cfg.A2A = A2AConfig{
+		Enabled:             envBool("A2A_ENABLED", false),
+		PublicAgentCard:     envBool("A2A_PUBLIC_AGENT_CARD", true),
+		APIKeys:             parseA2AAPIKeys(env("A2A_API_KEYS", "")),
+		RateLimitPerKey:     envInt("A2A_RATE_LIMIT_PER_KEY_PER_MINUTE", 30),
+		RateLimitGlobal:     envInt("A2A_RATE_LIMIT_GLOBAL_PER_MINUTE", 120),
+		MaxConcurrentPerKey: envInt("A2A_MAX_CONCURRENT_PER_KEY", 2),
+		MaxInputChars:       envInt("A2A_MAX_INPUT_CHARS", 2000),
+		TimeoutSeconds:      envInt("A2A_TIMEOUT_SECONDS", 60),
+		TaskTTLSeconds:      envInt("A2A_TASK_TTL_SECONDS", 1800),
+		PublicBaseURL:       strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"),
 	}
 	cfg.LogDir = filepath.Join(cfg.DataDir, "logs")
 	return cfg

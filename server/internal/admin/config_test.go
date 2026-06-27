@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	agentskill "xiaoli/server/internal/agent/tool/skill"
 )
 
@@ -224,4 +225,58 @@ func TestLoadAgentPromptCombinesAgentAndSoulMarkdown(t *testing.T) {
 	if prompt != "agent rules\n\nsoul voice" {
 		t.Fatalf("prompt = %q, want AGENT and SOUL joined", prompt)
 	}
+}
+
+func TestLoadConfig_A2A(t *testing.T) {
+	os.Clearenv()
+	os.Setenv("A2A_ENABLED", "true")
+	os.Setenv("A2A_PUBLIC_AGENT_CARD", "false")
+	os.Setenv("A2A_API_KEYS", "partner_a:secret1,partner_b:secret2")
+	os.Setenv("A2A_RATE_LIMIT_PER_KEY_PER_MINUTE", "40")
+	os.Setenv("A2A_RATE_LIMIT_GLOBAL_PER_MINUTE", "150")
+	os.Setenv("A2A_MAX_INPUT_CHARS", "3000")
+	os.Setenv("A2A_TIMEOUT_SECONDS", "90")
+	os.Setenv("A2A_TASK_TTL_SECONDS", "2400")
+
+	cfg := LoadConfig()
+
+	assert.True(t, cfg.A2A.Enabled)
+	assert.False(t, cfg.A2A.PublicAgentCard)
+	assert.Equal(t, "secret1", cfg.A2A.APIKeys["partner_a"])
+	assert.Equal(t, "secret2", cfg.A2A.APIKeys["partner_b"])
+	assert.Equal(t, 40, cfg.A2A.RateLimitPerKey)
+	assert.Equal(t, 150, cfg.A2A.RateLimitGlobal)
+	assert.Equal(t, 3000, cfg.A2A.MaxInputChars)
+	assert.Equal(t, 90, cfg.A2A.TimeoutSeconds)
+	assert.Equal(t, 2400, cfg.A2A.TaskTTLSeconds)
+}
+
+func TestLoadConfig_A2AKeyIDValidation(t *testing.T) {
+	os.Clearenv()
+	os.Setenv("A2A_ENABLED", "true")
+
+	// Invalid chars in key_id should be skipped
+	os.Setenv("A2A_API_KEYS", "valid.key:sec1,invalid!key:sec2,another-valid_123:sec3")
+
+	cfg := LoadConfig()
+
+	assert.Equal(t, "sec1", cfg.A2A.APIKeys["valid.key"])
+	assert.Equal(t, "sec3", cfg.A2A.APIKeys["another-valid_123"])
+	_, exists := cfg.A2A.APIKeys["invalid!key"]
+	assert.False(t, exists)
+}
+
+func TestLoadConfig_A2ADefaults(t *testing.T) {
+	os.Clearenv()
+	cfg := LoadConfig()
+
+	assert.False(t, cfg.A2A.Enabled)
+	assert.True(t, cfg.A2A.PublicAgentCard)
+	assert.Empty(t, cfg.A2A.APIKeys)
+	assert.Equal(t, 30, cfg.A2A.RateLimitPerKey)
+	assert.Equal(t, 120, cfg.A2A.RateLimitGlobal)
+	assert.Equal(t, 2, cfg.A2A.MaxConcurrentPerKey)
+	assert.Equal(t, 2000, cfg.A2A.MaxInputChars)
+	assert.Equal(t, 60, cfg.A2A.TimeoutSeconds)
+	assert.Equal(t, 1800, cfg.A2A.TaskTTLSeconds)
 }
