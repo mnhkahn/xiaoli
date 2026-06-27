@@ -31,6 +31,7 @@ import (
 	agentruntime "xiaoli/server/internal/agent/runtime"
 	"xiaoli/server/internal/agent/session"
 	agentworkflow "xiaoli/server/internal/agent/workflow"
+	a2aPKG "xiaoli/server/internal/a2a"
 	agentevent "xiaoli/server/internal/event"
 )
 
@@ -76,6 +77,8 @@ type AdminServer struct {
 	oidcMu        sync.Mutex
 	oidc          *oidcConfig
 	oidcFetcher   func() (oidcConfig, error)
+	a2aHandler    http.Handler
+	a2aCardHandler http.Handler
 }
 
 type imageRecord struct {
@@ -178,7 +181,39 @@ func NewServer(cfg Config) *AdminServer {
 		reminderSt:    reminderStore,
 	}
 	s.oidcFetcher = s.fetchOIDCConfig
+	s.setupA2A(agent)
 	return s
+}
+
+// setupA2A constructs the A2A JSON-RPC handler and agent card handler if A2A
+// is enabled. The handlers are stored on s and dispatched from ServeHTTP.
+// Even when A2A is disabled the card handler is set so /.well-known/agent-card.json
+// returns 404 rather than falling through to the default mux.
+func (s *AdminServer) setupA2A(agent *EinoAgent) {
+	baseURL := strings.TrimRight(s.cfg.PublicBaseURL, "/")
+	if !s.cfg.A2A.Enabled {
+		s.a2aCardHandler = a2aPKG.AgentCardHandler(baseURL, false)
+		return
+	}
+	s.a2aCardHandler = a2aPKG.AgentCardHandler(baseURL, s.cfg.A2A.PublicAgentCard)
+	if agent == nil {
+		return
+	}
+	pipeline := newA2APipeline(agent)
+	executor := a2aPKG.NewExecutor(pipeline, s.cfg.A2A.MaxInputChars)
+	s.a2aHandler = a2aPKG.NewServer(a2aPKG.ServerConfig{
+		Auth: a2aPKG.A2AConfig{
+			APIKeys: s.cfg.A2A.APIKeys,
+		},
+		RateLimit: a2aPKG.RateLimitConfig{
+			PerKeyLimit: s.cfg.A2A.RateLimitPerKey,
+			GlobalLimit: s.cfg.A2A.RateLimitGlobal,
+		},
+		MaxInputChars:  s.cfg.A2A.MaxInputChars,
+		TimeoutSeconds: s.cfg.A2A.TimeoutSeconds,
+		TaskTTLSeconds: s.cfg.A2A.TaskTTLSeconds,
+			MaxConcurrentPerKey: s.cfg.A2A.MaxConcurrentPerKey,
+	}, executor)
 }
 
 func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -188,6 +223,18 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Expires", "0")
 	}
 	switch {
+	case r.URL.Path == "/.well-known/agent-card.json":
+		if s.a2aCardHandler != nil {
+			s.a2aCardHandler.ServeHTTP(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	case r.URL.Path == "/a2a":
+		if s.a2aHandler != nil {
+			s.a2aHandler.ServeHTTP(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
 	case strings.HasPrefix(r.URL.Path, "/artifacts/"):
 		s.handleArtifact(w, r)
 	case r.URL.Path == "/health":

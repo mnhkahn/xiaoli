@@ -2,181 +2,141 @@ package a2a
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
+	"fmt"
+	"iter"
 	"strings"
-	"time"
+
+	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2asrv"
 )
 
-// --- Types matching a2asrv protocol ---
-
-type ContentPart struct {
-	Type string `json:"type"` // "text"
-	Text string `json:"text,omitempty"`
-}
-
-type Message struct {
-	Role    string        `json:"role"`
-	Content []ContentPart `json:"content"`
-}
-
-type SendMessageRequest struct {
-	Message   Message `json:"message"`
-	ContextID string  `json:"contextId,omitempty"`
-}
-
-type SendMessageResponse struct {
-	TaskID string     `json:"taskId"`
-	Status TaskStatus `json:"status"`
-	Result string     `json:"result,omitempty"`
-	Error  string     `json:"error,omitempty"`
-}
-
-type GetTaskRequest struct {
-	TaskID string `json:"taskId"`
-}
-
-type GetTaskResponse struct {
-	TaskID string     `json:"taskId"`
-	Status TaskStatus `json:"status"`
-	Result string     `json:"result,omitempty"`
-	Error  string     `json:"error,omitempty"`
-}
-
-// --- Conversation Pipeline interface (matches admin.ConversationPipeline) ---
-
+// ConversationReply is the pipeline's response for an A2A turn.
 type ConversationReply struct {
 	Text string
 }
 
+// ConversationTurn describes a single A2A request routed to the agent pipeline.
+// ConversationID carries the internal session ID of the form
+// "a2a:<key_id>:<context_id>" so the pipeline cannot be tricked into
+// addressing another caller's memory or session.
 type ConversationTurn struct {
 	Channel        string
 	ConversationID string
-	DeviceID       string
 	Text           string
 	UseDeviceTools bool
 }
 
+// ConversationPipeline runs an A2A turn and returns the agent's reply.
 type ConversationPipeline interface {
 	Run(ctx context.Context, turn ConversationTurn) (ConversationReply, error)
 }
 
-// --- Executor ---
-
-// Executor implements the A2A agent execution logic
+// Executor implements a2asrv.AgentExecutor. It validates inbound text,
+// routes the turn through the A2A-dedicated subagent pipeline, and emits
+// A2A events that the a2a-go library translates into task state.
 type Executor struct {
 	pipeline      ConversationPipeline
-	taskStore     TaskStore
 	maxInputChars int
 }
 
-// NewExecutor creates a new A2A executor
-func NewExecutor(pipeline ConversationPipeline, store TaskStore, maxInputChars int) *Executor {
+var _ a2asrv.AgentExecutor = (*Executor)(nil)
+
+// NewExecutor creates an A2A executor. The task store is owned by the
+// a2a-go RequestHandler; the executor only needs the pipeline and input limit.
+func NewExecutor(pipeline ConversationPipeline, maxInputChars int) *Executor {
 	return &Executor{
 		pipeline:      pipeline,
-		taskStore:     store,
 		maxInputChars: maxInputChars,
 	}
 }
 
-// SendMessage handles A2A SendMessage request synchronously
-func (e *Executor) SendMessage(ctx context.Context, req *SendMessageRequest) (*SendMessageResponse, error) {
-	taskID := generateTaskID()
+// Execute validates the inbound message, creates a submitted task, runs the
+// pipeline, and emits a terminal status event. Input validation failures are
+// returned as errors before any task is created, so the client receives a
+// JSON-RPC error rather than a task_id.
+func (e *Executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		if execCtx.Message == nil {
+			yield(nil, fmt.Errorf("%w: message is required", a2a.ErrInvalidParams))
+			return
+		}
 
-	task := &Task{
-		ID:        taskID,
-		Status:    TaskStatusWorking,
-		CreatedAt: time.Now(),
+		if !validateParts(execCtx.Message.Parts) {
+			yield(nil, fmt.Errorf("%w: only text parts are supported", a2a.ErrInvalidParams))
+			return
+		}
+
+		text := strings.TrimSpace(extractText(execCtx.Message.Parts))
+		if text == "" {
+			yield(nil, fmt.Errorf("%w: message text is empty", a2a.ErrInvalidParams))
+			return
+		}
+		if len(text) > e.maxInputChars {
+			yield(nil, fmt.Errorf("%w: message text exceeds %d characters", a2a.ErrInvalidParams, e.maxInputChars))
+			return
+		}
+
+		if execCtx.StoredTask == nil {
+			if !yield(a2a.NewSubmittedTask(execCtx, execCtx.Message), nil) {
+				return
+			}
+		}
+		if !yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateWorking, nil), nil) {
+			return
+		}
+
+		keyID, _ := authenticator(ctx)
+		sessionID := "a2a:" + keyID + ":" + execCtx.ContextID
+		turn := ConversationTurn{
+			Channel:        "a2a",
+			ConversationID: sessionID,
+			Text:           text,
+			UseDeviceTools: false,
+		}
+
+		reply, err := e.pipeline.Run(ctx, turn)
+		if err != nil {
+			failMsg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("处理失败，请稍后重试"))
+			yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed, failMsg), nil)
+			return
+		}
+
+		resultMsg := a2a.NewMessageForTask(a2a.MessageRoleAgent, execCtx, a2a.NewTextPart(reply.Text))
+		yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCompleted, resultMsg), nil)
 	}
-	e.taskStore.Put(taskID, task)
-
-	// Extract and validate text content
-	text := extractText(req.Message.Content)
-	text = strings.TrimSpace(text)
-
-	if text == "" {
-		task.Status = TaskStatusFailed
-		task.Error = "empty message text"
-		e.taskStore.Put(taskID, task)
-		return nil, errors.New("empty message text")
-	}
-
-	if len(text) > e.maxInputChars {
-		task.Status = TaskStatusFailed
-		task.Error = "message text too long"
-		e.taskStore.Put(taskID, task)
-		return nil, errors.New("message text too long")
-	}
-
-	// Get key_id from context for logging/identification
-	keyID := ""
-	if k, ok := ctx.Value(keyIDContextKey).(string); ok {
-		keyID = k
-	}
-
-	// Build conversation turn for A2A channel
-	turn := ConversationTurn{
-		Channel:        "a2a",
-		ConversationID: "", // No long-term memory for A2A
-		DeviceID:       keyID,
-		Text:           text,
-		UseDeviceTools: false, // No device tools for A2A
-	}
-
-	// Execute synchronously
-	reply, err := e.pipeline.Run(ctx, turn)
-	if err != nil {
-		task.Status = TaskStatusFailed
-		task.Error = "processing failed"
-		e.taskStore.Put(taskID, task)
-		return nil, err
-	}
-
-	task.Status = TaskStatusCompleted
-	task.Result = reply.Text
-	e.taskStore.Put(taskID, task)
-
-	return &SendMessageResponse{
-		TaskID: taskID,
-		Status: TaskStatusCompleted,
-		Result: reply.Text,
-	}, nil
 }
 
-// GetTask retrieves task status and result
-func (e *Executor) GetTask(ctx context.Context, req *GetTaskRequest) (*GetTaskResponse, error) {
-	task, ok := e.taskStore.Get(req.TaskID)
-	if !ok {
-		return nil, errors.New("task not found")
+// Cancel is not supported. Returns unsupported error immediately.
+func (e *Executor) Cancel(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		yield(nil, a2a.ErrUnsupportedOperation)
 	}
-
-	return &GetTaskResponse{
-		TaskID: task.ID,
-		Status: task.Status,
-		Result: task.Result,
-		Error:  task.Error,
-	}, nil
 }
 
-// extractText combines all text parts into a single string
-func extractText(parts []ContentPart) string {
+// validateParts returns false if any part is not a text part. A2A input is
+// text-only; binary, data, and file URL parts are rejected.
+func validateParts(parts a2a.ContentParts) bool {
+	if len(parts) == 0 {
+		return false
+	}
+	for _, p := range parts {
+		if p == nil {
+			return false
+		}
+		if _, ok := p.Content.(a2a.Text); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// extractText joins all text parts into a single string.
+func extractText(parts a2a.ContentParts) string {
 	var texts []string
 	for _, p := range parts {
-		if p.Type == "text" && p.Text != "" {
-			texts = append(texts, p.Text)
+		if t, ok := p.Content.(a2a.Text); ok && t != "" {
+			texts = append(texts, string(t))
 		}
 	}
 	return strings.Join(texts, "\n")
-}
-
-// generateTaskID creates a random task identifier
-func generateTaskID() string {
-	b := make([]byte, 12)
-	_, err := rand.Read(b)
-	if err != nil {
-		// Fallback if rand fails (should never happen)
-		return "task_" + time.Now().Format("20060102150405")
-	}
-	return "task_" + hex.EncodeToString(b)
 }

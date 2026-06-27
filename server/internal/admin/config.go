@@ -128,33 +128,6 @@ type A2AConfig struct {
 
 var validKeyIDChars = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
-func parseA2AAPIKeys(raw string) map[string]string {
-	result := make(map[string]string)
-	if raw == "" {
-		return result
-	}
-	for _, pair := range strings.Split(raw, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		parts := strings.SplitN(pair, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		keyID := strings.TrimSpace(parts[0])
-		secret := strings.TrimSpace(parts[1])
-		if keyID == "" || secret == "" {
-			continue
-		}
-		if !validKeyIDChars.MatchString(keyID) {
-			continue
-		}
-		result[keyID] = secret
-	}
-	return result
-}
-
 func LoadConfig() Config {
 	sessionSecret := env("ADMIN_SESSION_SECRET", "")
 	settings, settingsPath := loadSettings(defaultSettingsPaths())
@@ -270,15 +243,15 @@ func LoadConfig() Config {
 		EmailFromAddress:  env("EMAIL_FROM_ADDRESS", ""),
 	}
 	cfg.A2A = A2AConfig{
-		Enabled:             envBool("A2A_ENABLED", false),
-		PublicAgentCard:     envBool("A2A_PUBLIC_AGENT_CARD", true),
-		APIKeys:             parseA2AAPIKeys(env("A2A_API_KEYS", "")),
-		RateLimitPerKey:     envInt("A2A_RATE_LIMIT_PER_KEY_PER_MINUTE", 30),
-		RateLimitGlobal:     envInt("A2A_RATE_LIMIT_GLOBAL_PER_MINUTE", 120),
-		MaxConcurrentPerKey: envInt("A2A_MAX_CONCURRENT_PER_KEY", 2),
-		MaxInputChars:       envInt("A2A_MAX_INPUT_CHARS", 2000),
-		TimeoutSeconds:      envInt("A2A_TIMEOUT_SECONDS", 60),
-		TaskTTLSeconds:      envInt("A2A_TASK_TTL_SECONDS", 1800),
+		Enabled:             settings.a2aEnabled(),
+		PublicAgentCard:     settings.a2aPublicAgentCard(),
+		APIKeys:             settings.a2aAPIKeys(),
+		RateLimitPerKey:     settings.a2aRateLimitPerKey(),
+		RateLimitGlobal:     settings.a2aRateLimitGlobal(),
+		MaxConcurrentPerKey: settings.a2aMaxConcurrentPerKey(),
+		MaxInputChars:       settings.a2aMaxInputChars(),
+		TimeoutSeconds:      settings.a2aTimeoutSeconds(),
+		TaskTTLSeconds:      settings.a2aTaskTTLSeconds(),
 		PublicBaseURL:       strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"),
 	}
 	cfg.LogDir = filepath.Join(cfg.DataDir, "logs")
@@ -297,6 +270,7 @@ type settingsConfig struct {
 	MCPServers []settingsMCPServer            `json:"mcp_servers"`
 	Tools      settingsTools                  `json:"tools"`
 	Workflows  map[string]settingsWorkflowDef `json:"cron"`
+	A2A        settingsA2AConfig              `json:"a2a"`
 }
 
 type settingsTools struct {
@@ -312,6 +286,23 @@ type settingsBash struct {
 	Enabled        *bool `json:"enabled"`
 	TimeoutSeconds *int  `json:"timeout_seconds"`
 	MaxOutputKB    *int  `json:"max_output_kb"`
+}
+
+type settingsA2AKey struct {
+	ID        string `json:"id"`
+	SecretEnv string `json:"secret_env"`
+}
+
+type settingsA2AConfig struct {
+	Enabled           *bool             `json:"enabled"`
+	PublicAgentCard   *bool             `json:"public_agent_card"`
+	Keys              []settingsA2AKey  `json:"keys"`
+	MaxInputChars     *int              `json:"max_input_chars"`
+	TimeoutSeconds    *int              `json:"timeout_seconds"`
+	RateLimitPerMin   *int              `json:"rate_limit_per_minute"`
+	RateLimitGlobal   *int              `json:"rate_limit_global_per_minute"`
+	MaxConcurrent     *int              `json:"max_concurrent"`
+	TaskTTLSeconds    *int              `json:"task_ttl_seconds"`
 }
 
 type settingsModels struct {
@@ -617,6 +608,7 @@ func (s settingsConfig) mcpEndpoints() []agentruntime.MCPEndpoint {
 				continue
 			}
 			out = append(out, agentruntime.MCPEndpoint{
+				Name:         server.Name,
 				URL:          u,
 				Auth:         agentruntime.MCPAuthOAuth,
 				TokenURL:     strings.TrimSpace(server.TokenURL),
@@ -642,6 +634,7 @@ func (s settingsConfig) mcpEndpoints() []agentruntime.MCPEndpoint {
 			}
 		}
 		out = append(out, agentruntime.MCPEndpoint{
+			Name:    server.Name,
 			URL:     u,
 			APIKey:  key,
 			Auth:    auth,
@@ -680,6 +673,76 @@ func (s settingsConfig) bashMaxOutputBytes() int {
 		return defaultBashMaxOutputBytes
 	}
 	return *s.Tools.Bash.MaxOutputKB * 1024
+}
+
+func (s settingsConfig) a2aEnabled() bool {
+	return s.A2A.Enabled != nil && *s.A2A.Enabled
+}
+
+func (s settingsConfig) a2aPublicAgentCard() bool {
+	if s.A2A.PublicAgentCard == nil {
+		return true // default to true
+	}
+	return *s.A2A.PublicAgentCard
+}
+
+func (s settingsConfig) a2aAPIKeys() map[string]string {
+	result := make(map[string]string)
+	for _, key := range s.A2A.Keys {
+		if key.ID == "" || key.SecretEnv == "" {
+			continue
+		}
+		if !validKeyIDChars.MatchString(key.ID) {
+			continue
+		}
+		secret := env(key.SecretEnv, "")
+		if secret != "" {
+			result[key.ID] = secret
+		}
+	}
+	return result
+}
+
+func (s settingsConfig) a2aMaxInputChars() int {
+	if s.A2A.MaxInputChars == nil || *s.A2A.MaxInputChars <= 0 {
+		return 2000 // default
+	}
+	return *s.A2A.MaxInputChars
+}
+
+func (s settingsConfig) a2aTimeoutSeconds() int {
+	if s.A2A.TimeoutSeconds == nil || *s.A2A.TimeoutSeconds <= 0 {
+		return 60 // default
+	}
+	return *s.A2A.TimeoutSeconds
+}
+
+func (s settingsConfig) a2aRateLimitPerKey() int {
+	if s.A2A.RateLimitPerMin == nil || *s.A2A.RateLimitPerMin <= 0 {
+		return 30 // default
+	}
+	return *s.A2A.RateLimitPerMin
+}
+
+func (s settingsConfig) a2aRateLimitGlobal() int {
+	if s.A2A.RateLimitGlobal == nil || *s.A2A.RateLimitGlobal <= 0 {
+		return 120 // default
+	}
+	return *s.A2A.RateLimitGlobal
+}
+
+func (s settingsConfig) a2aMaxConcurrentPerKey() int {
+	if s.A2A.MaxConcurrent == nil || *s.A2A.MaxConcurrent <= 0 {
+		return 2 // default
+	}
+	return *s.A2A.MaxConcurrent
+}
+
+func (s settingsConfig) a2aTaskTTLSeconds() int {
+	if s.A2A.TaskTTLSeconds == nil || *s.A2A.TaskTTLSeconds <= 0 {
+		return 1800 // default: 30 minutes
+	}
+	return *s.A2A.TaskTTLSeconds
 }
 
 func settingsAPIKey(envName string) string {

@@ -228,15 +228,28 @@ func TestLoadAgentPromptCombinesAgentAndSoulMarkdown(t *testing.T) {
 }
 
 func TestLoadConfig_A2A(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
 	os.Clearenv()
-	os.Setenv("A2A_ENABLED", "true")
-	os.Setenv("A2A_PUBLIC_AGENT_CARD", "false")
-	os.Setenv("A2A_API_KEYS", "partner_a:secret1,partner_b:secret2")
-	os.Setenv("A2A_RATE_LIMIT_PER_KEY_PER_MINUTE", "40")
-	os.Setenv("A2A_RATE_LIMIT_GLOBAL_PER_MINUTE", "150")
-	os.Setenv("A2A_MAX_INPUT_CHARS", "3000")
-	os.Setenv("A2A_TIMEOUT_SECONDS", "90")
-	os.Setenv("A2A_TASK_TTL_SECONDS", "2400")
+	os.Setenv("A2A_PARTNER_A_SECRET", "secret1")
+	os.Setenv("A2A_PARTNER_B_SECRET", "secret2")
+	err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{
+		"a2a": {
+			"enabled": true,
+			"public_agent_card": false,
+			"keys": [
+				{"id": "partner_a", "secret_env": "A2A_PARTNER_A_SECRET"},
+				{"id": "partner_b", "secret_env": "A2A_PARTNER_B_SECRET"}
+			],
+			"max_input_chars": 3000,
+			"timeout_seconds": 90,
+			"rate_limit_per_minute": 40,
+			"rate_limit_global_per_minute": 150,
+			"max_concurrent": 3,
+			"task_ttl_seconds": 2400
+		}
+	}`), 0644)
+	assert.NoError(t, err)
 
 	cfg := LoadConfig()
 
@@ -246,17 +259,30 @@ func TestLoadConfig_A2A(t *testing.T) {
 	assert.Equal(t, "secret2", cfg.A2A.APIKeys["partner_b"])
 	assert.Equal(t, 40, cfg.A2A.RateLimitPerKey)
 	assert.Equal(t, 150, cfg.A2A.RateLimitGlobal)
+	assert.Equal(t, 3, cfg.A2A.MaxConcurrentPerKey)
 	assert.Equal(t, 3000, cfg.A2A.MaxInputChars)
 	assert.Equal(t, 90, cfg.A2A.TimeoutSeconds)
 	assert.Equal(t, 2400, cfg.A2A.TaskTTLSeconds)
 }
 
 func TestLoadConfig_A2AKeyIDValidation(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
 	os.Clearenv()
-	os.Setenv("A2A_ENABLED", "true")
-
-	// Invalid chars in key_id should be skipped
-	os.Setenv("A2A_API_KEYS", "valid.key:sec1,invalid!key:sec2,another-valid_123:sec3")
+	os.Setenv("A2A_SEC1", "sec1")
+	os.Setenv("A2A_SEC2", "sec2")
+	os.Setenv("A2A_SEC3", "sec3")
+	err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{
+		"a2a": {
+			"enabled": true,
+			"keys": [
+				{"id": "valid.key", "secret_env": "A2A_SEC1"},
+				{"id": "invalid!key", "secret_env": "A2A_SEC2"},
+				{"id": "another-valid_123", "secret_env": "A2A_SEC3"}
+			]
+		}
+	}`), 0644)
+	assert.NoError(t, err)
 
 	cfg := LoadConfig()
 
@@ -267,6 +293,8 @@ func TestLoadConfig_A2AKeyIDValidation(t *testing.T) {
 }
 
 func TestLoadConfig_A2ADefaults(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
 	os.Clearenv()
 	cfg := LoadConfig()
 

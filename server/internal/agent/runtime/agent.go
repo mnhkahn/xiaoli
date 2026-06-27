@@ -31,6 +31,10 @@ type DeviceTools interface {
 
 var chineseWeekday = []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
 
+var A2AAllowedMCPServers = map[string]bool{
+	"CYEAM": true,
+}
+
 type MCPEndpointStatus struct {
 	URL       string
 	Connected bool
@@ -47,6 +51,7 @@ type Agent struct {
 	hub             DeviceTools
 	extMCPs         []*agentmcp.Client
 	extToolSets     [][]tool.BaseTool
+	extMCPNames     []string
 	extMCPStatus    []MCPEndpointStatus
 	skillMW         adk.ChatModelAgentMiddleware
 	recorder        *Recorder
@@ -107,6 +112,7 @@ func NewAgent(cfg Config, eventBus agentevent.Publisher) *Agent {
 
 	var extMCPs []*agentmcp.Client
 	var extToolSets [][]tool.BaseTool
+	var extMCPNames []string
 	var extMCPStatus []MCPEndpointStatus
 	for _, ep := range cfg.ExternalMCPEndpoints {
 		client, err := agentmcp.NewClient(ctx, agentmcp.AuthConfig{
@@ -133,6 +139,7 @@ func NewAgent(cfg Config, eventBus agentevent.Publisher) *Agent {
 		}
 		extMCPs = append(extMCPs, client)
 		extToolSets = append(extToolSets, tools)
+		extMCPNames = append(extMCPNames, ep.Name)
 		extMCPStatus = append(extMCPStatus, MCPEndpointStatus{URL: ep.URL, Connected: true, ToolCount: len(tools)})
 		logger.Infof("ext MCP ready: %s tools=%d", ep.URL, len(tools))
 	}
@@ -185,7 +192,7 @@ func NewAgent(cfg Config, eventBus agentevent.Publisher) *Agent {
 		}
 	}
 
-	a := &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, extMCPStatus: extMCPStatus, skillMW: skillMW, recorder: recorder, sessionMgr: sessionMgr}
+	a := &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, extMCPNames: extMCPNames, extMCPStatus: extMCPStatus, skillMW: skillMW, recorder: recorder, sessionMgr: sessionMgr}
 
 	agentRegistry := agentbuiltin.NewAgentRegistry()
 	agentRoots := cfg.AgentFileRoots
@@ -840,6 +847,26 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 	return result, nil
 }
 
+// RunNamedSubAgent invokes a registered subagent by name with the given
+// prompt, bypassing the main agent. Used by A2A routing to direct public
+// queries to the a2a_public_assistant subagent. sessionKey scopes the
+// subagent's memory; channelName restricts its tools via toolsForChat.
+func (a *Agent) RunNamedSubAgent(ctx context.Context, name string, prompt string, sessionKey string, channelName string) (string, error) {
+	if a.taskTool == nil {
+		return "", fmt.Errorf("subagent registry not available")
+	}
+	spec, ok := a.taskTool.SubAgentSpecByName(name)
+	if !ok {
+		return "", fmt.Errorf("unknown subagent %q", name)
+	}
+	rt := agentbuiltin.SubAgentRuntime{
+		TaskID:      sessionKey,
+		SessionKey:  sessionKey,
+		ChannelName: channelName,
+	}
+	return a.SubAgent(ctx, spec, rt, prompt)
+}
+
 func (a *Agent) SubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt agentbuiltin.SubAgentRuntime, prompt string) (string, error) {
 	if spec.IsFork {
 		return a.runForkSubAgent(ctx, spec, rt, prompt)
@@ -853,10 +880,9 @@ func (a *Agent) runNormalSubAgent(ctx context.Context, spec agentbuiltin.SubAgen
 		msgs = append(msgs, schema.SystemMessage(spec.SystemPrompt))
 	}
 	sessionKey := rt.SessionKey
-	if sessionKey == "" {
-		sessionKey = rt.TaskID
-	}
-	if sessionKey != "" && a.sessionMgr != nil && a.memory != nil {
+	// Disable memory entirely for A2A channel - no conversation history
+	// persistence to avoid any cross-session leakage risks.
+	if sessionKey != "" && rt.ChannelName != "a2a" && a.sessionMgr != nil && a.memory != nil {
 		subSession, _, err := a.sessionMgr.GetOrCreate(ctx, "subagent", sessionKey, a.CurrentLLMModel())
 		if err == nil {
 			if history := a.memory.Load(ctx, subSession); len(history) > 0 {
@@ -866,7 +892,7 @@ func (a *Agent) runNormalSubAgent(ctx context.Context, spec agentbuiltin.SubAgen
 	}
 	msgs = append(msgs, schema.UserMessage(prompt))
 
-	einoTools := a.subAgentTools(ctx, spec.AllowTools)
+	einoTools := a.subAgentTools(ctx, spec.AllowTools, rt.ChannelName)
 	if len(spec.DisabledTools) > 0 {
 		disabled := make(map[string]bool, len(spec.DisabledTools))
 		for _, name := range spec.DisabledTools {
@@ -901,7 +927,8 @@ func (a *Agent) runNormalSubAgent(ctx context.Context, spec agentbuiltin.SubAgen
 		MaxIterations:    maxSteps,
 		ModelRetryConfig: newLLMRetryConfig(),
 	}
-	if a.skillMW != nil {
+	// Disable skill middleware for A2A channel - prevents bypassing the tool allowlist
+	if a.skillMW != nil && rt.ChannelName != "a2a" {
 		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
 	}
 	if len(einoTools) > 0 {
@@ -992,7 +1019,8 @@ func (a *Agent) runForkSubAgent(ctx context.Context, spec agentbuiltin.SubAgentS
 		MaxIterations:    maxSteps,
 		ModelRetryConfig: newLLMRetryConfig(),
 	}
-	if a.skillMW != nil {
+	// Disable skill middleware for A2A channel - prevents bypassing the tool allowlist
+	if a.skillMW != nil && rt.ChannelName != "a2a" {
 		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
 	}
 	if len(einoTools) > 0 {
@@ -1053,7 +1081,7 @@ func (a *Agent) forkTools(ctx context.Context, spec agentbuiltin.SubAgentSpec) [
 	if !spec.AllowTools {
 		return nil
 	}
-	parentTools := a.subAgentTools(ctx, true)
+	parentTools := a.subAgentTools(ctx, true, "")
 	// Block tools unsafe for background fork execution, plus any the agent disabled.
 	blocked := map[string]bool{
 		"task": true, "ask_user_question": true,
@@ -1077,10 +1105,14 @@ func (a *Agent) forkTools(ctx context.Context, spec agentbuiltin.SubAgentSpec) [
 	return filtered
 }
 
-func (a *Agent) subAgentTools(ctx context.Context, allowTools bool) []tool.BaseTool {
+func (a *Agent) subAgentTools(ctx context.Context, allowTools bool, channelName string) []tool.BaseTool {
 	if !allowTools {
 		return nil
 	}
+	if channelName == "a2a" {
+		return a.a2aPublicTools(ctx)
+	}
+
 	filter := agentbuiltin.ToolWebSearch
 	if a.cfg.BuiltinWebFetchEnabled {
 		filter |= agentbuiltin.ToolWebFetch
@@ -1109,18 +1141,17 @@ func (a *Agent) generateTools(ctx context.Context) []tool.BaseTool {
 }
 
 func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string, channelName string) []tool.BaseTool {
+	// A2A channel: strictly limited to websearch + webfetch + CYEAM MCP.
+	// No bash, reminders, logs, ask_user_question, memory tools, task tool,
+	// channel_send, or device tools. Keep this path locked down even though
+	// the A2A server currently routes through RunNamedSubAgent.
+	if channelName == "a2a" {
+		return a.a2aPublicTools(context.Background())
+	}
+
 	filter := agentbuiltin.ToolWebSearch | agentbuiltin.ToolAskUserQuestion
 	if a.cfg.BuiltinWebFetchEnabled {
 		filter |= agentbuiltin.ToolWebFetch
-	}
-
-	// A2A channel: NO bash, NO ask_user_question, NO memory tools
-	isA2A := channelName == "a2a"
-	if isA2A {
-		filter = agentbuiltin.ToolWebSearch
-		if a.cfg.BuiltinWebFetchEnabled {
-			filter |= agentbuiltin.ToolWebFetch
-		}
 	}
 
 	if a.cfg.BashConfig.Enabled && channelName == string(agentchannel.TypeLark) {
@@ -1133,7 +1164,7 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 			MaxOutputBytes: a.cfg.BashConfig.MaxOutputBytes,
 		}
 	}
-	if a.memory != nil && channelName != "" && deviceID != "" && !isA2A {
+	if a.memory != nil && channelName != "" && deviceID != "" {
 		filter |= agentbuiltin.ToolMemorySave | agentbuiltin.ToolMemoryForget | agentbuiltin.ToolMemoryList
 		globalB := agentbuiltin.NewMemoryBackendScoped(a.memory.Client(), a.memory.Prefix(), channelName, deviceID, "global")
 		channelB := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
@@ -1163,6 +1194,27 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 		}
 	}
 	for _, tools := range a.extToolSets {
+		for _, t := range tools {
+			einoTools = append(einoTools, a.WrapTool(t, "mcp"))
+		}
+	}
+	return einoTools
+}
+
+func (a *Agent) a2aPublicTools(ctx context.Context) []tool.BaseTool {
+	filter := agentbuiltin.ToolWebSearch
+	if a.cfg.BuiltinWebFetchEnabled {
+		filter |= agentbuiltin.ToolWebFetch
+	}
+	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, agentbuiltin.ToolOptions{}))
+	for serverIdx, tools := range a.extToolSets {
+		serverName := "unknown"
+		if serverIdx < len(a.extMCPNames) {
+			serverName = a.extMCPNames[serverIdx]
+		}
+		if !A2AAllowedMCPServers[serverName] {
+			continue
+		}
 		for _, t := range tools {
 			einoTools = append(einoTools, a.WrapTool(t, "mcp"))
 		}

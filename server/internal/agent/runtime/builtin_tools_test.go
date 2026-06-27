@@ -4,8 +4,34 @@ import (
 	"context"
 	"testing"
 
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
+
 	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
 )
+
+type testTool struct {
+	name string
+}
+
+func (t testTool) Info(context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{Name: t.name, Desc: t.name}, nil
+}
+
+func toolNames(t *testing.T, tools []tool.BaseTool) map[string]bool {
+	t.Helper()
+	names := map[string]bool{}
+	for _, tb := range tools {
+		info, err := tb.Info(context.Background())
+		if err != nil {
+			t.Fatalf("Info() error = %v", err)
+		}
+		if info != nil {
+			names[info.Name] = true
+		}
+	}
+	return names
+}
 
 func TestToolsForChatIncludesConfiguredBuiltinTools(t *testing.T) {
 	agent := &Agent{cfg: Config{BuiltinWebFetchEnabled: true}}
@@ -82,7 +108,7 @@ func TestToolsForChatIncludesChannelSendToolWhenConfigured(t *testing.T) {
 
 func TestSubAgentToolsNotIncludesInteractiveTools(t *testing.T) {
 	agent := &Agent{cfg: Config{BuiltinWebFetchEnabled: true}}
-	tools := agent.subAgentTools(context.Background(), true)
+	tools := agent.subAgentTools(context.Background(), true, "")
 	for _, tb := range tools {
 		info, err := tb.Info(context.Background())
 		if err != nil {
@@ -124,8 +150,81 @@ func TestToolsForChatSkipsMemoryWithoutBackend(t *testing.T) {
 
 func TestSubAgentToolsDenyToolsReturnsNil(t *testing.T) {
 	agent := &Agent{cfg: Config{BuiltinWebFetchEnabled: true}}
-	tools := agent.subAgentTools(context.Background(), false)
+	tools := agent.subAgentTools(context.Background(), false, "")
 	if len(tools) != 0 {
 		t.Fatalf("subAgentTools(deny) should be empty, got %d", len(tools))
+	}
+}
+
+func TestA2AToolsOnlyExposePublicAllowlist(t *testing.T) {
+	agent := &Agent{
+		cfg: Config{BuiltinWebFetchEnabled: true, LogDir: t.TempDir()},
+		extMCPNames: []string{
+			"CYEAM",
+			"AMap",
+			"github",
+		},
+		extToolSets: [][]tool.BaseTool{
+			{testTool{name: "cyeam_public"}},
+			{testTool{name: "amap_weather"}},
+			{testTool{name: "github_repo"}},
+		},
+	}
+	agent.taskTool = agentbuiltin.NewTaskTool(
+		agentbuiltin.DefaultSubAgents(),
+		func(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt *agentbuiltin.SubAgentRuntime, prompt string) (string, error) {
+			return "", nil
+		},
+		nil,
+	)
+	agent.SetChannelSenders(ChannelSendersConfig{AllowedRoots: []string{t.TempDir()}})
+
+	names := toolNames(t, agent.toolsForChat(context.Background(), "", "", "a2a"))
+
+	for _, want := range []string{"webfetch", "websearch", "cyeam_public"} {
+		if !names[want] {
+			t.Fatalf("A2A tools missing %q; got %#v", want, names)
+		}
+	}
+	for _, blocked := range []string{
+		"ask_user_question",
+		"memory_save",
+		"memory_forget",
+		"memory_list",
+		"task",
+		"channel_send",
+		"log_search",
+		"amap_weather",
+		"github_repo",
+	} {
+		if names[blocked] {
+			t.Fatalf("A2A tools should not include %q; got %#v", blocked, names)
+		}
+	}
+}
+
+func TestA2ASubAgentToolsOnlyExposeCYEAMMCP(t *testing.T) {
+	agent := &Agent{
+		cfg: Config{BuiltinWebFetchEnabled: true},
+		extMCPNames: []string{
+			"CYEAM",
+			"AMap",
+			"github",
+		},
+		extToolSets: [][]tool.BaseTool{
+			{testTool{name: "cyeam_public"}},
+			{testTool{name: "amap_weather"}},
+			{testTool{name: "github_repo"}},
+		},
+	}
+
+	names := toolNames(t, agent.subAgentTools(context.Background(), true, "a2a"))
+	if !names["cyeam_public"] {
+		t.Fatalf("A2A subagent tools missing CYEAM tool; got %#v", names)
+	}
+	for _, blocked := range []string{"amap_weather", "github_repo"} {
+		if names[blocked] {
+			t.Fatalf("A2A subagent tools should not include %q; got %#v", blocked, names)
+		}
 	}
 }

@@ -72,6 +72,22 @@
       "api_key_env": "GITHUB_PERSONAL_ACCESS_TOKEN"
     }
   ],
+  "a2a": {
+    "enabled": true,
+    "public_agent_card": false,
+    "rate_limit_per_minute": 100,
+    "rate_limit_global_per_minute": 1000,
+    "max_concurrent": 5,
+    "max_input_chars": 10000,
+    "timeout_seconds": 120,
+    "task_ttl_seconds": 3600,
+    "keys": [
+      {
+        "id": "partner_a",
+        "secret_env": "A2A_PARTNER_A_SECRET"
+      }
+    ]
+  },
   "tools": {
     "webfetch": {
       "enabled": true

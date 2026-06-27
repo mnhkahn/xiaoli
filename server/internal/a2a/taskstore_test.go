@@ -1,72 +1,102 @@
 package a2a
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/stretchr/testify/assert"
 )
 
-func TestMemoryTaskStore_PutAndGet(t *testing.T) {
-	store := NewMemoryTaskStore(60) // 60s TTL
-	defer store.Stop()
+func ctxWithKey(keyID string) context.Context {
+	return context.WithValue(context.Background(), keyIDContextKey, keyID)
+}
 
-	task := &Task{
-		ID:     "task_123",
-		Status: TaskStatusCompleted,
-		Result: "hello world",
+func newTestTask(id string) *a2a.Task {
+	return &a2a.Task{
+		ID:        a2a.TaskID(id),
+		ContextID: "ctx_" + id,
+		Status:    a2a.TaskStatus{State: a2a.TaskStateCompleted},
 	}
-
-	store.Put("task_123", task)
-
-	retrieved, ok := store.Get("task_123")
-	assert.True(t, ok)
-	assert.Equal(t, "task_123", retrieved.ID)
-	assert.Equal(t, TaskStatusCompleted, retrieved.Status)
-	assert.Equal(t, "hello world", retrieved.Result)
 }
 
-func TestMemoryTaskStore_GetNonExistent(t *testing.T) {
-	store := NewMemoryTaskStore(60)
+func TestKeyPartitionedStore_CreateAndGet_SameKey(t *testing.T) {
+	store := newKeyPartitionedStore(time.Minute)
 	defer store.Stop()
 
-	_, ok := store.Get("nonexistent")
-	assert.False(t, ok)
+	ctx := ctxWithKey("partner_a")
+	task := newTestTask("task_1")
+	_, err := store.Create(ctx, task)
+	assert.NoError(t, err)
+
+	stored, err := store.Get(ctx, "task_1")
+	assert.NoError(t, err)
+	assert.Equal(t, "task_1", string(stored.Task.ID))
 }
 
-func TestMemoryTaskStore_TTLExpiry(t *testing.T) {
-	store := NewMemoryTaskStore(1) // 1s TTL
+func TestKeyPartitionedStore_Get_DifferentKey_ReturnsNotFound(t *testing.T) {
+	store := newKeyPartitionedStore(time.Minute)
 	defer store.Stop()
 
-	task := &Task{ID: "task_expire", Status: TaskStatusCompleted}
-	store.Put("task_expire", task)
+	ctxA := ctxWithKey("partner_a")
+	task := newTestTask("task_2")
+	_, err := store.Create(ctxA, task)
+	assert.NoError(t, err)
 
-	// Immediately should exist
-	_, ok := store.Get("task_expire")
-	assert.True(t, ok)
-
-	// Wait for TTL + cleanup interval
-	time.Sleep(2 * time.Second)
-
-	_, ok = store.Get("task_expire")
-	assert.False(t, ok, "task should have expired after TTL")
+	// partner_b tries to query partner_a's task — must fail
+	ctxB := ctxWithKey("partner_b")
+	_, err = store.Get(ctxB, "task_2")
+	assert.ErrorIs(t, err, a2a.ErrTaskNotFound)
 }
 
-func TestMemoryTaskStore_ConcurrentAccess(t *testing.T) {
-	store := NewMemoryTaskStore(60)
+func TestKeyPartitionedStore_Get_UnauthenticatedReturnsNotFound(t *testing.T) {
+	store := newKeyPartitionedStore(time.Minute)
+	defer store.Stop()
+
+	ctxA := ctxWithKey("partner_a")
+	task := newTestTask("task_3")
+	_, _ = store.Create(ctxA, task)
+
+	// No key_id in context — must fail
+	_, err := store.Get(context.Background(), "task_3")
+	assert.ErrorIs(t, err, a2a.ErrTaskNotFound)
+}
+
+func TestKeyPartitionedStore_TTLExpiry(t *testing.T) {
+	store := newKeyPartitionedStore(100 * time.Millisecond)
+	defer store.Stop()
+
+	ctx := ctxWithKey("partner_a")
+	task := newTestTask("task_ttl")
+	_, _ = store.Create(ctx, task)
+
+	// Immediately accessible
+	_, err := store.Get(ctx, "task_ttl")
+	assert.NoError(t, err)
+
+	time.Sleep(200 * time.Millisecond)
+
+	// After TTL, must be gone
+	_, err = store.Get(ctx, "task_ttl")
+	assert.ErrorIs(t, err, a2a.ErrTaskNotFound)
+}
+
+func TestKeyPartitionedStore_ConcurrentAccess(t *testing.T) {
+	store := newKeyPartitionedStore(time.Minute)
 	defer store.Stop()
 
 	done := make(chan bool)
 	for i := 0; i < 10; i++ {
 		go func(idx int) {
-			task := &Task{ID: fmt.Sprintf("task_%d", idx), Status: TaskStatusWorking}
-			store.Put(task.ID, task)
-			_, _ = store.Get(task.ID)
+			ctx := ctxWithKey(fmt.Sprintf("key_%d", idx))
+			task := newTestTask(fmt.Sprintf("task_%d", idx))
+			_, _ = store.Create(ctx, task)
+			_, _ = store.Get(ctx, a2a.TaskID(task.ID))
 			done <- true
 		}(i)
 	}
-
 	for i := 0; i < 10; i++ {
 		<-done
 	}

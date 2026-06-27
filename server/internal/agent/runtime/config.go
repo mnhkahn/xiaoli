@@ -22,6 +22,7 @@ const (
 )
 
 type MCPEndpoint struct {
+	Name    string // MCP 服务名（settings.json 中的 name），用于 A2A allowlist
 	URL     string
 	APIKey  string
 	Auth    string // 见 MCPAuth* 常量，空视为 query（兼容旧逻辑）

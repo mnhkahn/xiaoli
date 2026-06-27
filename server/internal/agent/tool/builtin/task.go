@@ -77,6 +77,14 @@ type TaskTool struct {
 	resolveCfg    ResolveConfig
 }
 
+// SubAgentSpecByName returns the SubAgentSpec for the named agent, if loaded.
+// Used by A2A routing to invoke a dedicated subagent without going through
+// the main agent's task tool.
+func (t *TaskTool) SubAgentSpecByName(name string) (SubAgentSpec, bool) {
+	spec, ok := t.subAgents[name]
+	return spec, ok
+}
+
 func NewTaskTool(subAgents map[string]SubAgentSpec, fn func(ctx context.Context, spec SubAgentSpec, rt *SubAgentRuntime, prompt string) (string, error), eventBus event.Publisher) *TaskTool {
 	if eventBus == nil {
 		eventBus = noopPublisher{}
