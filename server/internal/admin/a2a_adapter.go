@@ -50,6 +50,7 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 			SystemPrompt: profile.SystemPrompt,
 			UserText:     req.UserText,
 			ChannelName:  turn.Channel,
+			SessionKey:   turn.ConversationID,
 			AllowTools:   profile.AllowTools,
 			MaxSteps:     profile.MaxSteps,
 		})

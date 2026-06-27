@@ -317,9 +317,27 @@ func newA2ASkillContentBuilder(cfg Config, recorder *Recorder) func(context.Cont
 			skillName = "skill"
 		}
 		recorder.RecordToolCall(skillName)
+		st := traceFromContext(ctx)
+		step := 0
+		start := time.Now()
+		if st != nil {
+			step = st.nextToolStep()
+			msg := fmt.Sprintf("%s skill.start step=%d name=%s args_len=%d", tracePrefix(st), step, skillName, len(rawArgs))
+			if st.Options.LogInputs && rawArgs != "" {
+				msg += fmt.Sprintf(" args=%q", traceTruncate(rawArgs, st.Options.MaxValueLength))
+			}
+			logger.Infof("%s", msg)
+		}
 		result, err := build(ctx, skill, rawArgs)
 		if err != nil {
 			recorder.RecordToolError(skillName)
+		}
+		if st != nil {
+			msg := fmt.Sprintf("%s skill.end step=%d name=%s output_len=%d elapsed=%v err=%v", tracePrefix(st), step, skillName, len(result), time.Since(start), err)
+			if st.Options.LogOutputs && result != "" {
+				msg += fmt.Sprintf(" output=%q", traceTruncate(result, st.Options.MaxValueLength))
+			}
+			logger.Infof("%s", msg)
 		}
 		return result, err
 	}
@@ -406,6 +424,7 @@ type PromptProfileRequest struct {
 	SystemPrompt string
 	UserText     string
 	ChannelName  string
+	SessionKey   string
 	AllowTools   bool
 	MaxSteps     int
 }
@@ -938,6 +957,9 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 	if name == "" {
 		name = "a2a_profile"
 	}
+	if req.ChannelName == "a2a" {
+		ctx = withTrace(ctx, newA2ATraceState(name, req.SessionKey, newA2ATraceOptions(a.cfg)))
+	}
 	cfg := &adk.ChatModelAgentConfig{
 		Name:             name,
 		Model:            chatModel,
@@ -949,8 +971,9 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 	} else if req.ChannelName != "a2a" && a.skillMW != nil {
 		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
 	}
+	var einoTools []tool.BaseTool
 	if req.AllowTools {
-		einoTools := a.subAgentTools(ctx, true, req.ChannelName)
+		einoTools = a.subAgentTools(ctx, true, req.ChannelName)
 		if len(einoTools) > 0 {
 			cfg.ToolsConfig = adk.ToolsConfig{
 				ToolsNodeConfig: compose.ToolsNodeConfig{
@@ -958,6 +981,13 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 				},
 			}
 		}
+	}
+	if st := traceFromContext(ctx); st != nil {
+		msg := fmt.Sprintf("%s profile.start allow_tools=%v max_steps=%d input_len=%d tools=%v", tracePrefix(st), req.AllowTools, maxSteps, len(userText), traceToolNames(ctx, einoTools))
+		if st.Options.LogInputs {
+			msg += fmt.Sprintf(" input=%q", traceTruncate(userText, st.Options.MaxValueLength))
+		}
+		logger.Infof("%s", msg)
 	}
 
 	agent, err := adk.NewChatModelAgent(ctx, cfg)
@@ -1016,6 +1046,9 @@ func (a *Agent) SubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt
 }
 
 func (a *Agent) runNormalSubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt agentbuiltin.SubAgentRuntime, prompt string) (string, error) {
+	if rt.ChannelName == "a2a" {
+		ctx = withTrace(ctx, newA2ATraceState(spec.Name, rt.SessionKey, newA2ATraceOptions(a.cfg)))
+	}
 	msgs := make([]*schema.Message, 0, 2)
 	if spec.SystemPrompt != "" {
 		msgs = append(msgs, schema.SystemMessage(spec.SystemPrompt))
@@ -1080,6 +1113,13 @@ func (a *Agent) runNormalSubAgent(ctx context.Context, spec agentbuiltin.SubAgen
 				Tools: einoTools,
 			},
 		}
+	}
+	if st := traceFromContext(ctx); st != nil {
+		msg := fmt.Sprintf("%s subagent.start allow_tools=%v max_steps=%d input_len=%d tools=%v", tracePrefix(st), spec.AllowTools, maxSteps, len(prompt), traceToolNames(ctx, einoTools))
+		if st.Options.LogInputs {
+			msg += fmt.Sprintf(" input=%q", traceTruncate(prompt, st.Options.MaxValueLength))
+		}
+		logger.Infof("%s", msg)
 	}
 
 	agent, err := adk.NewChatModelAgent(ctx, cfg)

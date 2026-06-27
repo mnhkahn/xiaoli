@@ -12,6 +12,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"github.com/mnhkahn/gogogo/logger"
 )
 
 type minuteBucket struct {
@@ -73,6 +74,33 @@ func (r *Recorder) WithContext(ctx context.Context, modelID string) context.Cont
 
 func (r *Recorder) buildHandler() callbacks.Handler {
 	return callbacks.NewHandlerBuilder().
+		OnStartFn(func(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
+			if info == nil || info.Component != components.ComponentOfChatModel {
+				return ctx
+			}
+			st := traceFromContext(ctx)
+			if st == nil {
+				return ctx
+			}
+			run := st.nextModelRun()
+			mi := model.ConvCallbackInput(input)
+			msgCount := 0
+			toolNames := []string(nil)
+			if mi != nil {
+				msgCount = len(mi.Messages)
+				if len(mi.Tools) > 0 {
+					toolNames = make([]string, 0, len(mi.Tools))
+					for _, t := range mi.Tools {
+						if t != nil && t.Name != "" {
+							toolNames = append(toolNames, t.Name)
+						}
+					}
+					sortStrings(toolNames)
+				}
+			}
+			logger.Infof("%s model.start step=%d name=%s type=%s messages=%d tools=%v", tracePrefix(st), run.Step, info.Name, info.Type, msgCount, toolNames)
+			return context.WithValue(ctx, traceRunKey{}, run)
+		}).
 		OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
 			if info == nil || info.Component != components.ComponentOfChatModel {
 				return ctx
@@ -82,6 +110,30 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 			if mo != nil {
 				r.record(mid, mo)
 			}
+			st := traceFromContext(ctx)
+			if st != nil {
+				run, _ := ctx.Value(traceRunKey{}).(traceRun)
+				msgLen := 0
+				toolCalls := []string(nil)
+				if mo != nil && mo.Message != nil {
+					_, msgLen, toolCalls, _ = traceMessageSummary(mo.Message)
+				}
+				promptTokens, completionTokens, totalTokens := 0, 0, 0
+				if mo != nil && mo.TokenUsage != nil {
+					promptTokens = mo.TokenUsage.PromptTokens
+					completionTokens = mo.TokenUsage.CompletionTokens
+					totalTokens = mo.TokenUsage.TotalTokens
+				}
+				elapsed := time.Duration(0)
+				if !run.Start.IsZero() {
+					elapsed = time.Since(run.Start)
+				}
+				msg := fmt.Sprintf("%s model.end step=%d name=%s type=%s output_len=%d tool_calls=%v tokens={prompt:%d completion:%d total:%d} elapsed=%v", tracePrefix(st), run.Step, info.Name, info.Type, msgLen, toolCalls, promptTokens, completionTokens, totalTokens, elapsed)
+				if st.Options.LogOutputs && mo != nil && mo.Message != nil && mo.Message.Content != "" {
+					msg += fmt.Sprintf(" output=%q", traceTruncate(mo.Message.Content, st.Options.MaxValueLength))
+				}
+				logger.Infof("%s", msg)
+			}
 			return ctx
 		}).
 		OnErrorFn(func(ctx context.Context, info *callbacks.RunInfo, err error) context.Context {
@@ -90,6 +142,14 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 			}
 			mid := r.resolveModelID(ctx, nil)
 			r.recordError(mid)
+			if st := traceFromContext(ctx); st != nil {
+				run, _ := ctx.Value(traceRunKey{}).(traceRun)
+				elapsed := time.Duration(0)
+				if !run.Start.IsZero() {
+					elapsed = time.Since(run.Start)
+				}
+				logger.Infof("%s model.error step=%d name=%s type=%s elapsed=%v err=%v", tracePrefix(st), run.Step, info.Name, info.Type, elapsed, err)
+			}
 			return ctx
 		}).
 		Build()
@@ -312,16 +372,17 @@ func (r *Recorder) RecordToolError(toolName string) {
 type toolCounter struct {
 	inner    tool.InvokableTool
 	toolName string
+	category string
 	recorder *Recorder
 }
 
-func newToolCounter(inner tool.InvokableTool, recorder *Recorder) *toolCounter {
+func newToolCounter(inner tool.InvokableTool, recorder *Recorder, category string) *toolCounter {
 	info, _ := inner.Info(context.Background())
 	toolName := "unknown"
 	if info != nil && info.Name != "" {
 		toolName = info.Name
 	}
-	return &toolCounter{inner: inner, toolName: toolName, recorder: recorder}
+	return &toolCounter{inner: inner, toolName: toolName, category: category, recorder: recorder}
 }
 
 func (w *toolCounter) Info(ctx context.Context) (*schema.ToolInfo, error) {
@@ -330,9 +391,28 @@ func (w *toolCounter) Info(ctx context.Context) (*schema.ToolInfo, error) {
 
 func (w *toolCounter) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 	w.recorder.RecordToolCall(w.toolName)
+	st := traceFromContext(ctx)
+	step := 0
+	start := time.Now()
+	if st != nil {
+		step = st.nextToolStep()
+		msg := fmt.Sprintf("%s tool.start step=%d name=%s category=%s args_len=%d", tracePrefix(st), step, w.toolName, w.category, len(argumentsInJSON))
+		if st.Options.LogInputs && argumentsInJSON != "" {
+			msg += fmt.Sprintf(" args=%q", traceTruncate(argumentsInJSON, st.Options.MaxValueLength))
+		}
+		logger.Infof("%s", msg)
+	}
 	result, err := w.inner.InvokableRun(ctx, argumentsInJSON, opts...)
 	if err != nil {
 		w.recorder.RecordToolError(w.toolName)
+	}
+	if st != nil {
+		elapsed := time.Since(start)
+		msg := fmt.Sprintf("%s tool.end step=%d name=%s category=%s output_len=%d elapsed=%v err=%v", tracePrefix(st), step, w.toolName, w.category, len(result), elapsed, err)
+		if st.Options.LogOutputs && result != "" {
+			msg += fmt.Sprintf(" output=%q", traceTruncate(result, st.Options.MaxValueLength))
+		}
+		logger.Infof("%s", msg)
 	}
 	return result, err
 }
@@ -342,7 +422,7 @@ func (a *Agent) WrapTool(t tool.BaseTool, category string) tool.BaseTool {
 		return t
 	}
 	if invokable, ok := t.(tool.InvokableTool); ok {
-		return newToolCounter(invokable, a.recorder)
+		return newToolCounter(invokable, a.recorder, category)
 	}
 	return t
 }

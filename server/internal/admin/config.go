@@ -91,15 +91,15 @@ type Config struct {
 	A2A A2AConfig
 
 	// Email configuration
-	EmailSMTPHost     string
-	EmailSMTPPort     int
-	EmailIMAPHost     string
-	EmailIMAPPort     int
-	EmailUsername     string
-	EmailPassword     string
-	EmailUseSSL       bool
-	EmailFromName     string
-	EmailFromAddress  string
+	EmailSMTPHost    string
+	EmailSMTPPort    int
+	EmailIMAPHost    string
+	EmailIMAPPort    int
+	EmailUsername    string
+	EmailPassword    string
+	EmailUseSSL      bool
+	EmailFromName    string
+	EmailFromAddress string
 }
 
 type LLMModelConfig struct {
@@ -125,6 +125,14 @@ type A2AConfig struct {
 	TaskTTLSeconds      int
 	AllowedSkills       []string
 	PublicBaseURL       string
+	Trace               A2ATraceConfig
+}
+
+type A2ATraceConfig struct {
+	Enabled        bool
+	LogInputs      bool
+	LogOutputs     bool
+	MaxValueLength int
 }
 
 var validKeyIDChars = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
@@ -233,15 +241,15 @@ func LoadConfig() Config {
 		Timezone:                env("TZ", "Asia/Shanghai"),
 
 		// Email configuration (Gmail defaults)
-		EmailSMTPHost:     env("EMAIL_SMTP_HOST", "smtp.gmail.com"),
-		EmailSMTPPort:     envInt("EMAIL_SMTP_PORT", 465),
-		EmailIMAPHost:     env("EMAIL_IMAP_HOST", "imap.gmail.com"),
-		EmailIMAPPort:     envInt("EMAIL_IMAP_PORT", 993),
-		EmailUsername:     env("EMAIL_USERNAME", ""),
-		EmailPassword:     env("EMAIL_PASSWORD", ""),
-		EmailUseSSL:       envBool("EMAIL_USE_SSL", true),
-		EmailFromName:     env("EMAIL_FROM_NAME", ""),
-		EmailFromAddress:  env("EMAIL_FROM_ADDRESS", ""),
+		EmailSMTPHost:    env("EMAIL_SMTP_HOST", "smtp.gmail.com"),
+		EmailSMTPPort:    envInt("EMAIL_SMTP_PORT", 465),
+		EmailIMAPHost:    env("EMAIL_IMAP_HOST", "imap.gmail.com"),
+		EmailIMAPPort:    envInt("EMAIL_IMAP_PORT", 993),
+		EmailUsername:    env("EMAIL_USERNAME", ""),
+		EmailPassword:    env("EMAIL_PASSWORD", ""),
+		EmailUseSSL:      envBool("EMAIL_USE_SSL", true),
+		EmailFromName:    env("EMAIL_FROM_NAME", ""),
+		EmailFromAddress: env("EMAIL_FROM_ADDRESS", ""),
 	}
 	cfg.A2A = A2AConfig{
 		Enabled:             settings.a2aEnabled(),
@@ -255,6 +263,12 @@ func LoadConfig() Config {
 		TaskTTLSeconds:      settings.a2aTaskTTLSeconds(),
 		AllowedSkills:       settings.a2aAllowedSkills(),
 		PublicBaseURL:       strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"),
+		Trace: A2ATraceConfig{
+			Enabled:        settings.a2aTraceEnabled(),
+			LogInputs:      settings.a2aTraceLogInputs(),
+			LogOutputs:     settings.a2aTraceLogOutputs(),
+			MaxValueLength: settings.a2aTraceMaxValueLength(),
+		},
 	}
 	cfg.LogDir = filepath.Join(cfg.DataDir, "logs")
 	return cfg
@@ -296,16 +310,24 @@ type settingsA2AKey struct {
 }
 
 type settingsA2AConfig struct {
-	Enabled           *bool             `json:"enabled"`
-	PublicAgentCard   *bool             `json:"public_agent_card"`
-	Keys              []settingsA2AKey  `json:"keys"`
-	MaxInputChars     *int              `json:"max_input_chars"`
-	TimeoutSeconds    *int              `json:"timeout_seconds"`
-	RateLimitPerMin   *int              `json:"rate_limit_per_minute"`
-	RateLimitGlobal   *int              `json:"rate_limit_global_per_minute"`
-	MaxConcurrent     *int              `json:"max_concurrent"`
-	TaskTTLSeconds    *int              `json:"task_ttl_seconds"`
-	AllowedSkills     []string          `json:"allowed_skills"`
+	Enabled         *bool            `json:"enabled"`
+	PublicAgentCard *bool            `json:"public_agent_card"`
+	Keys            []settingsA2AKey `json:"keys"`
+	MaxInputChars   *int             `json:"max_input_chars"`
+	TimeoutSeconds  *int             `json:"timeout_seconds"`
+	RateLimitPerMin *int             `json:"rate_limit_per_minute"`
+	RateLimitGlobal *int             `json:"rate_limit_global_per_minute"`
+	MaxConcurrent   *int             `json:"max_concurrent"`
+	TaskTTLSeconds  *int             `json:"task_ttl_seconds"`
+	AllowedSkills   []string         `json:"allowed_skills"`
+	Trace           settingsA2ATrace `json:"trace"`
+}
+
+type settingsA2ATrace struct {
+	Enabled        *bool `json:"enabled"`
+	LogInputs      *bool `json:"log_inputs"`
+	LogOutputs     *bool `json:"log_outputs"`
+	MaxValueLength *int  `json:"max_value_length"`
 }
 
 type settingsModels struct {
@@ -347,8 +369,8 @@ type settingsMCPServer struct {
 	Scope           string `json:"scope,omitempty"`
 
 	// stdio 模式（如 docker run）
-	Command string   `json:"command,omitempty"`
-	Args    []string `json:"args,omitempty"`
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
 }
 
@@ -750,6 +772,28 @@ func (s settingsConfig) a2aTaskTTLSeconds() int {
 
 func (s settingsConfig) a2aAllowedSkills() []string {
 	return s.A2A.AllowedSkills
+}
+
+func (s settingsConfig) a2aTraceEnabled() bool {
+	return s.A2A.Trace.Enabled != nil && *s.A2A.Trace.Enabled
+}
+
+func (s settingsConfig) a2aTraceLogInputs() bool {
+	return s.A2A.Trace.LogInputs != nil && *s.A2A.Trace.LogInputs
+}
+
+func (s settingsConfig) a2aTraceLogOutputs() bool {
+	if s.A2A.Trace.LogOutputs == nil {
+		return true
+	}
+	return *s.A2A.Trace.LogOutputs
+}
+
+func (s settingsConfig) a2aTraceMaxValueLength() int {
+	if s.A2A.Trace.MaxValueLength == nil || *s.A2A.Trace.MaxValueLength <= 0 {
+		return 800
+	}
+	return *s.A2A.Trace.MaxValueLength
 }
 
 func settingsAPIKey(envName string) string {

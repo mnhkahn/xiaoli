@@ -65,6 +65,10 @@ type Config struct {
 	LogDir                  string
 	Timezone                string
 	A2AAllowedSkills        []string // A2A 通道允许的 skill 白名单
+	A2ATraceEnabled         bool
+	A2ATraceLogInputs       bool
+	A2ATraceLogOutputs      bool
+	A2ATraceMaxValueLength  int
 }
 
 type LLMModelConfig struct {

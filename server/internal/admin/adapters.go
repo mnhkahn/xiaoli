@@ -96,10 +96,14 @@ func newEinoAgent(cfg Config, reminderStore *agentworkflow.ReminderStore, eventB
 			Timeout:        cfg.BashTimeout,
 			MaxOutputBytes: cfg.BashMaxOutputBytes,
 		},
-		ReminderStore:   reminderStore,
-		LogDir:          cfg.LogDir,
-		Timezone:        cfg.Timezone,
-		A2AAllowedSkills: cfg.A2A.AllowedSkills,
+		ReminderStore:          reminderStore,
+		LogDir:                 cfg.LogDir,
+		Timezone:               cfg.Timezone,
+		A2AAllowedSkills:       cfg.A2A.AllowedSkills,
+		A2ATraceEnabled:        cfg.A2A.Trace.Enabled,
+		A2ATraceLogInputs:      cfg.A2A.Trace.LogInputs,
+		A2ATraceLogOutputs:     cfg.A2A.Trace.LogOutputs,
+		A2ATraceMaxValueLength: cfg.A2A.Trace.MaxValueLength,
 	}, eventBus)
 }
 

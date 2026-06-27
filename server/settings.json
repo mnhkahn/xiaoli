@@ -81,6 +81,12 @@
     "max_input_chars": 10000,
     "timeout_seconds": 120,
     "task_ttl_seconds": 3600,
+    "trace": {
+      "enabled": true,
+      "log_inputs": false,
+      "log_outputs": true,
+      "max_value_length": 800
+    },
     "allowed_skills": ["holiday", "cyeam-cli", "news", "ai-models"],
     "keys": [
       {

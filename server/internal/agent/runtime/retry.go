@@ -156,14 +156,20 @@ func agentRetryBackoff(attempt int) time.Duration {
 
 func runWithRetry(ctx context.Context, runner *adk.Runner, msgs []*schema.Message) ([]*adk.AgentEvent, error) {
 	for attempt := 0; attempt <= agentRetryMax; attempt++ {
+		if st := traceFromContext(ctx); st != nil {
+			logger.Infof("%s runner.start attempt=%d input_messages=%d", tracePrefix(st), attempt+1, len(msgs))
+		}
 		it := runner.Run(ctx, msgs)
 		var events []*adk.AgentEvent
 		var lastErr error
+		eventIndex := 0
 		for {
 			event, ok := it.Next()
 			if !ok {
 				break
 			}
+			eventIndex++
+			logTraceEvent(ctx, eventIndex, event)
 			if event.Err != nil {
 				lastErr = event.Err
 				break
@@ -171,8 +177,12 @@ func runWithRetry(ctx context.Context, runner *adk.Runner, msgs []*schema.Messag
 			events = append(events, event)
 		}
 		if lastErr == nil {
+			if st := traceFromContext(ctx); st != nil {
+				logger.Infof("%s runner.end attempt=%d events=%d", tracePrefix(st), attempt+1, len(events))
+			}
 			return events, nil
 		}
+		logTraceFailure(ctx, lastErr, events)
 
 		if attempt < agentRetryMax && isRetryableAgentError(lastErr) {
 			delay := agentRetryBackoff(attempt + 1)
