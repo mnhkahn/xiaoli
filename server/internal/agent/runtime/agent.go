@@ -401,6 +401,15 @@ type ChannelSendersConfig struct {
 	AllowedRoots []string // Trusted directories for file operations
 }
 
+type PromptProfileRequest struct {
+	Name         string
+	SystemPrompt string
+	UserText     string
+	ChannelName  string
+	AllowTools   bool
+	MaxSteps     int
+}
+
 // SetChannelSenders sets up the channel_send tool with the provided senders
 func (a *Agent) SetChannelSenders(cfg ChannelSendersConfig) {
 	a.channelSendTool = agentbuiltin.NewChannelSendTool(agentbuiltin.ChannelSendConfig{
@@ -900,6 +909,81 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 	}
 	if result == "" {
 		return "", fmt.Errorf("agent returned empty response")
+	}
+	return result, nil
+}
+
+func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) (string, error) {
+	if strings.TrimSpace(req.SystemPrompt) == "" {
+		return "", fmt.Errorf("profile system prompt is required")
+	}
+	userText := strings.TrimSpace(req.UserText)
+	if userText == "" {
+		return "", fmt.Errorf("profile user text is required")
+	}
+	msgs := []*schema.Message{
+		schema.SystemMessage(req.SystemPrompt),
+		schema.UserMessage(userText),
+	}
+
+	chatModel, modelID, err := a.chatModel(ctx)
+	if err != nil {
+		return "", fmt.Errorf("create chat model: %w", err)
+	}
+	maxSteps := req.MaxSteps
+	if maxSteps <= 0 {
+		maxSteps = 4
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = "a2a_profile"
+	}
+	cfg := &adk.ChatModelAgentConfig{
+		Name:             name,
+		Model:            chatModel,
+		MaxIterations:    maxSteps,
+		ModelRetryConfig: newLLMRetryConfig(),
+	}
+	if req.ChannelName == "a2a" && a.a2aSkillMW != nil {
+		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.a2aSkillMW}
+	} else if req.ChannelName != "a2a" && a.skillMW != nil {
+		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
+	}
+	if req.AllowTools {
+		einoTools := a.subAgentTools(ctx, true, req.ChannelName)
+		if len(einoTools) > 0 {
+			cfg.ToolsConfig = adk.ToolsConfig{
+				ToolsNodeConfig: compose.ToolsNodeConfig{
+					Tools: einoTools,
+				},
+			}
+		}
+	}
+
+	agent, err := adk.NewChatModelAgent(ctx, cfg)
+	if err != nil {
+		return "", fmt.Errorf("create profile agent: %w", err)
+	}
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
+	runCtx := a.recorder.WithContext(ctx, modelID)
+	events, err := runWithRetry(runCtx, runner, msgs)
+	if err != nil {
+		return "", fmt.Errorf("profile agent error: %w", err)
+	}
+	var result string
+	for _, event := range events {
+		if event.Err != nil {
+			logger.Infof("RunPromptProfile event error: %v", event.Err)
+			return "", fmt.Errorf("profile agent error: %w", event.Err)
+		}
+		if event.Output != nil && event.Output.MessageOutput != nil &&
+			event.Output.MessageOutput.Message != nil &&
+			event.Output.MessageOutput.Role == schema.Assistant {
+			result = event.Output.MessageOutput.Message.Content
+		}
+	}
+	if result == "" {
+		return "", fmt.Errorf("profile agent returned empty response")
 	}
 	return result, nil
 }
