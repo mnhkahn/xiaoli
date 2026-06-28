@@ -324,22 +324,14 @@ func newA2ASkillContentBuilder(cfg Config, recorder *Recorder) func(context.Cont
 		start := time.Now()
 		if st != nil {
 			step = st.nextToolStep()
-			msg := fmt.Sprintf("%s skill.start step=%d name=%s args_len=%d", tracePrefix(st), step, skillName, len(rawArgs))
-			if st.Options.LogInputs && rawArgs != "" {
-				msg += fmt.Sprintf(" args=%q", traceTruncate(rawArgs, st.Options.MaxValueLength))
-			}
-			logger.Infof("%s", msg)
+			logTraceToolStart(ctx, step, skillName, "skill", rawArgs)
 		}
 		result, err := build(ctx, skill, rawArgs)
 		if err != nil {
 			recorder.RecordToolError(skillName)
 		}
 		if st != nil {
-			msg := fmt.Sprintf("%s skill.end step=%d name=%s output_len=%d elapsed=%v err=%v", tracePrefix(st), step, skillName, len(result), time.Since(start), err)
-			if st.Options.LogOutputs && result != "" {
-				msg += fmt.Sprintf(" output=%q", traceTruncate(result, st.Options.MaxValueLength))
-			}
-			logger.Infof("%s", msg)
+			logTraceToolEnd(ctx, step, skillName, "skill", len(result), time.Since(start), err, result)
 		}
 		return result, err
 	}
@@ -942,7 +934,9 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 	if userText == "" {
 		return "", fmt.Errorf("profile user text is required")
 	}
-	msgs, profileSessionID := a.buildPromptProfileMessages(ctx, req.SystemPrompt, userText, req.ChannelName, req.SessionKey)
+	profileSystemAsUser := req.ChannelName == "a2a" && req.AllowTools && a.a2aSkillMW != nil
+	msgs, profileSessionID := a.buildPromptProfileMessages(ctx, req.SystemPrompt, userText, req.ChannelName, req.SessionKey, profileSystemAsUser)
+	historyMsgs := promptProfilePersistMessages(msgs, userText)
 
 	chatModel, modelID, err := a.chatModel(ctx)
 	if err != nil {
@@ -994,24 +988,30 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 	runCtx := a.recorder.WithContext(ctx, modelID)
 	events, err := runWithRetry(runCtx, runner, msgs)
 	if err != nil {
+		errorMsg := fmt.Sprintf("[执行失败] %v", err)
+		a.savePromptProfileDiagnostic(ctx, profileSessionID, historyMsgs, errorMsg)
 		return "", fmt.Errorf("profile agent error: %w", err)
 	}
 	var result string
 	for _, event := range events {
 		if event.Err != nil {
 			logger.Infof("RunPromptProfile event error: %v", event.Err)
+			errorMsg := fmt.Sprintf("[执行失败] %v", event.Err)
+			a.savePromptProfileDiagnostic(ctx, profileSessionID, historyMsgs, errorMsg)
 			return "", fmt.Errorf("profile agent error: %w", event.Err)
 		}
 		if event.Output != nil && event.Output.MessageOutput != nil &&
 			event.Output.MessageOutput.Message != nil &&
 			event.Output.MessageOutput.Role == schema.Assistant {
-			result = event.Output.MessageOutput.Message.Content
+			result = cleanPromptProfileResult(event.Output.MessageOutput.Message.Content)
 		}
 	}
 	if result == "" {
+		errorMsg := "[执行失败] 代理返回空响应"
+		a.savePromptProfileDiagnostic(ctx, profileSessionID, historyMsgs, errorMsg)
 		return "", fmt.Errorf("profile agent returned empty response")
 	}
-	a.savePromptProfileHistory(ctx, profileSessionID, msgs, result)
+	a.savePromptProfileHistory(ctx, profileSessionID, historyMsgs, result)
 	return result, nil
 }
 
@@ -1022,9 +1022,11 @@ func promptProfileMaxSteps(value int) int {
 	return defaultAgentMaxIterations
 }
 
-func (a *Agent) buildPromptProfileMessages(ctx context.Context, systemPrompt, userText, channelName, sessionKey string) ([]*schema.Message, string) {
+func (a *Agent) buildPromptProfileMessages(ctx context.Context, systemPrompt, userText, channelName, sessionKey string, systemAsUser bool) ([]*schema.Message, string) {
 	msgs := make([]*schema.Message, 0, 4)
-	msgs = append(msgs, schema.SystemMessage(systemPrompt))
+	if !systemAsUser {
+		msgs = append(msgs, schema.SystemMessage(systemPrompt))
+	}
 
 	sessionID := ""
 	if strings.TrimSpace(sessionKey) != "" && a != nil && a.sessionMgr != nil && a.memory != nil {
@@ -1034,14 +1036,59 @@ func (a *Agent) buildPromptProfileMessages(ctx context.Context, systemPrompt, us
 		}
 		if id, _, err := a.sessionMgr.GetOrCreate(ctx, promptProfileSessionChannel(channelName), sessionKey, modelID); err == nil {
 			sessionID = id
-			msgs = append(msgs, a.memory.Load(ctx, sessionID)...)
+			msgs = append(msgs, filterDiagnosticMessages(a.memory.Load(ctx, sessionID))...)
 		} else {
 			logger.Infof("profile session get/create failed: %v", err)
 		}
 	}
 
-	msgs = append(msgs, schema.UserMessage(userText))
+	if systemAsUser {
+		msgs = append(msgs, schema.UserMessage(promptProfileUserContent(systemPrompt, userText)))
+	} else {
+		msgs = append(msgs, schema.UserMessage(userText))
+	}
 	return msgs, sessionID
+}
+
+func promptProfileUserContent(systemPrompt, userText string) string {
+	return strings.TrimSpace(fmt.Sprintf("任务说明：\n%s\n\n当前输入：\n%s", strings.TrimSpace(systemPrompt), strings.TrimSpace(userText)))
+}
+
+func cleanPromptProfileResult(result string) string {
+	result = strings.TrimSpace(result)
+	if !strings.HasPrefix(result, "```") {
+		return result
+	}
+	lineEnd := strings.IndexByte(result, '\n')
+	if lineEnd < 0 {
+		return result
+	}
+	body := strings.TrimSpace(result[lineEnd+1:])
+	if strings.HasSuffix(body, "```") {
+		body = strings.TrimSpace(strings.TrimSuffix(body, "```"))
+	}
+	return body
+}
+
+func promptProfilePersistMessages(msgs []*schema.Message, userText string) []*schema.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	out := make([]*schema.Message, 0, len(msgs))
+	for _, msg := range msgs {
+		if msg == nil {
+			continue
+		}
+		cp := *msg
+		out = append(out, &cp)
+	}
+	for i := len(out) - 1; i >= 0; i-- {
+		if out[i].Role == schema.User {
+			out[i].Content = userText
+			break
+		}
+	}
+	return out
 }
 
 func promptProfileSessionChannel(channelName string) string {
@@ -1052,6 +1099,14 @@ func promptProfileSessionChannel(channelName string) string {
 }
 
 func (a *Agent) savePromptProfileHistory(ctx context.Context, sessionID string, msgs []*schema.Message, result string) {
+	a.savePromptProfileHistoryWithOptions(ctx, sessionID, msgs, result, false)
+}
+
+func (a *Agent) savePromptProfileDiagnostic(ctx context.Context, sessionID string, msgs []*schema.Message, result string) {
+	a.savePromptProfileHistoryWithOptions(ctx, sessionID, msgs, result, true)
+}
+
+func (a *Agent) savePromptProfileHistoryWithOptions(ctx context.Context, sessionID string, msgs []*schema.Message, result string, diagnostic bool) {
 	if strings.TrimSpace(sessionID) == "" || a == nil || a.memory == nil {
 		return
 	}
@@ -1062,13 +1117,49 @@ func (a *Agent) savePromptProfileHistory(ctx context.Context, sessionID string, 
 		}
 		updated = append(updated, msg)
 	}
-	updated = append(updated, &schema.Message{Role: schema.Assistant, Content: result})
+	assistantMsg := &schema.Message{Role: schema.Assistant, Content: result}
+	if diagnostic {
+		assistantMsg.Extra = map[string]any{"diagnostic": true}
+	}
+	updated = append(updated, assistantMsg)
 	if err := a.memory.Save(ctx, sessionID, updated); err != nil {
 		logger.Infof("profile memory save failed: %v", err)
 		return
 	}
 	if a.sessionMgr != nil {
 		a.sessionMgr.UpdateAfterChat(ctx, sessionID, len(updated))
+	}
+}
+
+func filterDiagnosticMessages(msgs []*schema.Message) []*schema.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	filtered := make([]*schema.Message, 0, len(msgs))
+	for _, msg := range msgs {
+		if msg == nil || isDiagnosticMessage(msg) {
+			continue
+		}
+		filtered = append(filtered, msg)
+	}
+	return filtered
+}
+
+func isDiagnosticMessage(msg *schema.Message) bool {
+	if msg == nil || len(msg.Extra) == 0 {
+		return false
+	}
+	value, ok := msg.Extra["diagnostic"]
+	if !ok {
+		return false
+	}
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(v, "true") || v == "1"
+	default:
+		return false
 	}
 }
 
@@ -1113,7 +1204,7 @@ func (a *Agent) runNormalSubAgent(ctx context.Context, spec agentbuiltin.SubAgen
 	if sessionKey != "" && rt.ChannelName != "a2a" && a.sessionMgr != nil && a.memory != nil {
 		subSession, _, err := a.sessionMgr.GetOrCreate(ctx, "subagent", sessionKey, a.CurrentLLMModel())
 		if err == nil {
-			if history := a.memory.Load(ctx, subSession); len(history) > 0 {
+			if history := filterDiagnosticMessages(a.memory.Load(ctx, subSession)); len(history) > 0 {
 				msgs = append(msgs, history...)
 			}
 		}
@@ -1186,6 +1277,8 @@ func (a *Agent) runNormalSubAgent(ctx context.Context, spec agentbuiltin.SubAgen
 
 	events, err := runWithRetry(runCtx, runner, msgs)
 	if err != nil {
+		errorMsg := fmt.Sprintf("[执行失败] %v", err)
+		a.saveSubAgentHistory(ctx, sessionKey, prompt, errorMsg, true)
 		return "", fmt.Errorf("subagent error: %w", err)
 	}
 
@@ -1193,6 +1286,8 @@ func (a *Agent) runNormalSubAgent(ctx context.Context, spec agentbuiltin.SubAgen
 	for _, event := range events {
 		if event.Err != nil {
 			logger.Infof("SubAgent event error: %v", event.Err)
+			errorMsg := fmt.Sprintf("[执行失败] %v", event.Err)
+			a.saveSubAgentHistory(ctx, sessionKey, prompt, errorMsg, true)
 			return "", fmt.Errorf("subagent error: %w", event.Err)
 		}
 		if event.Output != nil && event.Output.MessageOutput != nil &&
@@ -1202,20 +1297,31 @@ func (a *Agent) runNormalSubAgent(ctx context.Context, spec agentbuiltin.SubAgen
 		}
 	}
 	if result == "" {
+		errorMsg := "[执行失败] 代理返回空响应"
+		a.saveSubAgentHistory(ctx, sessionKey, prompt, errorMsg, true)
 		return "", fmt.Errorf("subagent returned empty response")
 	}
 
-	if sessionKey != "" && a.sessionMgr != nil && a.memory != nil {
-		subSession, _, _ := a.sessionMgr.GetOrCreate(ctx, "subagent", sessionKey, a.CurrentLLMModel())
-		if subSession != "" {
-			updated := a.memory.Load(ctx, subSession)
-			updated = append(updated, schema.UserMessage(prompt))
-			updated = append(updated, &schema.Message{Role: schema.Assistant, Content: result})
-			a.memory.Save(ctx, subSession, updated)
-		}
-	}
-
+	a.saveSubAgentHistory(ctx, sessionKey, prompt, result, false)
 	return result, nil
+}
+
+func (a *Agent) saveSubAgentHistory(ctx context.Context, sessionKey string, prompt string, result string, diagnostic bool) {
+	if sessionKey == "" || a.sessionMgr == nil || a.memory == nil {
+		return
+	}
+	subSession, _, _ := a.sessionMgr.GetOrCreate(ctx, "subagent", sessionKey, a.CurrentLLMModel())
+	if subSession == "" {
+		return
+	}
+	updated := a.memory.Load(ctx, subSession)
+	updated = append(updated, schema.UserMessage(prompt))
+	assistantMsg := &schema.Message{Role: schema.Assistant, Content: result}
+	if diagnostic {
+		assistantMsg.Extra = map[string]any{"diagnostic": true}
+	}
+	updated = append(updated, assistantMsg)
+	a.memory.Save(ctx, subSession, updated)
 }
 
 func (a *Agent) runForkSubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt agentbuiltin.SubAgentRuntime, prompt string) (string, error) {
