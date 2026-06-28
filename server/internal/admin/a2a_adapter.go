@@ -151,6 +151,21 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 				"- 不访问个人数据、设备数据或私有会话",
 			AllowTools: true,
 		}, true
+	case "geek-news":
+		return a2aPromptProfileSpec{
+			Name: "geek-news",
+			SystemPrompt: "你是 cyeam_web 的科技新闻生成器。客户端只接收 date 字段，例如 {\"date\":\"2026-06-28\"}。\n" +
+				"要求：\n" +
+				"- 使用 news skill 查询该 date 的完整科技新闻，命令格式优先使用 cyeam news get --date <YYYY-MM-DD>\n" +
+				"- 只输出一个可被 json.Unmarshal 直接解析的 JSON 对象，不要 Markdown，不要代码块，不要解释\n" +
+				"- JSON 顶层字段必须是 create_time、news、summary\n" +
+				"- news 是数组，每条包含 link、title、description、image、create_time\n" +
+				"- summary 用中文概括最重要的 3-5 个趋势\n" +
+				"- description 用中文写核心要点，可用 \\n 分隔多条要点\n" +
+				"- image 没有则输出空字符串\n" +
+				"- 不访问个人数据、设备数据、邮箱、飞书、微信或私有会话",
+			AllowTools: true,
+		}, true
 	default:
 		return a2aPromptProfileSpec{}, false
 	}

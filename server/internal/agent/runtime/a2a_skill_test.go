@@ -107,7 +107,7 @@ func TestA2APromptProfileHistoryLoadsAndSavesIsolatedSession(t *testing.T) {
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "提示", "新的输入", "a2a", sessionKey)
+	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "提示", "新的输入", "a2a", sessionKey, false)
 	if loadedSession != sessionID {
 		t.Fatalf("loadedSession = %q, want %q", loadedSession, sessionID)
 	}
@@ -127,12 +127,85 @@ func TestA2APromptProfileHistoryLoadsAndSavesIsolatedSession(t *testing.T) {
 		t.Fatalf("saved tail = %#v, want current user and assistant", saved[len(saved)-2:])
 	}
 
+	agent.savePromptProfileDiagnostic(ctx, loadedSession, msgs, "[执行失败] exceeds max iterations")
+	savedWithDiagnostic := mem.Load(ctx, sessionID)
+	if len(savedWithDiagnostic) != 4 || !isDiagnosticMessage(savedWithDiagnostic[len(savedWithDiagnostic)-1]) {
+		t.Fatalf("savedWithDiagnostic tail = %#v, want diagnostic assistant replacing latest response", savedWithDiagnostic)
+	}
+	nextMsgs, _ := agent.buildPromptProfileMessages(ctx, "提示", "下一次输入", "a2a", sessionKey, false)
+	for _, msg := range nextMsgs {
+		if msg != nil && strings.Contains(msg.Content, "exceeds max iterations") {
+			t.Fatalf("diagnostic failure leaked into next prompt: %#v", nextMsgs)
+		}
+	}
+
 	info, err := mgr.Get(ctx, sessionID)
 	if err != nil {
 		t.Fatalf("Get(session) error = %v", err)
 	}
 	if info.ChannelName != "a2a_profile" || info.ChannelUser != sessionKey || info.Count != len(saved) {
 		t.Fatalf("session info = %#v, want isolated a2a profile session with count %d", info, len(saved))
+	}
+}
+
+func TestA2APromptProfileCanEmbedSystemPromptInCurrentUserMessage(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	mem := &Memory{client: client, prefix: "test:", ttl: time.Hour}
+	mgr := agentsession.NewManager(client, "test:")
+	agent := &Agent{
+		memory:     mem,
+		sessionMgr: mgr,
+		cfg:        Config{LLMModel: "test-model"},
+	}
+
+	sessionKey := "a2a:partner:ctx-2"
+	sessionID, _, err := mgr.GetOrCreate(ctx, "a2a_profile", sessionKey, "test-model")
+	if err != nil {
+		t.Fatalf("GetOrCreate() error = %v", err)
+	}
+	if err := mem.Save(ctx, sessionID, []*schema.Message{
+		schema.UserMessage(`{"date":"2026-06-26"}`),
+		{Role: schema.Assistant, Content: "上一条新闻"},
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "必须输出 JSON", `{"date":"2026-06-28"}`, "a2a", sessionKey, true)
+	if loadedSession != sessionID {
+		t.Fatalf("loadedSession = %q, want %q", loadedSession, sessionID)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len(msgs) = %d, want 2 history + current user", len(msgs))
+	}
+	if msgs[0].Role == schema.System {
+		t.Fatalf("first message role = system, want no profile system when embedded for A2A skills")
+	}
+	current := msgs[len(msgs)-1].Content
+	if !strings.Contains(current, "必须输出 JSON") || !strings.Contains(current, `{"date":"2026-06-28"}`) {
+		t.Fatalf("current message = %q, want profile instruction and current input", current)
+	}
+
+	persistMsgs := promptProfilePersistMessages(msgs, `{"date":"2026-06-28"}`)
+	agent.savePromptProfileHistory(ctx, loadedSession, persistMsgs, "新的新闻")
+	saved := mem.Load(ctx, sessionID)
+	if saved[len(saved)-2].Content != `{"date":"2026-06-28"}` {
+		t.Fatalf("saved current user = %q, want raw profile input", saved[len(saved)-2].Content)
+	}
+	if strings.Contains(saved[len(saved)-2].Content, "必须输出 JSON") {
+		t.Fatalf("profile instruction leaked into saved history: %q", saved[len(saved)-2].Content)
+	}
+}
+
+func TestCleanPromptProfileResultRemovesMarkdownFence(t *testing.T) {
+	input := "\n\n```json\n{\"create_time\":\"2026-06-28\",\"news\":[],\"summary\":\"ok\"}\n```\n"
+	got := cleanPromptProfileResult(input)
+	want := "{\"create_time\":\"2026-06-28\",\"news\":[],\"summary\":\"ok\"}"
+	if got != want {
+		t.Fatalf("cleanPromptProfileResult() = %q, want %q", got, want)
 	}
 }
 

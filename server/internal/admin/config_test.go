@@ -309,4 +309,5 @@ func TestLoadConfig_A2ADefaults(t *testing.T) {
 	assert.Equal(t, 2000, cfg.A2A.MaxInputChars)
 	assert.Equal(t, 60, cfg.A2A.TimeoutSeconds)
 	assert.Equal(t, 1800, cfg.A2A.TaskTTLSeconds)
+	assert.False(t, cfg.A2A.Trace.LogOutputs)
 }

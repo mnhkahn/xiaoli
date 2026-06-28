@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -31,6 +32,7 @@ type traceState struct {
 	Options  TraceOptions
 	modelSeq int
 	toolSeq  int
+	actions  []string
 }
 
 type traceRunKey struct{}
@@ -105,6 +107,34 @@ func (s *traceState) nextToolStep() int {
 	return s.toolSeq
 }
 
+func (s *traceState) rememberAction(action string) {
+	if s == nil || strings.TrimSpace(action) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	const maxActions = 20
+	s.actions = append(s.actions, action)
+	if len(s.actions) > maxActions {
+		s.actions = s.actions[len(s.actions)-maxActions:]
+	}
+}
+
+func (s *traceState) recentActions(limit int) []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 || limit > len(s.actions) {
+		limit = len(s.actions)
+	}
+	start := len(s.actions) - limit
+	out := make([]string, limit)
+	copy(out, s.actions[start:])
+	return out
+}
+
 func tracePrefix(st *traceState) string {
 	if st == nil {
 		return "[A2A][trace]"
@@ -121,6 +151,35 @@ func traceTruncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "...(truncated)"
+}
+
+func traceArgsSummary(raw string, maxLen int) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return traceTruncate(raw, maxLen)
+	}
+	parts := make([]string, 0, 3)
+	if skill, _ := obj["skill"].(string); skill != "" {
+		parts = append(parts, "skill="+skill)
+	}
+	if cmd, _ := obj["cmd"].(string); cmd != "" {
+		parts = append(parts, "cmd="+traceTruncate(cmd, maxLen))
+	}
+	if argv, ok := obj["argv"].([]any); ok && len(argv) > 0 {
+		vals := make([]string, 0, len(argv))
+		for _, item := range argv {
+			vals = append(vals, fmt.Sprint(item))
+		}
+		parts = append(parts, "argv="+traceTruncate(strings.Join(vals, " "), maxLen))
+	}
+	if len(parts) == 0 {
+		return traceTruncate(raw, maxLen)
+	}
+	return strings.Join(parts, " ")
 }
 
 func traceToolNames(ctx context.Context, tools []tool.BaseTool) []string {
@@ -157,6 +216,89 @@ func traceMessageSummary(msg *schema.Message) (role schema.RoleType, contentLen 
 		}
 	}
 	return msg.Role, len(msg.Content), toolCalls, msg.ToolName
+}
+
+func traceMessagesStats(msgs []*schema.Message) (chars int, nonSystem int) {
+	for _, msg := range msgs {
+		if msg == nil {
+			continue
+		}
+		chars += len(msg.Content)
+		if msg.Role != schema.System {
+			nonSystem++
+		}
+	}
+	return chars, nonSystem
+}
+
+func logTraceModelStart(ctx context.Context, run traceRun, msgs []*schema.Message, toolCount int) {
+	st := traceFromContext(ctx)
+	if st == nil {
+		return
+	}
+	chars, nonSystem := traceMessagesStats(msgs)
+	logger.Infof("%s model.start step=%d input_messages=%d non_system_messages=%d prompt_chars=%d tools=%d", tracePrefix(st), run.Step, len(msgs), nonSystem, chars, toolCount)
+	st.rememberAction(fmt.Sprintf("model#%d start messages=%d prompt_chars=%d tools=%d", run.Step, len(msgs), chars, toolCount))
+}
+
+func logTraceModelEnd(ctx context.Context, run traceRun, msg *schema.Message, promptTokens, completionTokens, totalTokens int, elapsed time.Duration) {
+	st := traceFromContext(ctx)
+	if st == nil {
+		return
+	}
+	role, contentLen, toolCalls, toolName := traceMessageSummary(msg)
+	logger.Infof("%s model.end step=%d role=%s content_len=%d tool=%s tool_calls=%v tokens={prompt:%d completion:%d total:%d} elapsed=%v", tracePrefix(st), run.Step, role, contentLen, toolName, toolCalls, promptTokens, completionTokens, totalTokens, elapsed)
+	if len(toolCalls) > 0 {
+		st.rememberAction(fmt.Sprintf("model#%d tool_calls=%v content_len=%d", run.Step, toolCalls, contentLen))
+		return
+	}
+	st.rememberAction(fmt.Sprintf("model#%d role=%s content_len=%d", run.Step, role, contentLen))
+}
+
+func logTraceModelError(ctx context.Context, run traceRun, name string, err error, elapsed time.Duration) {
+	st := traceFromContext(ctx)
+	if st == nil {
+		return
+	}
+	logger.Infof("%s model.error step=%d model=%s elapsed=%v err=%v", tracePrefix(st), run.Step, name, elapsed, err)
+	st.rememberAction(fmt.Sprintf("model#%d error=%v", run.Step, err))
+}
+
+func logTraceToolStart(ctx context.Context, step int, name, category, args string) {
+	st := traceFromContext(ctx)
+	if st == nil {
+		return
+	}
+	argSummary := traceArgsSummary(args, st.Options.MaxValueLength)
+	msg := fmt.Sprintf("%s tool.start tool_step=%d name=%s category=%s args_len=%d", tracePrefix(st), step, name, category, len(args))
+	if argSummary != "" {
+		msg += fmt.Sprintf(" args_summary=%q", argSummary)
+	}
+	if st.Options.LogInputs && args != "" {
+		msg += fmt.Sprintf(" args=%q", traceTruncate(args, st.Options.MaxValueLength))
+	}
+	logger.Infof("%s", msg)
+	st.rememberAction(fmt.Sprintf("tool#%d %s start %s", step, name, argSummary))
+}
+
+func logTraceToolEnd(ctx context.Context, step int, name, category string, outputLen int, elapsed time.Duration, err error, output string) {
+	st := traceFromContext(ctx)
+	if st == nil {
+		return
+	}
+	status := "ok"
+	if err != nil {
+		status = "error"
+	}
+	msg := fmt.Sprintf("%s tool.end tool_step=%d name=%s category=%s status=%s output_len=%d elapsed=%v", tracePrefix(st), step, name, category, status, outputLen, elapsed)
+	if err != nil {
+		msg += fmt.Sprintf(" err=%v", err)
+	}
+	if st.Options.LogOutputs && output != "" {
+		msg += fmt.Sprintf(" output=%q", traceTruncate(output, st.Options.MaxValueLength))
+	}
+	logger.Infof("%s", msg)
+	st.rememberAction(fmt.Sprintf("tool#%d %s %s output_len=%d elapsed=%v", step, name, status, outputLen, elapsed))
 }
 
 func logTraceEvent(ctx context.Context, index int, event *adk.AgentEvent) {
@@ -196,7 +338,7 @@ func logTraceFailure(ctx context.Context, err error, events []*adk.AgentEvent) {
 	if st == nil {
 		return
 	}
-	logger.Infof("%s failed err=%v events=%d", tracePrefix(st), err, len(events))
+	logger.Infof("%s failed err=%v events=%d recent_actions=%q", tracePrefix(st), err, len(events), st.recentActions(10))
 	start := len(events) - 3
 	if start < 0 {
 		start = 0

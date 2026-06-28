@@ -21,6 +21,18 @@ func (m *staticPipeline) Run(ctx context.Context, turn ConversationTurn) (Conver
 	return ConversationReply{Text: m.response}, nil
 }
 
+type capturePipeline struct {
+	response string
+	turn     ConversationTurn
+	calls    int
+}
+
+func (m *capturePipeline) Run(ctx context.Context, turn ConversationTurn) (ConversationReply, error) {
+	m.calls++
+	m.turn = turn
+	return ConversationReply{Text: m.response}, nil
+}
+
 func buildJSONRPCReq(method string, params any) []byte {
 	body := map[string]any{
 		"jsonrpc": "2.0",
@@ -110,6 +122,47 @@ func TestNewServer_ValidTokenWorks(t *testing.T) {
 	task := result["task"].(map[string]any)
 	status := task["status"].(map[string]any)
 	assert.Equal(t, string(a2a.TaskStateCompleted), status["state"])
+}
+
+func TestNewServer_SendMessageProfileRequestPassesOnlyCurrentTextToPipeline(t *testing.T) {
+	profileText := `{"profile":"geek-news","input":{"date":"2026-06-28"}}`
+	pipeline := &capturePipeline{response: "ok"}
+	executor := NewExecutor(pipeline, 2000)
+	server := NewServer(ServerConfig{
+		Auth:           A2AConfig{APIKeys: map[string]string{"partner_a": "secret_a"}},
+		RateLimit:      RateLimitConfig{PerKeyLimit: 1000, GlobalLimit: 1000},
+		MaxInputChars:  2000,
+		TimeoutSeconds: 60,
+		TaskTTLSeconds: 1800,
+	}, executor)
+
+	body := buildJSONRPCReq("SendMessage", map[string]any{
+		"message": map[string]any{
+			"messageId": "msg_456",
+			"contextId": "cyeam_web",
+			"parts": []map[string]any{
+				{
+					"type": "text",
+					"text": profileText,
+				},
+			},
+			"role": "ROLE_USER",
+		},
+	})
+	req := httptest.NewRequest("POST", "/a2a", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret_a")
+	rr := httptest.NewRecorder()
+
+	server.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.Equal(t, 1, pipeline.calls)
+	assert.Equal(t, "a2a", pipeline.turn.Channel)
+	assert.Equal(t, "a2a:partner_a:cyeam_web", pipeline.turn.ConversationID)
+	assert.Equal(t, profileText, pipeline.turn.Text)
+	assert.NotContains(t, pipeline.turn.Text, "邮箱")
+	assert.NotContains(t, pipeline.turn.Text, "邮件")
 }
 
 func TestNewServer_OversizedInputRejected(t *testing.T) {

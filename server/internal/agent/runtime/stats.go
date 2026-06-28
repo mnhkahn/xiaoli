@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +41,11 @@ type Recorder struct {
 type toolStatsEntry struct {
 	Calls  int64
 	Errors int64
+}
+
+func llmLogFullMessages() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("LLM_LOG_FULL_MESSAGES")))
+	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
 
 type ContextUsage struct {
@@ -86,40 +92,52 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 				return ctx
 			}
 
-			// ========== 打印完整的工具定义 - 确认 skill 有没有传进来 ==========
-			if len(mi.Tools) > 0 {
-				logger.Infof("[LLM] ========== TOOLS DEFINITION (%d tools) ==========", len(mi.Tools))
-				for i, t := range mi.Tools {
-					if t == nil {
+			ctx = context.WithValue(ctx, modelStartTimeKey{}, time.Now())
+			if st := traceFromContext(ctx); st != nil {
+				run := st.nextModelRun()
+				ctx = context.WithValue(ctx, traceRunKey{}, run)
+				logTraceModelStart(ctx, run, mi.Messages, len(mi.Tools))
+			} else {
+				chars, nonSystem := traceMessagesStats(mi.Messages)
+				logger.Infof("[LLM] START messages=%d non_system_messages=%d prompt_chars=%d tools=%d", len(mi.Messages), nonSystem, chars, len(mi.Tools))
+			}
+
+			if llmLogFullMessages() {
+				// ========== 打印完整的工具定义 - 调试时确认 skill 有没有传进来 ==========
+				if len(mi.Tools) > 0 {
+					logger.Infof("[LLM] ========== TOOLS DEFINITION (%d tools) ==========", len(mi.Tools))
+					for i, t := range mi.Tools {
+						if t == nil {
+							continue
+						}
+						toolJSON, _ := json.Marshal(t)
+						logger.Infof("[LLM] TOOL #%d: %s", i+1, string(toolJSON))
+					}
+					logger.Infof("[LLM] ================================================")
+				} else {
+					logger.Infof("[LLM] ========== NO TOOLS PROVIDED ==========")
+				}
+
+				// ========== 打印完整的消息历史 ==========
+				logger.Infof("[LLM] ========== MESSAGES (%d messages) ==========", len(mi.Messages))
+				for i, msg := range mi.Messages {
+					if msg == nil {
 						continue
 					}
-					toolJSON, _ := json.Marshal(t)
-					logger.Infof("[LLM] TOOL #%d: %s", i+1, string(toolJSON))
-				}
-				logger.Infof("[LLM] ================================================")
-			} else {
-				logger.Infof("[LLM] ========== NO TOOLS PROVIDED ==========")
-			}
-
-			// ========== 打印完整的消息历史 ==========
-			logger.Infof("[LLM] ========== MESSAGES (%d messages) ==========", len(mi.Messages))
-			for i, msg := range mi.Messages {
-				if msg == nil {
-					continue
-				}
-				logger.Infof("[LLM] MSG #%d (role=%s): %s", i+1, msg.Role, msg.Content)
-				if len(msg.ToolCalls) > 0 {
-					for j, tc := range msg.ToolCalls {
-						logger.Infof("[LLM]   TOOL_CALL #%d: name=%q args=%s", j+1, tc.Function.Name, tc.Function.Arguments)
+					logger.Infof("[LLM] MSG #%d (role=%s): %s", i+1, msg.Role, msg.Content)
+					if len(msg.ToolCalls) > 0 {
+						for j, tc := range msg.ToolCalls {
+							logger.Infof("[LLM]   TOOL_CALL #%d: name=%q args=%s", j+1, tc.Function.Name, tc.Function.Arguments)
+						}
+					}
+					if msg.ToolCallID != "" {
+						logger.Infof("[LLM]   TOOL_RESULT id=%q name=%q", msg.ToolCallID, msg.Name)
 					}
 				}
-				if msg.ToolCallID != "" {
-					logger.Infof("[LLM]   TOOL_RESULT id=%q name=%q", msg.ToolCallID, msg.Name)
-				}
+				logger.Infof("[LLM] ================================================")
 			}
-			logger.Infof("[LLM] ================================================")
 
-			return context.WithValue(ctx, modelStartTimeKey{}, time.Now())
+			return ctx
 		}).
 		OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
 			if info == nil || info.Component != components.ComponentOfChatModel {
@@ -141,8 +159,16 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 				totalTokens = mo.TokenUsage.TotalTokens
 			}
 
-			logger.Infof("[LLM] END tokens={prompt:%d completion:%d total:%d} elapsed=%v",
-				promptTokens, completionTokens, totalTokens, elapsed)
+			if run, _ := ctx.Value(traceRunKey{}).(traceRun); run.Step > 0 {
+				var msg *schema.Message
+				if mo != nil {
+					msg = mo.Message
+				}
+				logTraceModelEnd(ctx, run, msg, promptTokens, completionTokens, totalTokens, elapsed)
+			} else {
+				logger.Infof("[LLM] END tokens={prompt:%d completion:%d total:%d} elapsed=%v",
+					promptTokens, completionTokens, totalTokens, elapsed)
+			}
 
 			return ctx
 		}).
@@ -156,7 +182,11 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 			start, _ := ctx.Value(modelStartTimeKey{}).(time.Time)
 			elapsed := time.Since(start)
 
-			logger.Infof("[LLM] ERROR model=%s elapsed=%v err=%v", info.Name, elapsed, err)
+			if run, _ := ctx.Value(traceRunKey{}).(traceRun); run.Step > 0 {
+				logTraceModelError(ctx, run, info.Name, err, elapsed)
+			} else {
+				logger.Infof("[LLM] ERROR model=%s elapsed=%v err=%v", info.Name, elapsed, err)
+			}
 			return ctx
 		}).
 		Build()
@@ -403,23 +433,14 @@ func (w *toolCounter) InvokableRun(ctx context.Context, argumentsInJSON string, 
 	start := time.Now()
 	if st != nil {
 		step = st.nextToolStep()
-		msg := fmt.Sprintf("%s tool.start step=%d name=%s category=%s args_len=%d", tracePrefix(st), step, w.toolName, w.category, len(argumentsInJSON))
-		if st.Options.LogInputs && argumentsInJSON != "" {
-			msg += fmt.Sprintf(" args=%q", traceTruncate(argumentsInJSON, st.Options.MaxValueLength))
-		}
-		logger.Infof("%s", msg)
+		logTraceToolStart(ctx, step, w.toolName, w.category, argumentsInJSON)
 	}
 	result, err := w.inner.InvokableRun(ctx, argumentsInJSON, opts...)
 	if err != nil {
 		w.recorder.RecordToolError(w.toolName)
 	}
 	if st != nil {
-		elapsed := time.Since(start)
-		msg := fmt.Sprintf("%s tool.end step=%d name=%s category=%s output_len=%d elapsed=%v err=%v", tracePrefix(st), step, w.toolName, w.category, len(result), elapsed, err)
-		if st.Options.LogOutputs && result != "" {
-			msg += fmt.Sprintf(" output=%q", traceTruncate(result, st.Options.MaxValueLength))
-		}
-		logger.Infof("%s", msg)
+		logTraceToolEnd(ctx, step, w.toolName, w.category, len(result), time.Since(start), err, result)
 	}
 	return result, err
 }

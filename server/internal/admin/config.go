@@ -784,7 +784,7 @@ func (s settingsConfig) a2aTraceLogInputs() bool {
 
 func (s settingsConfig) a2aTraceLogOutputs() bool {
 	if s.A2A.Trace.LogOutputs == nil {
-		return true
+		return false
 	}
 	return *s.A2A.Trace.LogOutputs
 }

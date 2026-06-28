@@ -50,6 +50,35 @@ func TestA2APipelineRoutesProfileRequestToPromptProfile(t *testing.T) {
 	}
 }
 
+func TestA2APipelineRoutesGeekNewsProfileToPromptProfile(t *testing.T) {
+	agent := &fakeA2AAgent{}
+	pipeline := newA2APipeline(agent)
+
+	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{
+		Channel:        "a2a",
+		ConversationID: "a2a:partner_a:cyeam_web",
+		Text:           `{"profile":"geek-news","input":{"date":"2026-06-28"}}`,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if reply.Text != "profile reply" {
+		t.Fatalf("reply = %q, want profile reply", reply.Text)
+	}
+	if agent.profileCalls != 1 || agent.subAgentCalls != 0 {
+		t.Fatalf("calls profile=%d subagent=%d, want profile only", agent.profileCalls, agent.subAgentCalls)
+	}
+	if agent.lastProfile.Name != "geek-news" || agent.lastProfile.ChannelName != "a2a" || !agent.lastProfile.AllowTools {
+		t.Fatalf("lastProfile = %#v, want geek-news profile with tools", agent.lastProfile)
+	}
+	if agent.lastProfile.SessionKey != "a2a:partner_a:cyeam_web" {
+		t.Fatalf("SessionKey = %q, want a2a session key", agent.lastProfile.SessionKey)
+	}
+	if agent.lastProfile.UserText != `{"date":"2026-06-28"}` {
+		t.Fatalf("UserText = %q, want compact date JSON", agent.lastProfile.UserText)
+	}
+}
+
 func TestA2APipelineRoutesPlainTextToPublicAssistant(t *testing.T) {
 	agent := &fakeA2AAgent{}
 	pipeline := newA2APipeline(agent)
@@ -140,5 +169,16 @@ func TestA2APromptProfilesDefineEncouragementAndArchitect(t *testing.T) {
 	}
 	if architect.SystemPrompt == "" {
 		t.Fatal("architect profile should define system prompt")
+	}
+
+	geekNews, ok := a2aPromptProfile("geek-news")
+	if !ok {
+		t.Fatal("geek-news profile missing")
+	}
+	if !geekNews.AllowTools {
+		t.Fatal("geek-news profile should allow news skill")
+	}
+	if !strings.Contains(geekNews.SystemPrompt, "news skill") || !strings.Contains(geekNews.SystemPrompt, "create_time") {
+		t.Fatalf("geek-news prompt = %q, want news skill guidance and GeekNews JSON fields", geekNews.SystemPrompt)
 	}
 }
