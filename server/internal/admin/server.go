@@ -729,6 +729,7 @@ func (s *AdminServer) handleMemorySessionByID(w http.ResponseWriter, r *http.Req
 		ToolCalls        []schema.ToolCall `json:"tool_calls,omitempty"`
 		ToolCallID       string            `json:"tool_call_id,omitempty"`
 		FinishReason     string            `json:"finish_reason,omitempty"`
+		Timestamp        string            `json:"timestamp,omitempty"`
 	}
 	items := make([]msgItem, 0, len(msgs))
 	for i, m := range msgs {
@@ -746,6 +747,11 @@ func (s *AdminServer) handleMemorySessionByID(w http.ResponseWriter, r *http.Req
 		}
 		if m.ResponseMeta != nil {
 			item.FinishReason = m.ResponseMeta.FinishReason
+		}
+		if m.Extra != nil {
+			if ts, ok := m.Extra["timestamp"].(string); ok {
+				item.Timestamp = ts
+			}
 		}
 		items = append(items, item)
 	}

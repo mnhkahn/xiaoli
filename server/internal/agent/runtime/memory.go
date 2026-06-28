@@ -175,6 +175,16 @@ func (m *Memory) Save(ctx context.Context, conversationID string, msgs []*schema
 	if len(msgs) > maxHistoryMessages {
 		msgs = msgs[len(msgs)-maxHistoryMessages:]
 	}
+	// 给没有时间戳的消息加上当前时间
+	now := time.Now().Format(time.RFC3339)
+	for _, msg := range msgs {
+		if msg.Extra == nil {
+			msg.Extra = make(map[string]any)
+		}
+		if _, ok := msg.Extra["timestamp"]; !ok {
+			msg.Extra["timestamp"] = now
+		}
+	}
 	data, err := json.Marshal(msgs)
 	if err != nil {
 		logger.Infof("redis marshal memory for %s: %v", conversationID, err)

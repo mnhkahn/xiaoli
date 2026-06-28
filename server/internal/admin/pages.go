@@ -664,7 +664,8 @@ func memoryHTML(user map[string]any) string {
 
         const head = document.createElement("span");
         head.className = "message-head";
-        const left = el("span", "#" + (msg.index !== undefined ? msg.index : "") + " " + (msg.role || ""));
+        const ts = msg.timestamp ? new Date(msg.timestamp).toLocaleString("zh-CN", { hour12: false }) : "";
+        const left = el("span", "#" + (msg.index !== undefined ? msg.index : "") + " " + (msg.role || "") + (ts ? " " + ts : ""));
         left.className = "message-label";
         const preview = el("span", msg.content || msg.reasoning_content || "(no text)");
         preview.className = "message-preview";
