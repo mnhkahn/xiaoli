@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"iter"
 	"strings"
@@ -13,7 +14,20 @@ import (
 
 // ConversationReply is the pipeline's response for an A2A turn.
 type ConversationReply struct {
-	Text string
+	Text      string
+	Reasoning string
+}
+
+type ConversationStreamKind string
+
+const (
+	ConversationStreamReasoningDelta ConversationStreamKind = "reasoning_delta"
+	ConversationStreamAnswerDelta    ConversationStreamKind = "answer_delta"
+)
+
+type ConversationStreamEvent struct {
+	Kind  ConversationStreamKind
+	Delta string
 }
 
 // ConversationTurn describes a single A2A request routed to the agent pipeline.
@@ -30,6 +44,10 @@ type ConversationTurn struct {
 // ConversationPipeline runs an A2A turn and returns the agent's reply.
 type ConversationPipeline interface {
 	Run(ctx context.Context, turn ConversationTurn) (ConversationReply, error)
+}
+
+type StreamingConversationPipeline interface {
+	RunStream(ctx context.Context, turn ConversationTurn, emit func(ConversationStreamEvent) bool) (ConversationReply, error)
 }
 
 // Executor implements a2asrv.AgentExecutor. It validates inbound text,
@@ -101,6 +119,38 @@ func (e *Executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 			UseDeviceTools: false,
 		}
 
+		if isArchitectProfileText(text) {
+			if streaming, ok := e.pipeline.(StreamingConversationPipeline); ok {
+				reply, err := streaming.RunStream(ctx, turn, func(ev ConversationStreamEvent) bool {
+					if strings.TrimSpace(ev.Delta) == "" {
+						return true
+					}
+					update := a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateWorking, nil)
+					update.Metadata = map[string]any{
+						"kind":  string(ev.Kind),
+						"delta": ev.Delta,
+					}
+					return yield(update, nil)
+				})
+				if err != nil {
+					logger.Infof("[A2A] streaming pipeline failed key=%s context_id=%s err=%v", keyID, execCtx.ContextID, err)
+					failMsg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("处理失败，请稍后重试"))
+					yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed, failMsg), nil)
+					return
+				}
+				resultMsg := a2a.NewMessageForTask(a2a.MessageRoleAgent, execCtx, a2a.NewTextPart(reply.Text))
+				completed := a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCompleted, resultMsg)
+				if strings.TrimSpace(reply.Reasoning) != "" {
+					completed.Metadata = map[string]any{
+						"reasoning": reply.Reasoning,
+						"thinking":  reply.Reasoning,
+					}
+				}
+				yield(completed, nil)
+				return
+			}
+		}
+
 		reply, err := e.pipeline.Run(ctx, turn)
 		if err != nil {
 			logger.Infof("[A2A] pipeline failed key=%s context_id=%s err=%v", keyID, execCtx.ContextID, err)
@@ -112,6 +162,20 @@ func (e *Executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 		resultMsg := a2a.NewMessageForTask(a2a.MessageRoleAgent, execCtx, a2a.NewTextPart(reply.Text))
 		yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCompleted, resultMsg), nil)
 	}
+}
+
+func isArchitectProfileText(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || !strings.HasPrefix(text, "{") {
+		return false
+	}
+	var raw struct {
+		Profile string `json:"profile"`
+	}
+	if err := json.Unmarshal([]byte(text), &raw); err != nil {
+		return false
+	}
+	return strings.TrimSpace(raw.Profile) == "architect"
 }
 
 // Cancel is not supported. Returns unsupported error immediately.

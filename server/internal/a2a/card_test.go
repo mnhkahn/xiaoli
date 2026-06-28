@@ -63,7 +63,7 @@ func TestAgentCardHandler_Capabilities(t *testing.T) {
 
 	// Library omits false values, or sets to false
 	if streaming, ok := caps["streaming"].(bool); ok {
-		assert.False(t, streaming)
+		assert.True(t, streaming)
 	}
 	if push, ok := caps["pushNotifications"].(bool); ok {
 		assert.False(t, push)

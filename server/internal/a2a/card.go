@@ -22,7 +22,7 @@ func hardcodedAgentCard(publicBaseURL string) *a2a.AgentCard {
 		DefaultInputModes:  []string{"text"},
 		DefaultOutputModes: []string{"text"},
 		Capabilities: a2a.AgentCapabilities{
-			Streaming:         false,
+			Streaming:         true,
 			PushNotifications: false,
 		},
 		Skills: []a2a.AgentSkill{

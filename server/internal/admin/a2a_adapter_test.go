@@ -10,16 +10,24 @@ import (
 )
 
 type fakeA2AAgent struct {
-	profileCalls  int
-	subAgentCalls int
-	lastProfile   agentruntime.PromptProfileRequest
-	lastSubAgent  string
+	profileCalls       int
+	profileStreamCalls int
+	subAgentCalls      int
+	lastProfile        agentruntime.PromptProfileRequest
+	lastSubAgent       string
 }
 
 func (f *fakeA2AAgent) RunPromptProfile(ctx context.Context, req agentruntime.PromptProfileRequest) (string, error) {
 	f.profileCalls++
 	f.lastProfile = req
 	return "profile reply", nil
+}
+
+func (f *fakeA2AAgent) RunPromptProfileStream(ctx context.Context, req agentruntime.PromptProfileRequest, emit func(agentruntime.PromptProfileStreamEvent) bool) (agentruntime.PromptProfileStreamReply, error) {
+	f.profileStreamCalls++
+	f.lastProfile = req
+	emit(agentruntime.PromptProfileStreamEvent{Kind: agentruntime.PromptProfileStreamReasoningDelta, Delta: "先看边界。"})
+	return agentruntime.PromptProfileStreamReply{Answer: "架构建议", Reasoning: "先看边界。"}, nil
 }
 
 func (f *fakeA2AAgent) RunNamedSubAgent(ctx context.Context, name string, prompt string, sessionKey string, channelName string) (string, error) {
@@ -98,6 +106,48 @@ func TestA2APipelineRoutesPlainTextToPublicAssistant(t *testing.T) {
 	}
 	if agent.lastSubAgent != "a2a_public_assistant" {
 		t.Fatalf("lastSubAgent = %q, want a2a_public_assistant", agent.lastSubAgent)
+	}
+}
+
+func TestA2APipelineStreamsOnlyArchitectProfile(t *testing.T) {
+	agent := &fakeA2AAgent{}
+	pipeline := newA2APipeline(agent)
+	var got []a2a.ConversationStreamEvent
+
+	reply, err := pipeline.RunStream(context.Background(), a2a.ConversationTurn{
+		Channel:        "a2a",
+		ConversationID: "a2a:partner_a:cyeam_web",
+		Text:           `{"profile":"architect","input":"怎么设计 A2A 流式？"}`,
+	}, func(ev a2a.ConversationStreamEvent) bool {
+		got = append(got, ev)
+		return true
+	})
+	if err != nil {
+		t.Fatalf("RunStream() error = %v", err)
+	}
+	if reply.Text != "架构建议" || reply.Reasoning != "先看边界。" {
+		t.Fatalf("reply = %#v, want answer and reasoning", reply)
+	}
+	if len(got) != 1 || got[0].Kind != a2a.ConversationStreamReasoningDelta || got[0].Delta != "先看边界。" {
+		t.Fatalf("stream events = %#v, want reasoning delta", got)
+	}
+	if agent.profileStreamCalls != 1 || agent.profileCalls != 0 || agent.subAgentCalls != 0 {
+		t.Fatalf("calls stream=%d profile=%d subagent=%d, want stream only", agent.profileStreamCalls, agent.profileCalls, agent.subAgentCalls)
+	}
+}
+
+func TestA2APipelineRunStreamRejectsNonArchitectProfile(t *testing.T) {
+	agent := &fakeA2AAgent{}
+	pipeline := newA2APipeline(agent)
+
+	if _, err := pipeline.RunStream(context.Background(), a2a.ConversationTurn{
+		Channel: "a2a",
+		Text:    `{"profile":"geek-news","input":{"date":"2026-06-28"}}`,
+	}, func(a2a.ConversationStreamEvent) bool { return true }); err == nil {
+		t.Fatal("RunStream() error = nil, want unsupported profile")
+	}
+	if agent.profileStreamCalls != 0 || agent.profileCalls != 0 || agent.subAgentCalls != 0 {
+		t.Fatalf("calls stream=%d profile=%d subagent=%d, want none", agent.profileStreamCalls, agent.profileCalls, agent.subAgentCalls)
 	}
 }
 

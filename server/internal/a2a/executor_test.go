@@ -22,6 +22,24 @@ func (m *mockPipeline) Run(ctx context.Context, turn ConversationTurn) (Conversa
 	return ConversationReply{Text: m.response}, nil
 }
 
+type mockStreamingPipeline struct {
+	streamEvents []ConversationStreamEvent
+	response     string
+}
+
+func (m *mockStreamingPipeline) Run(ctx context.Context, turn ConversationTurn) (ConversationReply, error) {
+	return ConversationReply{Text: m.response}, nil
+}
+
+func (m *mockStreamingPipeline) RunStream(ctx context.Context, turn ConversationTurn, emit func(ConversationStreamEvent) bool) (ConversationReply, error) {
+	for _, ev := range m.streamEvents {
+		if !emit(ev) {
+			break
+		}
+	}
+	return ConversationReply{Text: m.response, Reasoning: "完整推理摘要"}, nil
+}
+
 func collectEvents(seq iter.Seq2[a2a.Event, error]) ([]a2a.Event, error) {
 	var events []a2a.Event
 	var firstErr error
@@ -59,6 +77,45 @@ func TestExecutor_Execute_Success(t *testing.T) {
 	completed, ok := lastEvent.(*a2a.TaskStatusUpdateEvent)
 	assert.True(t, ok)
 	assert.Equal(t, a2a.TaskStateCompleted, completed.Status.State)
+}
+
+func TestExecutor_Execute_ArchitectProfileStreamsReasoningMetadata(t *testing.T) {
+	pipeline := &mockStreamingPipeline{
+		streamEvents: []ConversationStreamEvent{
+			{Kind: ConversationStreamReasoningDelta, Delta: "先界定边界。"},
+			{Kind: ConversationStreamReasoningDelta, Delta: "再检查风险。"},
+		},
+		response: "最终架构建议",
+	}
+	executor := NewExecutor(pipeline, 2000)
+
+	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(`{"profile":"architect","input":"怎么设计？"}`))
+	execCtx := &a2asrv.ExecutorContext{
+		Message:   msg,
+		TaskID:    "task_stream",
+		ContextID: "ctx_stream",
+	}
+
+	events, err := collectEvents(executor.Execute(context.Background(), execCtx))
+	assert.NoError(t, err)
+	assert.GreaterOrEqual(t, len(events), 4)
+
+	var reasoningDeltas []string
+	for _, ev := range events {
+		update, ok := ev.(*a2a.TaskStatusUpdateEvent)
+		if !ok || update.Metadata == nil {
+			continue
+		}
+		if update.Metadata["kind"] == string(ConversationStreamReasoningDelta) {
+			reasoningDeltas = append(reasoningDeltas, update.Metadata["delta"].(string))
+		}
+	}
+	assert.Equal(t, []string{"先界定边界。", "再检查风险。"}, reasoningDeltas)
+
+	completed := events[len(events)-1].(*a2a.TaskStatusUpdateEvent)
+	assert.Equal(t, a2a.TaskStateCompleted, completed.Status.State)
+	assert.Equal(t, "完整推理摘要", completed.Metadata["reasoning"])
+	assert.Equal(t, "最终架构建议", completed.Status.Message.Parts[0].Text())
 }
 
 func TestExecutor_Execute_EmptyText(t *testing.T) {

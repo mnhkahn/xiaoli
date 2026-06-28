@@ -2,7 +2,9 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -421,6 +423,23 @@ type PromptProfileRequest struct {
 	SessionKey   string
 	AllowTools   bool
 	MaxSteps     int
+}
+
+type PromptProfileStreamKind string
+
+const (
+	PromptProfileStreamReasoningDelta PromptProfileStreamKind = "reasoning_delta"
+	PromptProfileStreamAnswerDelta    PromptProfileStreamKind = "answer_delta"
+)
+
+type PromptProfileStreamEvent struct {
+	Kind  PromptProfileStreamKind
+	Delta string
+}
+
+type PromptProfileStreamReply struct {
+	Answer    string
+	Reasoning string
 }
 
 // SetChannelSenders sets up the channel_send tool with the provided senders
@@ -1013,6 +1032,160 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 	}
 	a.savePromptProfileHistory(ctx, profileSessionID, historyMsgs, result)
 	return result, nil
+}
+
+func (a *Agent) RunPromptProfileStream(ctx context.Context, req PromptProfileRequest, emit func(PromptProfileStreamEvent) bool) (PromptProfileStreamReply, error) {
+	if strings.TrimSpace(req.SystemPrompt) == "" {
+		return PromptProfileStreamReply{}, fmt.Errorf("profile system prompt is required")
+	}
+	userText := strings.TrimSpace(req.UserText)
+	if userText == "" {
+		return PromptProfileStreamReply{}, fmt.Errorf("profile user text is required")
+	}
+	if emit == nil {
+		emit = func(PromptProfileStreamEvent) bool { return true }
+	}
+	profileSystemAsUser := req.ChannelName == "a2a" && req.AllowTools && a.a2aSkillMW != nil
+	msgs, profileSessionID := a.buildPromptProfileMessages(ctx, req.SystemPrompt, userText, req.ChannelName, req.SessionKey, profileSystemAsUser)
+	historyMsgs := promptProfilePersistMessages(msgs, userText)
+
+	chatModel, modelID, err := a.chatModel(ctx)
+	if err != nil {
+		return PromptProfileStreamReply{}, fmt.Errorf("create chat model: %w", err)
+	}
+	maxSteps := promptProfileMaxSteps(req.MaxSteps)
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = "a2a_profile"
+	}
+	if req.ChannelName == "a2a" {
+		ctx = withTrace(ctx, newA2ATraceState(name, req.SessionKey, newA2ATraceOptions(a.cfg)))
+	}
+	cfg := &adk.ChatModelAgentConfig{
+		Name:             name,
+		Model:            chatModel,
+		MaxIterations:    maxSteps,
+		ModelRetryConfig: newLLMRetryConfig(),
+	}
+	if req.ChannelName == "a2a" && a.a2aSkillMW != nil {
+		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.a2aSkillMW}
+	} else if req.ChannelName != "a2a" && a.skillMW != nil {
+		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
+	}
+	var einoTools []tool.BaseTool
+	if req.AllowTools {
+		einoTools = a.subAgentTools(ctx, true, req.ChannelName)
+		if len(einoTools) > 0 {
+			cfg.ToolsConfig = adk.ToolsConfig{
+				ToolsNodeConfig: compose.ToolsNodeConfig{
+					Tools: einoTools,
+				},
+			}
+		}
+	}
+	if st := traceFromContext(ctx); st != nil {
+		msg := fmt.Sprintf("%s profile.stream.start allow_tools=%v max_steps=%d input_len=%d tools=%v", tracePrefix(st), req.AllowTools, maxSteps, len(userText), traceToolNames(ctx, einoTools))
+		if st.Options.LogInputs {
+			msg += fmt.Sprintf(" input=%q", traceTruncate(userText, st.Options.MaxValueLength))
+		}
+		logger.Infof("%s", msg)
+	}
+
+	agent, err := adk.NewChatModelAgent(ctx, cfg)
+	if err != nil {
+		return PromptProfileStreamReply{}, fmt.Errorf("create profile agent: %w", err)
+	}
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
+	runCtx := a.recorder.WithContext(ctx, modelID)
+	it := runner.Run(runCtx, msgs)
+	emit(PromptProfileStreamEvent{Kind: PromptProfileStreamReasoningDelta, Delta: "开始分析架构边界、数据流和风险。"})
+
+	var result strings.Builder
+	eventIndex := 0
+	for {
+		event, ok := it.Next()
+		if !ok {
+			break
+		}
+		eventIndex++
+		logTraceEvent(runCtx, eventIndex, event)
+		if event.Err != nil {
+			logger.Infof("RunPromptProfileStream event error: %v", event.Err)
+			errorMsg := fmt.Sprintf("[执行失败] %v", event.Err)
+			a.savePromptProfileDiagnostic(ctx, profileSessionID, historyMsgs, errorMsg)
+			return PromptProfileStreamReply{}, fmt.Errorf("profile agent error: %w", event.Err)
+		}
+		if event.Output == nil || event.Output.MessageOutput == nil {
+			continue
+		}
+		mv := event.Output.MessageOutput
+		if mv.Role == schema.Tool {
+			toolName := strings.TrimSpace(mv.ToolName)
+			if toolName == "" && mv.Message != nil {
+				toolName = strings.TrimSpace(mv.Message.Name)
+			}
+			if toolName == "" {
+				toolName = "tool"
+			}
+			emit(PromptProfileStreamEvent{Kind: PromptProfileStreamReasoningDelta, Delta: "工具执行完成：" + toolName})
+			continue
+		}
+		if mv.Role != schema.Assistant {
+			continue
+		}
+		if mv.IsStreaming && mv.MessageStream != nil {
+			for {
+				chunk, recvErr := mv.MessageStream.Recv()
+				if recvErr != nil {
+					if recvErr == io.EOF {
+						break
+					}
+					errorMsg := fmt.Sprintf("[执行失败] %v", recvErr)
+					a.savePromptProfileDiagnostic(ctx, profileSessionID, historyMsgs, errorMsg)
+					return PromptProfileStreamReply{}, fmt.Errorf("profile agent stream error: %w", recvErr)
+				}
+				if chunk != nil {
+					result.WriteString(chunk.Content)
+				}
+			}
+			continue
+		}
+		if mv.Message != nil {
+			result.Reset()
+			result.WriteString(mv.Message.Content)
+		}
+	}
+
+	raw := cleanPromptProfileResult(result.String())
+	if strings.TrimSpace(raw) == "" {
+		errorMsg := "[执行失败] 代理返回空响应"
+		a.savePromptProfileDiagnostic(ctx, profileSessionID, historyMsgs, errorMsg)
+		return PromptProfileStreamReply{}, fmt.Errorf("profile agent returned empty response")
+	}
+	reply := parsePromptProfileStreamReply(raw)
+	a.savePromptProfileHistory(ctx, profileSessionID, historyMsgs, raw)
+	return reply, nil
+}
+
+func parsePromptProfileStreamReply(raw string) PromptProfileStreamReply {
+	raw = strings.TrimSpace(raw)
+	var structured struct {
+		Reasoning string `json:"reasoning"`
+		Thinking  string `json:"thinking"`
+		Answer    string `json:"answer"`
+	}
+	if err := json.Unmarshal([]byte(raw), &structured); err != nil {
+		return PromptProfileStreamReply{Answer: raw}
+	}
+	reasoning := strings.TrimSpace(structured.Reasoning)
+	if reasoning == "" {
+		reasoning = strings.TrimSpace(structured.Thinking)
+	}
+	answer := strings.TrimSpace(structured.Answer)
+	if answer == "" {
+		answer = raw
+	}
+	return PromptProfileStreamReply{Answer: answer, Reasoning: reasoning}
 }
 
 func promptProfileMaxSteps(value int) int {

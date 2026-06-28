@@ -26,6 +26,7 @@ var _ a2a.ConversationPipeline = (*a2aPipeline)(nil)
 type a2aAgentRunner interface {
 	RunNamedSubAgent(ctx context.Context, name string, prompt string, sessionKey string, channelName string) (string, error)
 	RunPromptProfile(ctx context.Context, req agentruntime.PromptProfileRequest) (string, error)
+	RunPromptProfileStream(ctx context.Context, req agentruntime.PromptProfileRequest, emit func(agentruntime.PromptProfileStreamEvent) bool) (agentruntime.PromptProfileStreamReply, error)
 }
 
 func newA2APipeline(agent a2aAgentRunner) *a2aPipeline {
@@ -64,6 +65,42 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 		return a2a.ConversationReply{}, err
 	}
 	return a2a.ConversationReply{Text: reply}, nil
+}
+
+func (p *a2aPipeline) RunStream(ctx context.Context, turn a2a.ConversationTurn, emit func(a2a.ConversationStreamEvent) bool) (a2a.ConversationReply, error) {
+	if a2aAgentRunnerNil(p.agent) {
+		return a2a.ConversationReply{}, errors.New("agent not available")
+	}
+	text := strings.TrimSpace(turn.Text)
+	if text == "" {
+		return a2a.ConversationReply{}, errors.New("empty text")
+	}
+	req, ok := parseA2AProfileRequest(text)
+	if !ok || strings.TrimSpace(req.Profile) != "architect" {
+		return a2a.ConversationReply{}, errors.New("streaming is only supported for architect profile")
+	}
+	profile, ok := a2aPromptProfile(req.Profile)
+	if !ok {
+		return a2a.ConversationReply{}, errors.New("unknown profile")
+	}
+	reply, err := p.agent.RunPromptProfileStream(ctx, agentruntime.PromptProfileRequest{
+		Name:         profile.Name,
+		SystemPrompt: profile.SystemPrompt,
+		UserText:     req.UserText,
+		ChannelName:  turn.Channel,
+		SessionKey:   turn.ConversationID,
+		AllowTools:   profile.AllowTools,
+		MaxSteps:     profile.MaxSteps,
+	}, func(ev agentruntime.PromptProfileStreamEvent) bool {
+		return emit(a2a.ConversationStreamEvent{
+			Kind:  a2a.ConversationStreamKind(ev.Kind),
+			Delta: ev.Delta,
+		})
+	})
+	if err != nil {
+		return a2a.ConversationReply{}, err
+	}
+	return a2a.ConversationReply{Text: reply.Answer, Reasoning: reply.Reasoning}, nil
 }
 
 func a2aAgentRunnerNil(agent a2aAgentRunner) bool {
@@ -148,7 +185,10 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 				"- 不使用 RAG，不声称已检索向量库\n" +
 				"- 回答要聚焦架构边界、数据流、接口、风险和测试\n" +
 				"- 信息不足时先指出假设，再给出保守建议\n" +
-				"- 不访问个人数据、设备数据或私有会话",
+				"- 不访问个人数据、设备数据或私有会话\n" +
+				"- 输出严格为 JSON 格式，包含两个字段：\n" +
+				"  - reasoning：可公开返回的推理摘要、工具结果摘要、关键决策依据；不要输出隐藏思维链、密钥、个人数据或私有会话内容\n" +
+				"  - answer：最终的架构建议正文",
 			AllowTools: true,
 		}, true
 	case "geek-news":
