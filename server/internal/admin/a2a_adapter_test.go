@@ -178,7 +178,11 @@ func TestA2APromptProfilesDefineEncouragementAndArchitect(t *testing.T) {
 	if !geekNews.AllowTools {
 		t.Fatal("geek-news profile should allow news skill")
 	}
-	if !strings.Contains(geekNews.SystemPrompt, "news skill") || !strings.Contains(geekNews.SystemPrompt, "create_time") {
+	if !strings.Contains(geekNews.SystemPrompt, "news skill") ||
+		!strings.Contains(geekNews.SystemPrompt, "data 字段是 JSON 字符串") ||
+		!strings.Contains(geekNews.SystemPrompt, "只返回内层的 news 对象") ||
+		!strings.Contains(geekNews.SystemPrompt, "image") ||
+		!strings.Contains(geekNews.SystemPrompt, "create_time") {
 		t.Fatalf("geek-news prompt = %q, want news skill guidance and GeekNews JSON fields", geekNews.SystemPrompt)
 	}
 }
