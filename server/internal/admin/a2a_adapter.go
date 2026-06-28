@@ -18,7 +18,8 @@ import (
 // subagent's memory is scoped to the calling partner and context, never
 // to a personal device or Lark/WeChat session.
 type a2aPipeline struct {
-	agent a2aAgentRunner
+	agent    a2aAgentRunner
+	profiles map[string]A2AProfileConfig
 }
 
 var _ a2a.ConversationPipeline = (*a2aPipeline)(nil)
@@ -29,8 +30,24 @@ type a2aAgentRunner interface {
 	RunPromptProfileStream(ctx context.Context, req agentruntime.PromptProfileRequest, emit func(agentruntime.PromptProfileStreamEvent) bool) (agentruntime.PromptProfileStreamReply, error)
 }
 
-func newA2APipeline(agent a2aAgentRunner) *a2aPipeline {
-	return &a2aPipeline{agent: agent}
+func newA2APipeline(agent a2aAgentRunner, profiles map[string]A2AProfileConfig) *a2aPipeline {
+	return &a2aPipeline{agent: agent, profiles: profiles}
+}
+
+func (p *a2aPipeline) applyProfileOverrides(profile *a2aPromptProfileSpec, name string) {
+	if p.profiles == nil {
+		return
+	}
+	cfg, ok := p.profiles[name]
+	if !ok {
+		return
+	}
+	if cfg.Model != "" {
+		profile.Model = cfg.Model
+	}
+	if cfg.AllowTools != nil {
+		profile.AllowTools = *cfg.AllowTools
+	}
 }
 
 func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.ConversationReply, error) {
@@ -46,6 +63,7 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 		if !ok {
 			return a2a.ConversationReply{}, errors.New("unknown profile")
 		}
+		p.applyProfileOverrides(&profile, req.Profile)
 		reply, err := p.agent.RunPromptProfile(ctx, agentruntime.PromptProfileRequest{
 			Name:         profile.Name,
 			SystemPrompt: profile.SystemPrompt,
@@ -54,6 +72,7 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 			SessionKey:   turn.ConversationID,
 			AllowTools:   profile.AllowTools,
 			MaxSteps:     profile.MaxSteps,
+			Model:        profile.Model,
 		})
 		if err != nil {
 			return a2a.ConversationReply{}, err
@@ -83,6 +102,7 @@ func (p *a2aPipeline) RunStream(ctx context.Context, turn a2a.ConversationTurn, 
 	if !ok {
 		return a2a.ConversationReply{}, errors.New("unknown profile")
 	}
+	p.applyProfileOverrides(&profile, req.Profile)
 	reply, err := p.agent.RunPromptProfileStream(ctx, agentruntime.PromptProfileRequest{
 		Name:         profile.Name,
 		SystemPrompt: profile.SystemPrompt,
@@ -91,6 +111,7 @@ func (p *a2aPipeline) RunStream(ctx context.Context, turn a2a.ConversationTurn, 
 		SessionKey:   turn.ConversationID,
 		AllowTools:   profile.AllowTools,
 		MaxSteps:     profile.MaxSteps,
+		Model:        profile.Model,
 	}, func(ev agentruntime.PromptProfileStreamEvent) bool {
 		return emit(a2a.ConversationStreamEvent{
 			Kind:  a2a.ConversationStreamKind(ev.Kind),
@@ -126,6 +147,7 @@ type a2aPromptProfileSpec struct {
 	SystemPrompt string
 	AllowTools   bool
 	MaxSteps     int
+	Model        string
 }
 
 type rawA2AProfileRequest struct {
@@ -190,6 +212,7 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 				"  - reasoning：可公开返回的推理摘要、工具结果摘要、关键决策依据；不要输出隐藏思维链、密钥、个人数据或私有会话内容\n" +
 				"  - answer：最终的架构建议正文",
 			AllowTools: true,
+			Model:      "siliconflow:qwen3.5-4b",
 		}, true
 	case "geek-news":
 		return a2aPromptProfileSpec{

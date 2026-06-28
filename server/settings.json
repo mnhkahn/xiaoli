@@ -88,6 +88,20 @@
       "max_value_length": 800
     },
     "allowed_skills": ["holiday", "cyeam-cli", "news", "ai-models"],
+    "profiles": {
+      "architect": {
+        "model": "siliconflow:qwen3.5-4b",
+        "allow_tools": true
+      },
+      "geek-news": {
+        "model": "",
+        "allow_tools": true
+      },
+      "encouragement": {
+        "model": "",
+        "allow_tools": true
+      }
+    },
     "keys": [
       {
         "id": "partner_a",

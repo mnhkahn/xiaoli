@@ -126,6 +126,13 @@ type A2AConfig struct {
 	AllowedSkills       []string
 	PublicBaseURL       string
 	Trace               A2ATraceConfig
+	Profiles            map[string]A2AProfileConfig // profile 配置，可覆盖代码默认值
+}
+
+// A2AProfileConfig holds per-profile overrides (model, system prompt, etc.)
+type A2AProfileConfig struct {
+	Model      string `json:"model"`
+	AllowTools *bool  `json:"allow_tools,omitempty"`
 }
 
 type A2ATraceConfig struct {
@@ -263,6 +270,7 @@ func LoadConfig() Config {
 		TaskTTLSeconds:      settings.a2aTaskTTLSeconds(),
 		AllowedSkills:       settings.a2aAllowedSkills(),
 		PublicBaseURL:       strings.TrimRight(env("PUBLIC_BASE_URL", ""), "/"),
+		Profiles:            settings.A2A.Profiles,
 		Trace: A2ATraceConfig{
 			Enabled:        settings.a2aTraceEnabled(),
 			LogInputs:      settings.a2aTraceLogInputs(),
@@ -310,17 +318,18 @@ type settingsA2AKey struct {
 }
 
 type settingsA2AConfig struct {
-	Enabled         *bool            `json:"enabled"`
-	PublicAgentCard *bool            `json:"public_agent_card"`
-	Keys            []settingsA2AKey `json:"keys"`
-	MaxInputChars   *int             `json:"max_input_chars"`
-	TimeoutSeconds  *int             `json:"timeout_seconds"`
-	RateLimitPerMin *int             `json:"rate_limit_per_minute"`
-	RateLimitGlobal *int             `json:"rate_limit_global_per_minute"`
-	MaxConcurrent   *int             `json:"max_concurrent"`
-	TaskTTLSeconds  *int             `json:"task_ttl_seconds"`
-	AllowedSkills   []string         `json:"allowed_skills"`
-	Trace           settingsA2ATrace `json:"trace"`
+	Enabled         *bool                       `json:"enabled"`
+	PublicAgentCard *bool                       `json:"public_agent_card"`
+	Keys            []settingsA2AKey            `json:"keys"`
+	MaxInputChars   *int                        `json:"max_input_chars"`
+	TimeoutSeconds  *int                        `json:"timeout_seconds"`
+	RateLimitPerMin *int                        `json:"rate_limit_per_minute"`
+	RateLimitGlobal *int                        `json:"rate_limit_global_per_minute"`
+	MaxConcurrent   *int                        `json:"max_concurrent"`
+	TaskTTLSeconds  *int                        `json:"task_ttl_seconds"`
+	AllowedSkills   []string                    `json:"allowed_skills"`
+	Trace           settingsA2ATrace            `json:"trace"`
+	Profiles        map[string]A2AProfileConfig `json:"profiles"`
 }
 
 type settingsA2ATrace struct {

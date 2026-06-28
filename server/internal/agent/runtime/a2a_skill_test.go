@@ -107,7 +107,7 @@ func TestA2APromptProfileHistoryLoadsAndSavesIsolatedSession(t *testing.T) {
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "提示", "新的输入", "a2a", sessionKey, false)
+	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "提示", "新的输入", "a2a", sessionKey, "", false)
 	if loadedSession != sessionID {
 		t.Fatalf("loadedSession = %q, want %q", loadedSession, sessionID)
 	}
@@ -132,7 +132,7 @@ func TestA2APromptProfileHistoryLoadsAndSavesIsolatedSession(t *testing.T) {
 	if len(savedWithDiagnostic) != 4 || !isDiagnosticMessage(savedWithDiagnostic[len(savedWithDiagnostic)-1]) {
 		t.Fatalf("savedWithDiagnostic tail = %#v, want diagnostic assistant replacing latest response", savedWithDiagnostic)
 	}
-	nextMsgs, _ := agent.buildPromptProfileMessages(ctx, "提示", "下一次输入", "a2a", sessionKey, false)
+	nextMsgs, _ := agent.buildPromptProfileMessages(ctx, "提示", "下一次输入", "a2a", sessionKey, "", false)
 	for _, msg := range nextMsgs {
 		if msg != nil && strings.Contains(msg.Content, "exceeds max iterations") {
 			t.Fatalf("diagnostic failure leaked into next prompt: %#v", nextMsgs)
@@ -174,7 +174,7 @@ func TestA2APromptProfileCanEmbedSystemPromptInCurrentUserMessage(t *testing.T) 
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "必须输出 JSON", `{"date":"2026-06-28"}`, "a2a", sessionKey, true)
+	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "必须输出 JSON", `{"date":"2026-06-28"}`, "a2a", sessionKey, "", true)
 	if loadedSession != sessionID {
 		t.Fatalf("loadedSession = %q, want %q", loadedSession, sessionID)
 	}

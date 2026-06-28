@@ -25,13 +25,13 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
 
+	a2aPKG "xiaoli/server/internal/a2a"
 	agentesp32 "xiaoli/server/internal/agent/channel/esp32"
 	agentlark "xiaoli/server/internal/agent/channel/lark"
 	agentwechat "xiaoli/server/internal/agent/channel/wechat"
 	agentruntime "xiaoli/server/internal/agent/runtime"
 	"xiaoli/server/internal/agent/session"
 	agentworkflow "xiaoli/server/internal/agent/workflow"
-	a2aPKG "xiaoli/server/internal/a2a"
 	agentevent "xiaoli/server/internal/event"
 )
 
@@ -53,31 +53,31 @@ var hopByHopHeaders = map[string]struct{}{
 }
 
 type AdminServer struct {
-	cfg           Config
-	signer        *signer
-	bridge        *BridgeClient
-	httpClient    *http.Client
-	stream        *streamHub
-	audioStore    *audioStore
-	deviceHub     *DeviceHub
-	conversation  *ConversationPipeline
-	memory        memoryReader
-	agent         *EinoAgent
-	artifactStore *ArtifactStore
-	imagesMu      sync.Mutex
-	images        map[string]imageRecord
-	imagesByDev   map[string][]string
-	larkMu        sync.Mutex
-	larkEvents    map[string]time.Time
-	larkToken     string
-	larkTokenExp  time.Time
-	larkTokenMu   sync.Mutex
-	reminderOnce  sync.Once
-	reminderSt    *agentworkflow.ReminderStore
-	oidcMu        sync.Mutex
-	oidc          *oidcConfig
-	oidcFetcher   func() (oidcConfig, error)
-	a2aHandler    http.Handler
+	cfg            Config
+	signer         *signer
+	bridge         *BridgeClient
+	httpClient     *http.Client
+	stream         *streamHub
+	audioStore     *audioStore
+	deviceHub      *DeviceHub
+	conversation   *ConversationPipeline
+	memory         memoryReader
+	agent          *EinoAgent
+	artifactStore  *ArtifactStore
+	imagesMu       sync.Mutex
+	images         map[string]imageRecord
+	imagesByDev    map[string][]string
+	larkMu         sync.Mutex
+	larkEvents     map[string]time.Time
+	larkToken      string
+	larkTokenExp   time.Time
+	larkTokenMu    sync.Mutex
+	reminderOnce   sync.Once
+	reminderSt     *agentworkflow.ReminderStore
+	oidcMu         sync.Mutex
+	oidc           *oidcConfig
+	oidcFetcher    func() (oidcConfig, error)
+	a2aHandler     http.Handler
 	a2aCardHandler http.Handler
 }
 
@@ -199,7 +199,7 @@ func (s *AdminServer) setupA2A(agent *EinoAgent) {
 	if agent == nil {
 		return
 	}
-	pipeline := newA2APipeline(agent)
+	pipeline := newA2APipeline(agent, s.cfg.A2A.Profiles)
 	executor := a2aPKG.NewExecutor(pipeline, s.cfg.A2A.MaxInputChars)
 	s.a2aHandler = a2aPKG.NewServer(a2aPKG.ServerConfig{
 		Auth: a2aPKG.A2AConfig{
@@ -209,11 +209,18 @@ func (s *AdminServer) setupA2A(agent *EinoAgent) {
 			PerKeyLimit: s.cfg.A2A.RateLimitPerKey,
 			GlobalLimit: s.cfg.A2A.RateLimitGlobal,
 		},
-		MaxInputChars:  s.cfg.A2A.MaxInputChars,
-		TimeoutSeconds: s.cfg.A2A.TimeoutSeconds,
-		TaskTTLSeconds: s.cfg.A2A.TaskTTLSeconds,
-			MaxConcurrentPerKey: s.cfg.A2A.MaxConcurrentPerKey,
+		MaxInputChars:       s.cfg.A2A.MaxInputChars,
+		TimeoutSeconds:      s.cfg.A2A.TimeoutSeconds,
+		TaskTTLSeconds:      s.cfg.A2A.TaskTTLSeconds,
+		MaxConcurrentPerKey: s.cfg.A2A.MaxConcurrentPerKey,
 	}, executor)
+}
+
+func setA2ACORS(w http.ResponseWriter, methods string) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", methods)
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
+	w.Header().Set("Access-Control-Max-Age", "86400")
 }
 
 func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -224,12 +231,22 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.URL.Path == "/.well-known/agent-card.json":
+		setA2ACORS(w, "GET, OPTIONS")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if s.a2aCardHandler != nil {
 			s.a2aCardHandler.ServeHTTP(w, r)
 		} else {
 			http.NotFound(w, r)
 		}
 	case r.URL.Path == "/a2a":
+		setA2ACORS(w, "POST, OPTIONS")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if s.a2aHandler != nil {
 			s.a2aHandler.ServeHTTP(w, r)
 		} else {

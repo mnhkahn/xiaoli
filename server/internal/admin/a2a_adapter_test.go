@@ -38,7 +38,7 @@ func (f *fakeA2AAgent) RunNamedSubAgent(ctx context.Context, name string, prompt
 
 func TestA2APipelineRoutesProfileRequestToPromptProfile(t *testing.T) {
 	agent := &fakeA2AAgent{}
-	pipeline := newA2APipeline(agent)
+	pipeline := newA2APipeline(agent, nil)
 
 	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{
 		Channel: "a2a",
@@ -60,7 +60,7 @@ func TestA2APipelineRoutesProfileRequestToPromptProfile(t *testing.T) {
 
 func TestA2APipelineRoutesGeekNewsProfileToPromptProfile(t *testing.T) {
 	agent := &fakeA2AAgent{}
-	pipeline := newA2APipeline(agent)
+	pipeline := newA2APipeline(agent, nil)
 
 	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{
 		Channel:        "a2a",
@@ -89,7 +89,7 @@ func TestA2APipelineRoutesGeekNewsProfileToPromptProfile(t *testing.T) {
 
 func TestA2APipelineRoutesPlainTextToPublicAssistant(t *testing.T) {
 	agent := &fakeA2AAgent{}
-	pipeline := newA2APipeline(agent)
+	pipeline := newA2APipeline(agent, nil)
 
 	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{
 		Channel: "a2a",
@@ -111,7 +111,7 @@ func TestA2APipelineRoutesPlainTextToPublicAssistant(t *testing.T) {
 
 func TestA2APipelineStreamsOnlyArchitectProfile(t *testing.T) {
 	agent := &fakeA2AAgent{}
-	pipeline := newA2APipeline(agent)
+	pipeline := newA2APipeline(agent, nil)
 	var got []a2a.ConversationStreamEvent
 
 	reply, err := pipeline.RunStream(context.Background(), a2a.ConversationTurn{
@@ -138,7 +138,7 @@ func TestA2APipelineStreamsOnlyArchitectProfile(t *testing.T) {
 
 func TestA2APipelineRunStreamRejectsNonArchitectProfile(t *testing.T) {
 	agent := &fakeA2AAgent{}
-	pipeline := newA2APipeline(agent)
+	pipeline := newA2APipeline(agent, nil)
 
 	if _, err := pipeline.RunStream(context.Background(), a2a.ConversationTurn{
 		Channel: "a2a",
@@ -153,7 +153,7 @@ func TestA2APipelineRunStreamRejectsNonArchitectProfile(t *testing.T) {
 
 func TestA2APipelineHandlesTypedNilAgent(t *testing.T) {
 	var agent *fakeA2AAgent
-	pipeline := newA2APipeline(agent)
+	pipeline := newA2APipeline(agent, nil)
 
 	if _, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Text: "hi"}); err == nil {
 		t.Fatal("Run() error = nil, want agent not available")

@@ -368,7 +368,13 @@ func (a *Agent) ListLLMModels() []agentmodel.Option {
 }
 
 func (a *Agent) chatModel(ctx context.Context) (*openai.ChatModel, string, error) {
-	modelID := a.CurrentLLMModel()
+	return a.chatModelForID(ctx, "")
+}
+
+func (a *Agent) chatModelForID(ctx context.Context, modelID string) (*openai.ChatModel, string, error) {
+	if modelID == "" {
+		modelID = a.CurrentLLMModel()
+	}
 	if strings.TrimSpace(modelID) == "" {
 		return nil, "", fmt.Errorf("LLM model is not configured")
 	}
@@ -376,6 +382,10 @@ func (a *Agent) chatModel(ctx context.Context) (*openai.ChatModel, string, error
 	defer a.modelMu.Unlock()
 	if model := a.chatModels[modelID]; model != nil {
 		return model, modelID, nil
+	}
+	// 显式指定的模型必须在配置中存在，避免 typo 静默 fallback 到错误的 provider
+	if _, ok := a.cfg.LLMModelConfigs[modelID]; !ok && modelID != a.CurrentLLMModel() {
+		return nil, "", fmt.Errorf("LLM model %q is not configured", modelID)
 	}
 	modelCfg := a.cfg.selectedLLMModelConfigFor(modelID)
 	if modelCfg.Model == "" || modelCfg.BaseURL == "" || modelCfg.APIKey == "" {
@@ -423,6 +433,7 @@ type PromptProfileRequest struct {
 	SessionKey   string
 	AllowTools   bool
 	MaxSteps     int
+	Model        string // 可选：强制使用指定模型，为空则用默认
 }
 
 type PromptProfileStreamKind string
@@ -954,10 +965,10 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 		return "", fmt.Errorf("profile user text is required")
 	}
 	profileSystemAsUser := req.ChannelName == "a2a" && req.AllowTools && a.a2aSkillMW != nil
-	msgs, profileSessionID := a.buildPromptProfileMessages(ctx, req.SystemPrompt, userText, req.ChannelName, req.SessionKey, profileSystemAsUser)
+	msgs, profileSessionID := a.buildPromptProfileMessages(ctx, req.SystemPrompt, userText, req.ChannelName, req.SessionKey, req.Model, profileSystemAsUser)
 	historyMsgs := promptProfilePersistMessages(msgs, userText)
 
-	chatModel, modelID, err := a.chatModel(ctx)
+	chatModel, modelID, err := a.chatModelForID(ctx, req.Model)
 	if err != nil {
 		return "", fmt.Errorf("create chat model: %w", err)
 	}
@@ -1046,10 +1057,10 @@ func (a *Agent) RunPromptProfileStream(ctx context.Context, req PromptProfileReq
 		emit = func(PromptProfileStreamEvent) bool { return true }
 	}
 	profileSystemAsUser := req.ChannelName == "a2a" && req.AllowTools && a.a2aSkillMW != nil
-	msgs, profileSessionID := a.buildPromptProfileMessages(ctx, req.SystemPrompt, userText, req.ChannelName, req.SessionKey, profileSystemAsUser)
+	msgs, profileSessionID := a.buildPromptProfileMessages(ctx, req.SystemPrompt, userText, req.ChannelName, req.SessionKey, req.Model, profileSystemAsUser)
 	historyMsgs := promptProfilePersistMessages(msgs, userText)
 
-	chatModel, modelID, err := a.chatModel(ctx)
+	chatModel, modelID, err := a.chatModelForID(ctx, req.Model)
 	if err != nil {
 		return PromptProfileStreamReply{}, fmt.Errorf("create chat model: %w", err)
 	}
@@ -1195,7 +1206,7 @@ func promptProfileMaxSteps(value int) int {
 	return defaultAgentMaxIterations
 }
 
-func (a *Agent) buildPromptProfileMessages(ctx context.Context, systemPrompt, userText, channelName, sessionKey string, systemAsUser bool) ([]*schema.Message, string) {
+func (a *Agent) buildPromptProfileMessages(ctx context.Context, systemPrompt, userText, channelName, sessionKey, model string, systemAsUser bool) ([]*schema.Message, string) {
 	msgs := make([]*schema.Message, 0, 4)
 	if !systemAsUser {
 		msgs = append(msgs, schema.SystemMessage(systemPrompt))
@@ -1203,7 +1214,10 @@ func (a *Agent) buildPromptProfileMessages(ctx context.Context, systemPrompt, us
 
 	sessionID := ""
 	if strings.TrimSpace(sessionKey) != "" && a != nil && a.sessionMgr != nil && a.memory != nil {
-		modelID := strings.TrimSpace(a.CurrentLLMModel())
+		modelID := strings.TrimSpace(model)
+		if modelID == "" {
+			modelID = strings.TrimSpace(a.CurrentLLMModel())
+		}
 		if modelID == "" {
 			modelID = strings.TrimSpace(a.cfg.LLMModel)
 		}
