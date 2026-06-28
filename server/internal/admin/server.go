@@ -216,13 +216,6 @@ func (s *AdminServer) setupA2A(agent *EinoAgent) {
 	}, executor)
 }
 
-func setA2ACORS(w http.ResponseWriter, methods string) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", methods)
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
-	w.Header().Set("Access-Control-Max-Age", "86400")
-}
-
 func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/admin") {
 		w.Header().Set("Cache-Control", "no-store")
@@ -231,22 +224,12 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.URL.Path == "/.well-known/agent-card.json":
-		setA2ACORS(w, "GET, OPTIONS")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
 		if s.a2aCardHandler != nil {
 			s.a2aCardHandler.ServeHTTP(w, r)
 		} else {
 			http.NotFound(w, r)
 		}
 	case r.URL.Path == "/a2a":
-		setA2ACORS(w, "POST, OPTIONS")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
 		if s.a2aHandler != nil {
 			s.a2aHandler.ServeHTTP(w, r)
 		} else {
