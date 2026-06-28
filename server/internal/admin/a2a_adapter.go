@@ -164,8 +164,9 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 				"- news 是数组，每条必须包含 link、title、description、image、create_time\n" +
 				"- 必须保留 cyeam 返回的 image 字段作为封面图，不要删除、改名或编造；没有图片时才输出空字符串\n" +
 				"- 必须保留 cyeam 返回的 create_time 时间字段；顶层 create_time 和每条新闻 create_time 都要返回\n" +
-				"- description 使用 cyeam 返回的长描述，不要压缩成一句话\n" +
-				"- summary 使用 cyeam 返回的 summary；缺失时再用中文概括最重要的 3-5 个趋势\n" +
+				"- description 使用 cyeam 返回的长描述，不要压缩成一句话；如果是英文必须翻译成中文\n" +
+				"- summary 使用 cyeam 返回的 summary；如果是英文必须翻译成中文；缺失时再用中文概括最重要的 3-5 个趋势\n" +
+				"- 所有标题、描述、总结内容都必须是中文\n" +
 				"- 不访问个人数据、设备数据、邮箱、飞书、微信或私有会话",
 			AllowTools: true,
 		}, true
