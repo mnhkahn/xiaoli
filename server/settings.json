@@ -90,7 +90,7 @@
     "allowed_skills": ["holiday", "cyeam-cli", "news", "ai-models"],
     "profiles": {
       "architect": {
-        "model": "siliconflow:qwen3.5-4b",
+        "model": "openrouter:nemotron-3-super-120b-free",
         "allow_tools": true
       },
       "geek-news": {
