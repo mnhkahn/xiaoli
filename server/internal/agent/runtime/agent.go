@@ -1155,8 +1155,9 @@ func (a *Agent) RunPromptProfileStream(ctx context.Context, req PromptProfileReq
 					a.savePromptProfileDiagnostic(ctx, profileSessionID, historyMsgs, errorMsg)
 					return PromptProfileStreamReply{}, fmt.Errorf("profile agent stream error: %w", recvErr)
 				}
-				if chunk != nil {
+				if chunk != nil && chunk.Content != "" {
 					result.WriteString(chunk.Content)
+					emit(PromptProfileStreamEvent{Kind: PromptProfileStreamAnswerDelta, Delta: chunk.Content})
 				}
 			}
 			continue

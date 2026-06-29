@@ -11,14 +11,6 @@
           "max_tokens": 8192,
           "context_length": 131072
         },
-        "siliconflow:qwen3.5-4b": {
-          "name": "Qwen3.5 4B",
-          "base_url": "https://api.siliconflow.cn/v1/chat/completions",
-          "model": "Qwen/Qwen3.5-4B",
-          "api_key_env": "SILICONFLOW_API_KEY",
-          "max_tokens": 4096,
-          "context_length": 32768
-        },
         "siliconflow:hunyuan-mt-7b": {
           "name": "Tencent Hunyuan MT 7B",
           "base_url": "https://api.siliconflow.cn/v1/chat/completions",
@@ -98,7 +90,7 @@
     "allowed_skills": ["holiday", "cyeam-cli", "news", "ai-models"],
     "profiles": {
       "architect": {
-        "model": "siliconflow:hunyuan-mt-7b",
+        "model": "ark:code-latest",
         "allow_tools": true
       },
       "geek-news": {
