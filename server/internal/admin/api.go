@@ -223,6 +223,23 @@ func (s *AdminServer) handleBuiltinCommand(ctx context.Context, source Conversat
 	return slash.NewHandler(adminSlashDeps{s: s}).Handle(ctx, sourceType, text)
 }
 
+func (s *AdminServer) skillSlashText(ctx context.Context, source ConversationChannel, deviceID string, text string) string {
+	sourceType, ok := slashSourceType(source)
+	if !ok || sourceType == agentchannel.TypeESP32 {
+		return text
+	}
+	if deviceID != "" {
+		ctx = context.WithValue(ctx, slash.CtxDeviceID, deviceID)
+	}
+	if source != "" {
+		ctx = context.WithValue(ctx, slash.CtxChannelName, string(source))
+	}
+	if prompt, ok := slash.NewHandler(adminSlashDeps{s: s}).SkillPrompt(ctx, text); ok {
+		return prompt
+	}
+	return text
+}
+
 func slashSourceType(source ConversationChannel) (agentchannel.Type, bool) {
 	switch source {
 	case ChannelLarkText:

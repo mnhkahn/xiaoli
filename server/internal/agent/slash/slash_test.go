@@ -165,6 +165,31 @@ func TestUnknownCommandIsNotHandled(t *testing.T) {
 	}
 }
 
+func TestSkillPromptForEnabledSkillSlash(t *testing.T) {
+	handler := NewHandler(&fakeDeps{})
+
+	prompt, ok := handler.SkillPrompt(context.Background(), "/holiday 2026-10-01")
+
+	if !ok {
+		t.Fatal("SkillPrompt() ok = false, want true")
+	}
+	for _, want := range []string{"holiday", "2026-10-01", "skill"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("SkillPrompt() = %q, want %q", prompt, want)
+		}
+	}
+}
+
+func TestSkillPromptSkipsBuiltinCommandConflict(t *testing.T) {
+	handler := NewHandler(&fakeDeps{})
+
+	prompt, ok := handler.SkillPrompt(context.Background(), "/model holiday")
+
+	if ok || prompt != "" {
+		t.Fatalf("SkillPrompt() = %q, %v; want skipped builtin conflict", prompt, ok)
+	}
+}
+
 func TestModelListAndUse(t *testing.T) {
 	deps := &fakeDeps{current: "llm-test"}
 	handler := NewHandler(deps)

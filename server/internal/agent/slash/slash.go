@@ -148,6 +148,40 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 	}
 }
 
+func (h Handler) SkillPrompt(ctx context.Context, text string) (string, bool) {
+	cmd, ok := Parse(text)
+	if !ok || isBuiltinCommandName(cmd.Name) {
+		return "", false
+	}
+	skills, err := h.deps.ListSkills(ctx)
+	if err != nil {
+		return "", false
+	}
+	for _, skill := range skills {
+		if strings.EqualFold(skill.Name, cmd.Name) {
+			return formatSkillPrompt(skill.Name, cmd.Args), true
+		}
+	}
+	return "", false
+}
+
+func isBuiltinCommandName(name string) bool {
+	switch name {
+	case "skills", "model", "channel", "status", "new", "sessions", "session", "compact", "memory", "cron", "reminder", "mcp", "tasks", "task", "log", "help":
+		return true
+	default:
+		return false
+	}
+}
+
+func formatSkillPrompt(name, args string) string {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		args = "请根据该 skill 的说明处理这个请求。"
+	}
+	return fmt.Sprintf("用户通过 Slash 命令调用了 %s skill。\n\n请先加载并遵循 %s skill 的说明来处理下面的请求；如果该 skill 要求执行命令，请按 skill 说明使用工具执行。\n\n请求：\n%s", name, name, args)
+}
+
 func (h Handler) sessionContext(ctx context.Context, id string) string {
 	if id == "" {
 		return "用法：/session <id>"
@@ -260,10 +294,16 @@ func (h Handler) skills(ctx context.Context) string {
 		return "当前没有启用的 Skill。"
 	}
 	var b strings.Builder
-	b.WriteString("可用 Skills：")
+	b.WriteString("可用 Skills（可用 /<名称> <请求> 调用；与内置命令冲突的名称会跳过）：")
 	for _, skill := range skills {
 		b.WriteString("\n- ")
-		b.WriteString(skill.Name)
+		if isBuiltinCommandName(strings.ToLower(skill.Name)) {
+			b.WriteString(skill.Name)
+			b.WriteString("（Slash 入口跳过）")
+		} else {
+			b.WriteString("/")
+			b.WriteString(skill.Name)
+		}
 		if skill.Version != "" {
 			b.WriteString(" v")
 			b.WriteString(skill.Version)

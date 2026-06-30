@@ -789,7 +789,8 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 		}()
 	}
 
-	turn := LarkTextFactory{}.Build(event.Message.ChatID, senderID, text, event.Message.MessageID)
+	turnText := s.skillSlashText(ctx, ChannelLarkText, senderID, text)
+	turn := LarkTextFactory{}.Build(event.Message.ChatID, senderID, turnText, event.Message.MessageID)
 	turn.Formatter = formatter
 	reply, err := s.conversation.Run(ctx, turn)
 	if err != nil {
@@ -1146,7 +1147,8 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 	}
 
 	formatter := agentwechat.NewReplyFormatter(c, msg.ToUserID, msg.FromUserID, msg.ContextToken)
-	turn := WechatTextFactory{}.Build(msg.ContextToken, msg.FromUserID, text)
+	turnText := s.skillSlashText(ctx, ChannelWechatText, msg.FromUserID, text)
+	turn := WechatTextFactory{}.Build(msg.ContextToken, msg.FromUserID, turnText)
 	turn.Formatter = formatter
 	reply, err := s.conversation.Run(ctx, turn)
 	if err != nil {

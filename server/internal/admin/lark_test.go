@@ -177,6 +177,75 @@ func TestLarkTextEventUsesSharedPipelineAndReplies(t *testing.T) {
 	}
 }
 
+func TestLarkSkillSlashCommandRewritesTextForPipeline(t *testing.T) {
+	root := t.TempDir()
+	writeTestSkill(t, root, "holiday", "假期查询", "holiday body")
+
+	cfg := testConfig()
+	cfg.LarkAppID = "cli_test"
+	cfg.LarkAppToken = "token_test"
+	cfg.SkillRoots = []string{root}
+	cfg.EnabledSkills = []string{"*"}
+	srv := NewServer(cfg)
+
+	turns := make(chan ConversationTurn, 1)
+	srv.conversation = &ConversationPipeline{
+		chat: conversationChatFunc(func(ctx context.Context, turn ConversationTurn) (string, error) {
+			turns <- turn
+			return "收到", nil
+		}),
+	}
+
+	srv.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "tenant_access_token": "tenant-token"}), nil
+		case "/open-apis/im/v1/messages/om_skill/reply":
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"message_id": "reply_skill"}}), nil
+		case "/open-apis/im/v1/messages/om_skill/reactions":
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"reaction_id": "reaction_skill"}}), nil
+		case "/open-apis/im/v1/messages/om_skill/reactions/reaction_skill":
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0}), nil
+		default:
+			t.Fatalf("unexpected Lark request path: %s", req.URL.Path)
+			return nil, nil
+		}
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/lark/events", strings.NewReader(`{
+		"schema":"2.0",
+		"header":{
+			"event_id":"evt_skill",
+			"event_type":"im.message.receive_v1",
+			"app_id":"cli_test",
+			"tenant_key":"tenant_1"
+		},
+		"event":{
+			"sender":{"sender_type":"user","sender_id":{"open_id":"ou_user"}},
+			"message":{
+				"message_id":"om_skill",
+				"chat_id":"oc_chat",
+				"message_type":"text",
+				"content":"{\"text\":\"/holiday 2026-10-01\"}"
+			}
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	turn := <-turns
+	for _, want := range []string{"holiday", "2026-10-01", "Slash"} {
+		if !strings.Contains(turn.Text, want) {
+			t.Fatalf("turn.Text = %q, want %q", turn.Text, want)
+		}
+	}
+}
+
 func TestLarkTextEventLogsIngressWithoutMessageContent(t *testing.T) {
 	cfg := testConfig()
 	cfg.LarkAppID = "cli_test"
