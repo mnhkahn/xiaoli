@@ -186,6 +186,37 @@ func TestWechatImageMessageRunsPipelineWithVisionSummary(t *testing.T) {
 	}
 }
 
+func TestDescribeWechatImageMediaRedactsSecrets(t *testing.T) {
+	got := describeWechatImageMedia(&agentwechat.ImageItem{
+		AESKey:  "image-secret-key",
+		MidSize: 12345,
+		Media: &agentwechat.CDNMedia{
+			EncryptQueryParam: "encrypted_token=super-secret-token&fileid=abc",
+			AESKey:            "media-secret-key",
+			EncryptType:       7,
+		},
+	})
+	for _, want := range []string{
+		"ref_kind=query",
+		"ref_len=45",
+		"has_query=true",
+		"has_slash=false",
+		"encrypt_type=7",
+		"media_aes_key_len=16",
+		"image_aes_key_len=16",
+		"mid_size=12345",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("describeWechatImageMedia() = %q, want it to contain %q", got, want)
+		}
+	}
+	for _, secret := range []string{"super-secret-token", "image-secret-key", "media-secret-key"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("describeWechatImageMedia() = %q, leaked %q", got, secret)
+		}
+	}
+}
+
 func TestFormattedUserTextWrapsFormatterInstruction(t *testing.T) {
 	turn := ConversationTurn{
 		ConversationID: "conv-1",

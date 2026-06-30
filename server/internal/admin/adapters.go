@@ -1180,7 +1180,7 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 		} else {
 			contentType, body, err := c.DownloadImage(ctx, images[0])
 			if err != nil {
-				logger.Infof("[wechat] image download error: %v", err)
+				logger.Infof("[wechat] image download error: %v media=%s", err, describeWechatImageMedia(images[0]))
 				if text == "" {
 					formatter := agentwechat.NewReplyFormatter(c, msg.ToUserID, msg.FromUserID, msg.ContextToken)
 					_ = formatter.Send(ctx, "我现在还无法读取这张微信图片。")
@@ -1263,6 +1263,42 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 
 func wechatSendTyping(ctx context.Context, c *wechatClient, fromUserID, toUserID, contextToken string) error {
 	return agentwechat.SendTyping(ctx, c, fromUserID, toUserID, contextToken)
+}
+
+func describeWechatImageMedia(image *agentwechat.ImageItem) string {
+	if image == nil {
+		return "image=nil"
+	}
+	if image.Media == nil {
+		return fmt.Sprintf("media=nil image_aes_key_len=%d mid_size=%d", len(image.AESKey), image.MidSize)
+	}
+	ref := strings.TrimSpace(image.Media.EncryptQueryParam)
+	refKind := "empty"
+	switch {
+	case strings.HasPrefix(ref, "http://"):
+		refKind = "http"
+	case strings.HasPrefix(ref, "https://"):
+		refKind = "https"
+	case strings.HasPrefix(ref, "/"):
+		refKind = "path"
+	case strings.Contains(ref, "://"):
+		refKind = "scheme"
+	case strings.Contains(ref, "=") || strings.Contains(ref, "&") || strings.Contains(ref, "?"):
+		refKind = "query"
+	case ref != "":
+		refKind = "opaque"
+	}
+	return fmt.Sprintf(
+		"ref_kind=%s ref_len=%d has_query=%t has_slash=%t encrypt_type=%d media_aes_key_len=%d image_aes_key_len=%d mid_size=%d",
+		refKind,
+		len(ref),
+		strings.Contains(ref, "?") || strings.Contains(ref, "&") || strings.Contains(ref, "="),
+		strings.Contains(ref, "/"),
+		image.Media.EncryptType,
+		len(image.Media.AESKey),
+		len(image.AESKey),
+		image.MidSize,
+	)
 }
 
 func wechatSendText(ctx context.Context, c *wechatClient, fromUserID, toUserID, contextToken, text string) error {
