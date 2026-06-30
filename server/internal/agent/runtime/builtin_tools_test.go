@@ -90,19 +90,25 @@ func TestToolsForChatIncludesChannelSendToolWhenConfigured(t *testing.T) {
 	agent.SetChannelSenders(ChannelSendersConfig{AllowedRoots: []string{t.TempDir()}})
 
 	tools := agent.toolsForChat(context.Background(), "", "", "")
-	found := false
+	foundChannelSend := false
+	foundFileWrite := false
 	for _, tb := range tools {
 		info, err := tb.Info(context.Background())
 		if err != nil {
 			t.Fatalf("Info() error = %v", err)
 		}
 		if info.Name == "channel_send" {
-			found = true
-			break
+			foundChannelSend = true
+		}
+		if info.Name == "file_write" {
+			foundFileWrite = true
 		}
 	}
-	if !found {
+	if !foundChannelSend {
 		t.Fatal("toolsForChat should include channel_send when channel senders are configured")
+	}
+	if !foundFileWrite {
+		t.Fatal("toolsForChat should include file_write when channel senders are configured")
 	}
 }
 
@@ -114,7 +120,7 @@ func TestSubAgentToolsNotIncludesInteractiveTools(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Info() error = %v", err)
 		}
-		if info.Name == "ask_user_question" || info.Name == "task" || info.Name == "memory_save" || info.Name == "memory_forget" || info.Name == "memory_list" {
+		if info.Name == "ask_user_question" || info.Name == "task" || info.Name == "memory_save" || info.Name == "memory_forget" || info.Name == "memory_list" || info.Name == "file_write" || info.Name == "channel_send" {
 			t.Fatalf("subAgentTools should not include tool %q", info.Name)
 		}
 	}

@@ -64,6 +64,7 @@ type Agent struct {
 	taskTool        *agentbuiltin.TaskTool
 	eventBus        agentevent.Publisher
 	channelSendTool tool.InvokableTool
+	fileWriteRoots  []string
 	visionAnalyzer  agentbuiltin.VisionAnalyzer
 	recentImages    agentbuiltin.RecentImageStore
 }
@@ -472,6 +473,7 @@ func (a *Agent) SetChannelSenders(cfg ChannelSendersConfig) {
 		WeChat:       cfg.WeChat,
 		AllowedRoots: cfg.AllowedRoots,
 	})
+	a.fileWriteRoots = append([]string(nil), cfg.AllowedRoots...)
 }
 
 func (a *Agent) Chat(ctx context.Context, deviceID string, userText string) (string, error) {
@@ -830,6 +832,7 @@ func (a *Agent) toolGuide(interactive bool) string {
 • device tools — 设备端工具（如拍照），用于需要摄像头或硬件交互的场景。仅在 ESP32 设备可用。`)
 		if a.channelSendTool != nil {
 			b.WriteString(`
+• file_write — 将文本内容写成当前会话可用的本地文件。生成 Markdown/HTML/JSON 等中间文件时先用它获得 file_path，再交给 skill 或 channel_send。
 • channel_send — 向当前对话渠道发送文本或本地文件。工具或 skill 生成用户需要的 PDF、图片、文件后，用 target=current 和 file_path 发给用户；中间产物、日志或敏感文件不要自动发送。`)
 		}
 		if a.visionAnalyzer != nil && a.recentImages != nil {
@@ -1743,6 +1746,10 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 	if filter&agentbuiltin.ToolInspectRecentImage != 0 {
 		opts.VisionAnalyzer = a.visionAnalyzer
 		opts.RecentImages = a.recentImages
+	}
+	if len(a.fileWriteRoots) > 0 {
+		filter |= agentbuiltin.ToolFileWrite
+		opts.FileWriteRoots = a.fileWriteRoots
 	}
 	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, opts))
 	if a.taskTool != nil {

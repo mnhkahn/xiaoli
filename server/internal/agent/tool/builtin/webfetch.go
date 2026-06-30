@@ -101,6 +101,9 @@ func NewFilteredTools(filters ToolFilter, opts ToolOptions) []tool.BaseTool {
 	if filters&ToolInspectRecentImage != 0 && inspectRecentImageToolAvailable(opts.VisionAnalyzer, opts.RecentImages) {
 		tools = append(tools, NewInspectRecentImageTool(opts.VisionAnalyzer, opts.RecentImages))
 	}
+	if filters&ToolFileWrite != 0 && len(opts.FileWriteRoots) > 0 {
+		tools = append(tools, NewFileWriteTool(FileWriteConfig{AllowedRoots: opts.FileWriteRoots}))
+	}
 	return tools
 }
 
