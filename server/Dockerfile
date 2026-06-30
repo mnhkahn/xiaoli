@@ -32,6 +32,7 @@ RUN curl -fsSL -o /tmp/ort.tgz \
 FROM golang:1.25-bookworm AS skill-build
 
 ARG XIAOLI_SKILLS="mnhkahn/cyeam-cli https://open.feishu.cn"
+ARG XIAOLI_SKILLS_CACHE_BUST=none
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git tar \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
@@ -40,6 +41,7 @@ RUN apt-get update \
 
 WORKDIR /skill-src
 RUN set -eux; \
+    echo "skills cache bust: ${XIAOLI_SKILLS_CACHE_BUST}"; \
     mkdir -p /skills; \
     for skill in $XIAOLI_SKILLS; do \
         npx -y skills add "$skill" -- -y -g; \

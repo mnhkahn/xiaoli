@@ -83,6 +83,29 @@ curl https://xiaoli-server.fly.dev/health
 curl https://xiaoli-server.fly.dev/xiaozhi/ota/
 ```
 
+## Local TUI
+
+Install the local Xiaoli TUI into the current Go environment:
+
+```bash
+cd server
+go install ./cmd/xiaoli-tui
+```
+
+Initialize local settings and secrets:
+
+```bash
+xiaoli-tui -init
+```
+
+Then edit `~/.xiaoli/settings.json` to set `models.default` and model
+endpoints, and put API keys in `~/.xiaoli/secrets.json` or environment
+variables. Run:
+
+```bash
+xiaoli-tui
+```
+
 ## Firmware OTA URL
 
 After the Fly app is deployed, rebuild the firmware with:
