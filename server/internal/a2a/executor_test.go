@@ -81,10 +81,6 @@ func TestExecutor_Execute_Success(t *testing.T) {
 
 func TestExecutor_Execute_ArchitectProfileStreamsReasoningMetadata(t *testing.T) {
 	pipeline := &mockStreamingPipeline{
-		streamEvents: []ConversationStreamEvent{
-			{Kind: ConversationStreamReasoningDelta, Delta: "先界定边界。"},
-			{Kind: ConversationStreamReasoningDelta, Delta: "再检查风险。"},
-		},
 		response: "最终架构建议",
 	}
 	executor := NewExecutor(pipeline, 2000)
@@ -98,7 +94,7 @@ func TestExecutor_Execute_ArchitectProfileStreamsReasoningMetadata(t *testing.T)
 
 	events, err := collectEvents(executor.Execute(context.Background(), execCtx))
 	assert.NoError(t, err)
-	assert.GreaterOrEqual(t, len(events), 4)
+	assert.GreaterOrEqual(t, len(events), 3)
 
 	var reasoningDeltas []string
 	for _, ev := range events {
@@ -110,11 +106,12 @@ func TestExecutor_Execute_ArchitectProfileStreamsReasoningMetadata(t *testing.T)
 			reasoningDeltas = append(reasoningDeltas, update.Metadata["delta"].(string))
 		}
 	}
-	assert.Equal(t, []string{"先界定边界。", "再检查风险。"}, reasoningDeltas)
+	assert.Empty(t, reasoningDeltas)
 
 	completed := events[len(events)-1].(*a2a.TaskStatusUpdateEvent)
 	assert.Equal(t, a2a.TaskStateCompleted, completed.Status.State)
 	assert.Equal(t, "完整推理摘要", completed.Metadata["reasoning"])
+	assert.Equal(t, "完整推理摘要", completed.Metadata["thinking"])
 	assert.Equal(t, "最终架构建议", completed.Status.Message.Parts[0].Text())
 }
 

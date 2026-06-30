@@ -26,7 +26,6 @@ func (f *fakeA2AAgent) RunPromptProfile(ctx context.Context, req agentruntime.Pr
 func (f *fakeA2AAgent) RunPromptProfileStream(ctx context.Context, req agentruntime.PromptProfileRequest, emit func(agentruntime.PromptProfileStreamEvent) bool) (agentruntime.PromptProfileStreamReply, error) {
 	f.profileStreamCalls++
 	f.lastProfile = req
-	emit(agentruntime.PromptProfileStreamEvent{Kind: agentruntime.PromptProfileStreamReasoningDelta, Delta: "先看边界。"})
 	return agentruntime.PromptProfileStreamReply{Answer: "架构建议", Reasoning: "先看边界。"}, nil
 }
 
@@ -128,8 +127,8 @@ func TestA2APipelineStreamsOnlyArchitectProfile(t *testing.T) {
 	if reply.Text != "架构建议" || reply.Reasoning != "先看边界。" {
 		t.Fatalf("reply = %#v, want answer and reasoning", reply)
 	}
-	if len(got) != 1 || got[0].Kind != a2a.ConversationStreamReasoningDelta || got[0].Delta != "先看边界。" {
-		t.Fatalf("stream events = %#v, want reasoning delta", got)
+	if len(got) != 0 {
+		t.Fatalf("stream events = %#v, want no synthetic reasoning/progress delta", got)
 	}
 	if agent.profileStreamCalls != 1 || agent.profileCalls != 0 || agent.subAgentCalls != 0 {
 		t.Fatalf("calls stream=%d profile=%d subagent=%d, want stream only", agent.profileStreamCalls, agent.profileCalls, agent.subAgentCalls)

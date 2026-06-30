@@ -1109,7 +1109,6 @@ func (a *Agent) RunPromptProfileStream(ctx context.Context, req PromptProfileReq
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: agent})
 	runCtx := a.recorder.WithContext(ctx, modelID)
 	it := runner.Run(runCtx, msgs)
-	emit(PromptProfileStreamEvent{Kind: PromptProfileStreamReasoningDelta, Delta: "开始分析架构边界、数据流和风险。"})
 
 	var result strings.Builder
 	eventIndex := 0
@@ -1138,7 +1137,6 @@ func (a *Agent) RunPromptProfileStream(ctx context.Context, req PromptProfileReq
 			if toolName == "" {
 				toolName = "tool"
 			}
-			emit(PromptProfileStreamEvent{Kind: PromptProfileStreamReasoningDelta, Delta: "工具执行完成：" + toolName})
 			continue
 		}
 		if mv.Role != schema.Assistant {
