@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -57,6 +58,16 @@ func (m *Message) Text() string {
 		}
 	}
 	return ""
+}
+
+func (m *Message) Images() []*ImageItem {
+	var images []*ImageItem
+	for _, item := range m.ItemList {
+		if item.Type == ItemImage && item.ImageItem != nil {
+			images = append(images, item.ImageItem)
+		}
+	}
+	return images
 }
 
 type MsgItem struct {
@@ -244,6 +255,48 @@ func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
 		return nil, fmt.Errorf("wechat http %d: %s", resp.StatusCode, string(raw))
 	}
 	return raw, nil
+}
+
+func (c *Client) DownloadImage(ctx context.Context, image *ImageItem) (string, []byte, error) {
+	if image == nil || image.Media == nil || strings.TrimSpace(image.Media.EncryptQueryParam) == "" {
+		return "", nil, fmt.Errorf("wechat image missing media URL")
+	}
+	ref := strings.TrimSpace(image.Media.EncryptQueryParam)
+	endpoint := ""
+	switch {
+	case strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://"):
+		endpoint = ref
+	case strings.HasPrefix(ref, "/"):
+		endpoint = strings.TrimRight(c.BaseURL, "/") + ref
+	default:
+		return "", nil, fmt.Errorf("wechat image media format is not supported yet")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", nil, fmt.Errorf("wechat image request: %w", err)
+	}
+	req.Header.Set("AuthorizationType", "ilink_bot_token")
+	req.Header.Set("X-WECHAT-UIN", generateUIN())
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.HTTPDo(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("wechat image http: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 3*1024*1024))
+	if err != nil {
+		return "", nil, fmt.Errorf("wechat image read: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return "", nil, fmt.Errorf("wechat image http %d: %s", resp.StatusCode, string(raw))
+	}
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "image/jpeg"
+	}
+	return contentType, raw, nil
 }
 
 func GetTypingTicket(ctx context.Context, c *Client, toUserID, contextToken string) (string, error) {

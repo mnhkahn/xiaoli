@@ -98,6 +98,9 @@ func NewFilteredTools(filters ToolFilter, opts ToolOptions) []tool.BaseTool {
 	if filters&ToolLog != 0 && opts.LogDir != "" {
 		tools = append(tools, NewLogSearchTool(opts.LogDir))
 	}
+	if filters&ToolInspectRecentImage != 0 && inspectRecentImageToolAvailable(opts.VisionAnalyzer, opts.RecentImages) {
+		tools = append(tools, NewInspectRecentImageTool(opts.VisionAnalyzer, opts.RecentImages))
+	}
 	return tools
 }
 

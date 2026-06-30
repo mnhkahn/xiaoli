@@ -1,6 +1,8 @@
 package builtin
 
 import (
+	"context"
+
 	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
 
@@ -17,6 +19,7 @@ const (
 	ToolBash
 	ToolReminder
 	ToolLog
+	ToolInspectRecentImage
 )
 
 type ToolOptions struct {
@@ -26,6 +29,8 @@ type ToolOptions struct {
 	ReminderStore  *agentworkflow.ReminderStore
 	Timezone       string
 	LogDir         string
+	VisionAnalyzer VisionAnalyzer
+	RecentImages   RecentImageStore
 }
 
 type subAgentParentKeyType struct{}
@@ -39,3 +44,16 @@ var SubAgentDeviceIDKey = subAgentDeviceIDKeyType{}
 type subAgentChannelKeyType struct{}
 
 var SubAgentChannelKey = subAgentChannelKeyType{}
+
+type recentImageConversationKeyType struct{}
+
+var recentImageConversationKey = recentImageConversationKeyType{}
+
+func WithRecentImageConversation(ctx context.Context, conversationID string) context.Context {
+	return context.WithValue(ctx, recentImageConversationKey, conversationID)
+}
+
+func recentImageConversation(ctx context.Context) string {
+	value, _ := ctx.Value(recentImageConversationKey).(string)
+	return value
+}

@@ -946,7 +946,11 @@ func (s *AdminServer) handleLarkImageMessage(ctx context.Context, callback larkC
 	if len(body) > 2*1024*1024 {
 		return fmt.Errorf("lark image too large: %d bytes", len(body))
 	}
-	answer, err := s.deviceHub.vision.Analyze(ctx, "请描述这张图片里的内容。", contentType, body)
+	imageQuestion := agentlark.ExtractImageText(event.Message.Content)
+	if imageQuestion == "" {
+		imageQuestion = "请描述这张图片里的内容。"
+	}
+	answer, err := s.deviceHub.vision.Analyze(ctx, imageQuestion, contentType, body)
 	if err != nil {
 		return fmt.Errorf("vision model failed: %w", err)
 	}
@@ -954,11 +958,42 @@ func (s *AdminServer) handleLarkImageMessage(ctx context.Context, callback larkC
 	if answer == "" {
 		answer = "我没有看清这张图片。"
 	}
+	turn := LarkTextFactory{}.Build(event.Message.ChatID, senderID, imageConversationTurnText(imageQuestion, answer), event.Message.MessageID)
+	if s.recentImages != nil {
+		s.recentImages.StoreImage(ctx, turn.ConversationID, contentType, body)
+	}
+	if s.conversation != nil && s.conversation.chat != nil {
+		turn.Formatter = formatter
+		reply, err := s.conversation.Run(ctx, turn)
+		if err != nil {
+			logger.Infof("[lark] image conversation error: %v", err)
+		}
+		if strings.TrimSpace(reply.Text) != "" {
+			answer = strings.TrimSpace(reply.Text)
+		}
+	}
 	if err := formatter.Send(ctx, answer); err != nil {
 		return err
 	}
 	logger.Infof("[lark] image reply sent event_id=%s message=%s chat=%s bytes=%d", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID, len(body))
 	return nil
+}
+
+func imageConversationTurnText(question string, summary string) string {
+	question = strings.TrimSpace(question)
+	summary = strings.TrimSpace(summary)
+	var b strings.Builder
+	b.WriteString("用户发来一张图片。")
+	if question != "" && question != "请描述这张图片里的内容。" {
+		b.WriteString("\n用户附言：")
+		b.WriteString(question)
+	}
+	if summary != "" {
+		b.WriteString("\n图片识别结果：")
+		b.WriteString(summary)
+	}
+	b.WriteString("\n请基于图片识别结果回答用户；如果用户后续追问图片细节，可使用 inspect_recent_image 工具重新查看最近图片。")
+	return b.String()
 }
 
 func (s *AdminServer) larkEventSeen(eventID string) bool {
@@ -1113,7 +1148,8 @@ func (s *AdminServer) startWechatPolling(ctx context.Context) {
 
 func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, msg *wechatMessage) {
 	text := strings.TrimSpace(msg.Text())
-	if text == "" {
+	images := msg.Images()
+	if text == "" && len(images) == 0 {
 		return
 	}
 	logger.Infof("[wechat] message from=%s text=%q", msg.FromUserID, text)
@@ -1135,6 +1171,43 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 		return
 	}
 
+	var imageContentType string
+	var imageBody []byte
+	var imageSummary string
+	if len(images) > 0 {
+		if s.deviceHub == nil || s.deviceHub.vision == nil {
+			logger.Infof("[wechat] image ignored: vision model is not configured")
+		} else {
+			contentType, body, err := c.DownloadImage(ctx, images[0])
+			if err != nil {
+				logger.Infof("[wechat] image download error: %v", err)
+				if text == "" {
+					formatter := agentwechat.NewReplyFormatter(c, msg.ToUserID, msg.FromUserID, msg.ContextToken)
+					_ = formatter.Send(ctx, "我现在还无法读取这张微信图片。")
+					return
+				}
+			} else if len(body) > 2*1024*1024 {
+				logger.Infof("[wechat] image too large: %d bytes", len(body))
+			} else {
+				question := text
+				if question == "" {
+					question = "请描述这张图片里的内容。"
+				}
+				answer, err := s.deviceHub.vision.Analyze(ctx, question, contentType, body)
+				if err != nil {
+					logger.Infof("[wechat] vision model failed: %v", err)
+				} else {
+					imageContentType = contentType
+					imageBody = body
+					imageSummary = strings.TrimSpace(answer)
+					if imageSummary == "" {
+						imageSummary = "我没有看清这张图片。"
+					}
+				}
+			}
+		}
+	}
+
 	if s.conversation == nil {
 		logger.Infof("[wechat] conversation not configured")
 		return
@@ -1148,8 +1221,18 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 
 	formatter := agentwechat.NewReplyFormatter(c, msg.ToUserID, msg.FromUserID, msg.ContextToken)
 	turnText := s.skillSlashText(ctx, ChannelWechatText, msg.FromUserID, text)
+	if imageSummary != "" {
+		question := text
+		if question == "" {
+			question = "请描述这张图片里的内容。"
+		}
+		turnText = imageConversationTurnText(question, imageSummary)
+	}
 	turn := WechatTextFactory{}.Build(msg.ContextToken, msg.FromUserID, turnText)
 	turn.Formatter = formatter
+	if imageSummary != "" && s.recentImages != nil {
+		s.recentImages.StoreImage(ctx, turn.ConversationID, imageContentType, imageBody)
+	}
 	reply, err := s.conversation.Run(ctx, turn)
 	if err != nil {
 		logger.Infof("[wechat] conversation error: %v", err)

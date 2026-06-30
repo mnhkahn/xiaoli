@@ -134,6 +134,58 @@ func TestWechatBuiltinChannelCommandRepliesWithoutPipeline(t *testing.T) {
 	}
 }
 
+func TestWechatImageMessageRunsPipelineWithVisionSummary(t *testing.T) {
+	cfg := testConfig()
+	cfg.WeChatEnabled = true
+	cfg.WeChatBotToken = "wechat-token"
+	srv := NewServer(cfg)
+	vision := &capturingVisionAnalyzer{answer: "图里是一张数学题截图。"}
+	srv.deviceHub.vision = vision
+
+	turns := make(chan ConversationTurn, 1)
+	srv.conversation = &ConversationPipeline{
+		chat: conversationChatFunc(func(ctx context.Context, turn ConversationTurn) (string, error) {
+			turns <- turn
+			return "这题先看第一问", nil
+		}),
+	}
+
+	var sent agentwechat.SendMessageRequest
+	c, _ := fakeWechatClientSequence(t, &sent,
+		fakeWechatResponse{path: "/wechat-image/1", status: http.StatusOK, body: "png-bytes", contentType: "image/png"},
+		fakeWechatResponse{path: "/ilink/bot/getconfig", status: http.StatusOK, body: `{"ret":0,"typing_ticket":"ticket-123"}`},
+		fakeWechatResponse{path: "/ilink/bot/sendtyping", status: http.StatusOK, body: `{"ret":0}`},
+		fakeWechatResponse{path: "/ilink/bot/sendmessage", status: http.StatusOK, body: `{"ret":0}`},
+	)
+
+	srv.handleWechatMessage(context.Background(), c, &agentwechat.Message{
+		FromUserID:   "user-1",
+		ToUserID:     "bot-1",
+		ContextToken: "ctx-1",
+		MessageType:  agentwechat.MsgUser,
+		ItemList: []agentwechat.MsgItem{
+			{Type: agentwechat.ItemText, TextItem: &agentwechat.TextItem{Text: "帮我看这题"}},
+			{Type: agentwechat.ItemImage, ImageItem: &agentwechat.ImageItem{Media: &agentwechat.CDNMedia{EncryptQueryParam: "/wechat-image/1"}}},
+		},
+	})
+
+	if vision.question != "帮我看这题" || vision.contentType != "image/png" || string(vision.image) != "png-bytes" {
+		t.Fatalf("vision = question %q contentType %q image %q", vision.question, vision.contentType, string(vision.image))
+	}
+	turn := <-turns
+	if turn.ConversationID != "wechat:ctx-1:user-1" {
+		t.Fatalf("turn.ConversationID = %q, want wechat:ctx-1:user-1", turn.ConversationID)
+	}
+	for _, want := range []string{"用户发来一张图片", "用户附言：帮我看这题", "图片识别结果：图里是一张数学题截图"} {
+		if !strings.Contains(turn.Text, want) {
+			t.Fatalf("turn.Text = %q, want it to contain %q", turn.Text, want)
+		}
+	}
+	if sent.Msg == nil || len(sent.Msg.ItemList) == 0 || sent.Msg.ItemList[0].TextItem == nil || !strings.Contains(sent.Msg.ItemList[0].TextItem.Text, "这题先看第一问") {
+		t.Fatalf("sent = %#v, want pipeline reply", sent.Msg)
+	}
+}
+
 func TestFormattedUserTextWrapsFormatterInstruction(t *testing.T) {
 	turn := ConversationTurn{
 		ConversationID: "conv-1",
@@ -200,9 +252,10 @@ func TestBuiltinCommandUnknownIsNotHandled(t *testing.T) {
 }
 
 type fakeWechatResponse struct {
-	path   string
-	status int
-	body   string
+	path        string
+	status      int
+	body        string
+	contentType string
 }
 
 type capturedWechatRequest struct {
@@ -226,20 +279,28 @@ func fakeWechatClientSequence(t *testing.T, sent any, responses ...fakeWechatRes
 			if req.URL.Path != response.path {
 				t.Fatalf("request path = %s, want %s", req.URL.Path, response.path)
 			}
-			raw, err := io.ReadAll(req.Body)
-			if err != nil {
-				t.Fatalf("ReadAll(request body) error = %v", err)
+			var raw []byte
+			if req.Body != nil {
+				var err error
+				raw, err = io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatalf("ReadAll(request body) error = %v", err)
+				}
 			}
 			captured = append(captured, capturedWechatRequest{path: req.URL.Path, body: raw})
-			if sent != nil {
+			if sent != nil && len(raw) > 0 {
 				if err := json.Unmarshal(raw, sent); err != nil {
 					t.Fatalf("Unmarshal(request body) error = %v body=%s", err, string(raw))
 				}
 			}
+			header := make(http.Header)
+			if response.contentType != "" {
+				header.Set("Content-Type", response.contentType)
+			}
 			return &http.Response{
 				StatusCode: response.status,
 				Body:       io.NopCloser(bytes.NewBufferString(response.body)),
-				Header:     make(http.Header),
+				Header:     header,
 			}, nil
 		},
 	}, &captured

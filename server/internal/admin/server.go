@@ -29,6 +29,7 @@ import (
 	agentesp32 "xiaoli/server/internal/agent/channel/esp32"
 	agentlark "xiaoli/server/internal/agent/channel/lark"
 	agentwechat "xiaoli/server/internal/agent/channel/wechat"
+	agentmedia "xiaoli/server/internal/agent/media"
 	agentruntime "xiaoli/server/internal/agent/runtime"
 	"xiaoli/server/internal/agent/session"
 	agentworkflow "xiaoli/server/internal/agent/workflow"
@@ -64,6 +65,7 @@ type AdminServer struct {
 	memory         memoryReader
 	agent          *EinoAgent
 	artifactStore  *ArtifactStore
+	recentImages   *agentmedia.RecentImageStore
 	imagesMu       sync.Mutex
 	images         map[string]imageRecord
 	imagesByDev    map[string][]string
@@ -115,10 +117,12 @@ func NewServer(cfg Config) *AdminServer {
 		memory = newRedisMemory(cfg)
 	}
 	vision := newGoVisionClient(cfg)
+	recentImages := agentmedia.NewRecentImageStore(cfg.now)
 	tts := newHTTPSpeechSynthesizer(cfg, nil)
 	deviceHub := NewDeviceHub(cfg, stream, audioStore, asr, agent, vision, tts)
 	if agent != nil {
 		agent.SetDeviceTools(deviceHub)
+		agent.SetVisionTools(vision, recentImages)
 	}
 	conversation := newConversationPipeline(agent, deviceHub)
 	deviceHub.setConversation(conversation)
@@ -177,6 +181,7 @@ func NewServer(cfg Config) *AdminServer {
 		memory:        memory,
 		images:        map[string]imageRecord{},
 		imagesByDev:   map[string][]string{},
+		recentImages:  recentImages,
 		larkEvents:    map[string]time.Time{},
 		reminderSt:    reminderStore,
 	}

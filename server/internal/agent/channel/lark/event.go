@@ -103,6 +103,8 @@ func ExtractText(content string) string {
 
 type ImageContent struct {
 	ImageKey string `json:"image_key"`
+	Text     string `json:"text"`
+	Caption  string `json:"caption"`
 }
 
 func ExtractImageKey(content string) string {
@@ -111,6 +113,18 @@ func ExtractImageKey(content string) string {
 		return ""
 	}
 	return strings.TrimSpace(payload.ImageKey)
+}
+
+func ExtractImageText(content string) string {
+	var payload ImageContent
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return ""
+	}
+	text := strings.TrimSpace(payload.Text)
+	if text != "" {
+		return text
+	}
+	return strings.TrimSpace(payload.Caption)
 }
 
 type CardActionEvent struct {

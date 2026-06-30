@@ -64,6 +64,8 @@ type Agent struct {
 	taskTool        *agentbuiltin.TaskTool
 	eventBus        agentevent.Publisher
 	channelSendTool tool.InvokableTool
+	visionAnalyzer  agentbuiltin.VisionAnalyzer
+	recentImages    agentbuiltin.RecentImageStore
 }
 
 const defaultAgentMaxIterations = 10
@@ -417,6 +419,11 @@ func (a *Agent) SetDeviceTools(hub DeviceTools) {
 	a.hub = hub
 }
 
+func (a *Agent) SetVisionTools(vision agentbuiltin.VisionAnalyzer, store agentbuiltin.RecentImageStore) {
+	a.visionAnalyzer = vision
+	a.recentImages = store
+}
+
 // ChannelSendersConfig holds the senders for each channel type
 type ChannelSendersConfig struct {
 	Lark         agentchannel.Sender
@@ -627,6 +634,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, memoryID)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentDeviceIDKey, deviceID)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentChannelKey, channelName)
+	ctx = agentbuiltin.WithRecentImageConversation(ctx, memoryID)
 	if opts.SendTarget.Channel != "" {
 		ctx = agentchannel.WithSendTarget(ctx, opts.SendTarget)
 	}
@@ -804,6 +812,10 @@ func (a *Agent) toolGuide(interactive bool) string {
 		if a.channelSendTool != nil {
 			b.WriteString(`
 • channel_send — 向当前对话渠道发送文本或本地文件。工具或 skill 生成用户需要的 PDF、图片、文件后，用 target=current 和 file_path 发给用户；中间产物、日志或敏感文件不要自动发送。`)
+		}
+		if a.visionAnalyzer != nil && a.recentImages != nil {
+			b.WriteString(`
+• inspect_recent_image — 查看当前会话最近发送的一张图片。用户追问刚才那张图、识别图片文字、询问图中细节时使用。`)
 		}
 	}
 	b.WriteString(`
@@ -1684,6 +1696,9 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 	if a.cfg.BuiltinWebFetchEnabled {
 		filter |= agentbuiltin.ToolWebFetch
 	}
+	if a.visionAnalyzer != nil && a.recentImages != nil && channelName != "a2a" {
+		filter |= agentbuiltin.ToolInspectRecentImage
+	}
 
 	if a.cfg.BashConfig.Enabled && channelName == string(agentchannel.TypeLark) {
 		filter |= agentbuiltin.ToolBash
@@ -1709,6 +1724,10 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 	if a.cfg.LogDir != "" {
 		filter |= agentbuiltin.ToolLog
 		opts.LogDir = a.cfg.LogDir
+	}
+	if filter&agentbuiltin.ToolInspectRecentImage != 0 {
+		opts.VisionAnalyzer = a.visionAnalyzer
+		opts.RecentImages = a.recentImages
 	}
 	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, opts))
 	if a.taskTool != nil {

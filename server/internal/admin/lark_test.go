@@ -408,6 +408,87 @@ func TestLarkImageEventDownloadsAnalyzesAndReplies(t *testing.T) {
 	}
 }
 
+func TestLarkImageEventRunsPipelineWithVisionSummary(t *testing.T) {
+	cfg := testConfig()
+	cfg.LarkAppID = "cli_test"
+	cfg.LarkAppToken = "token_test"
+	srv := NewServer(cfg)
+	vision := &capturingVisionAnalyzer{answer: "图里有一只杯子，旁边写着 hello。"}
+	srv.deviceHub.vision = vision
+
+	turns := make(chan ConversationTurn, 1)
+	srv.conversation = &ConversationPipeline{
+		chat: conversationChatFunc(func(ctx context.Context, turn ConversationTurn) (string, error) {
+			turns <- turn
+			return "基于图片回答", nil
+		}),
+	}
+
+	replyBodies := make(chan string, 1)
+	srv.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "tenant_access_token": "tenant-token"}), nil
+		case "/open-apis/im/v1/messages/om_img_pipeline/resources/img_key_1":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"image/png"}},
+				Body:       io.NopCloser(strings.NewReader("png-bytes")),
+			}, nil
+		case "/open-apis/im/v1/messages/om_img_pipeline/reply":
+			raw, _ := io.ReadAll(req.Body)
+			replyBodies <- string(raw)
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"message_id": "reply_img"}}), nil
+		default:
+			t.Fatalf("unexpected Lark request path: %s", req.URL.Path)
+			return nil, nil
+		}
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/lark/events", strings.NewReader(`{
+		"schema":"2.0",
+		"header":{
+			"event_id":"evt_img_pipeline",
+			"event_type":"im.message.receive_v1",
+			"app_id":"cli_test",
+			"tenant_key":"tenant_1"
+		},
+		"event":{
+			"sender":{"sender_type":"user","sender_id":{"open_id":"ou_user"}},
+			"message":{
+				"message_id":"om_img_pipeline",
+				"chat_id":"oc_chat",
+				"message_type":"image",
+				"content":"{\"image_key\":\"img_key_1\",\"text\":\"这是什么？\"}"
+			}
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	if vision.question != "这是什么？" {
+		t.Fatalf("vision question = %q, want caption question", vision.question)
+	}
+	turn := <-turns
+	if turn.ConversationID != "lark:oc_chat:ou_user" {
+		t.Fatalf("turn.ConversationID = %q, want lark:oc_chat:ou_user", turn.ConversationID)
+	}
+	for _, want := range []string{"用户发来一张图片", "用户附言：这是什么？", "图片识别结果：图里有一只杯子"} {
+		if !strings.Contains(turn.Text, want) {
+			t.Fatalf("turn.Text = %q, want it to contain %q", turn.Text, want)
+		}
+	}
+	replyBody := <-replyBodies
+	if !strings.Contains(replyBody, "基于图片回答") {
+		t.Fatalf("reply body = %s, want pipeline reply", replyBody)
+	}
+}
+
 type capturingVisionAnalyzer struct {
 	answer      string
 	question    string
