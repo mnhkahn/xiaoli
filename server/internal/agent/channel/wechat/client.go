@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/aes"
+	"crypto/md5"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -21,6 +23,15 @@ const (
 	DefaultBaseURL    = "https://ilinkai.weixin.qq.com"
 	DefaultCDNBaseURL = "https://novac2c.cdn.weixin.qq.com/c2c"
 	BotType           = "3"
+)
+
+type UploadMediaType int
+
+const (
+	UploadMediaTypeImage UploadMediaType = 1
+	UploadMediaTypeVideo UploadMediaType = 2
+	UploadMediaTypeFile  UploadMediaType = 3
+	UploadMediaTypeVoice UploadMediaType = 4
 )
 
 type MessageType int
@@ -147,6 +158,33 @@ type GetConfigRequest struct {
 	ILinkUserID  string    `json:"ilink_user_id,omitempty"`
 	ContextToken string    `json:"context_token,omitempty"`
 	BaseInfo     *BaseInfo `json:"base_info,omitempty"`
+}
+
+type GetUploadURLRequest struct {
+	FileKey     string          `json:"filekey,omitempty"`
+	MediaType   UploadMediaType `json:"media_type,omitempty"`
+	ToUserID    string          `json:"to_user_id,omitempty"`
+	RawSize     int             `json:"rawsize,omitempty"`
+	RawFileMD5  string          `json:"rawfilemd5,omitempty"`
+	FileSize    int             `json:"filesize,omitempty"`
+	NoNeedThumb bool            `json:"no_need_thumb,omitempty"`
+	AESKey      string          `json:"aeskey,omitempty"`
+	BaseInfo    *BaseInfo       `json:"base_info,omitempty"`
+}
+
+type GetUploadURLResponse struct {
+	Ret           int    `json:"ret,omitempty"`
+	ErrMsg        string `json:"errmsg,omitempty"`
+	UploadParam   string `json:"upload_param,omitempty"`
+	UploadFullURL string `json:"upload_full_url,omitempty"`
+}
+
+type UploadedMedia struct {
+	FileKey            string
+	DownloadQueryParam string
+	AESKeyHex          string
+	FileSize           int
+	CiphertextSize     int
 }
 
 type GetConfigResponse struct {
@@ -325,6 +363,168 @@ func (c *Client) DownloadImage(ctx context.Context, image *ImageItem) (string, [
 	return contentType, raw, nil
 }
 
+func (c *Client) UploadMedia(ctx context.Context, path, toUserID string, mediaType UploadMediaType) (UploadedMedia, error) {
+	plaintext, err := os.ReadFile(path)
+	if err != nil {
+		return UploadedMedia{}, fmt.Errorf("wechat read upload file: %w", err)
+	}
+	fileKeyBytes := make([]byte, 16)
+	if _, err := rand.Read(fileKeyBytes); err != nil {
+		return UploadedMedia{}, fmt.Errorf("wechat generate filekey: %w", err)
+	}
+	aesKey := make([]byte, aes.BlockSize)
+	if _, err := rand.Read(aesKey); err != nil {
+		return UploadedMedia{}, fmt.Errorf("wechat generate aeskey: %w", err)
+	}
+	fileKey := hex.EncodeToString(fileKeyBytes)
+	aesKeyHex := hex.EncodeToString(aesKey)
+	rawMD5 := md5.Sum(plaintext)
+	encrypted := encryptAESECBPKCS7(plaintext, aesKey)
+
+	uploadURL, err := c.getUploadURL(ctx, &GetUploadURLRequest{
+		FileKey:     fileKey,
+		MediaType:   mediaType,
+		ToUserID:    toUserID,
+		RawSize:     len(plaintext),
+		RawFileMD5:  hex.EncodeToString(rawMD5[:]),
+		FileSize:    len(encrypted),
+		NoNeedThumb: true,
+		AESKey:      aesKeyHex,
+		BaseInfo:    &BaseInfo{ChannelVersion: "1.0.3"},
+	})
+	if err != nil {
+		return UploadedMedia{}, err
+	}
+	downloadParam, err := c.uploadEncryptedMedia(ctx, uploadURL, fileKey, encrypted)
+	if err != nil {
+		return UploadedMedia{}, err
+	}
+	return UploadedMedia{
+		FileKey:            fileKey,
+		DownloadQueryParam: downloadParam,
+		AESKeyHex:          aesKeyHex,
+		FileSize:           len(plaintext),
+		CiphertextSize:     len(encrypted),
+	}, nil
+}
+
+func (c *Client) getUploadURL(ctx context.Context, req *GetUploadURLRequest) (*GetUploadURLResponse, error) {
+	raw, err := c.PostJSON(ctx, "/ilink/bot/getuploadurl", req)
+	if err != nil {
+		return nil, err
+	}
+	var resp GetUploadURLResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("wechat getuploadurl decode: %w", err)
+	}
+	if resp.Ret != 0 {
+		return nil, fmt.Errorf("wechat getuploadurl ret=%d err=%s", resp.Ret, resp.ErrMsg)
+	}
+	if strings.TrimSpace(resp.UploadFullURL) == "" && strings.TrimSpace(resp.UploadParam) == "" {
+		return nil, fmt.Errorf("wechat getuploadurl missing upload URL")
+	}
+	return &resp, nil
+}
+
+func (c *Client) uploadEncryptedMedia(ctx context.Context, uploadURL *GetUploadURLResponse, fileKey string, encrypted []byte) (string, error) {
+	endpoint := strings.TrimSpace(uploadURL.UploadFullURL)
+	if endpoint == "" {
+		endpoint = strings.TrimRight(DefaultCDNBaseURL, "/") + "/upload?encrypted_query_param=" + url.QueryEscape(uploadURL.UploadParam) + "&filekey=" + url.QueryEscape(fileKey)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encrypted))
+	if err != nil {
+		return "", fmt.Errorf("wechat cdn upload request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := c.HTTPDo(req)
+	if err != nil {
+		return "", fmt.Errorf("wechat cdn upload http: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("wechat cdn upload http %d: %s", resp.StatusCode, string(raw))
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("wechat cdn upload status %d: %s", resp.StatusCode, string(raw))
+	}
+	downloadParam := strings.TrimSpace(resp.Header.Get("X-Encrypted-Param"))
+	if downloadParam == "" {
+		return "", fmt.Errorf("wechat cdn upload missing x-encrypted-param")
+	}
+	return downloadParam, nil
+}
+
+func (c *Client) SendImageAttachment(ctx context.Context, toUserID, contextToken, path, caption string) error {
+	uploaded, err := c.UploadMedia(ctx, path, toUserID, UploadMediaTypeImage)
+	if err != nil {
+		return err
+	}
+	item := MsgItem{
+		Type: ItemImage,
+		ImageItem: &ImageItem{
+			Media: &CDNMedia{
+				EncryptQueryParam: uploaded.DownloadQueryParam,
+				AESKey:            base64.StdEncoding.EncodeToString([]byte(uploaded.AESKeyHex)),
+				EncryptType:       1,
+			},
+			MidSize: uploaded.CiphertextSize,
+		},
+	}
+	return c.sendMediaItems(ctx, toUserID, contextToken, caption, item)
+}
+
+func (c *Client) SendFileAttachment(ctx context.Context, toUserID, contextToken, path, fileName, caption string) error {
+	uploaded, err := c.UploadMedia(ctx, path, toUserID, UploadMediaTypeFile)
+	if err != nil {
+		return err
+	}
+	item := MsgItem{
+		Type: ItemFile,
+		FileItem: &FileItem{
+			Media: &CDNMedia{
+				EncryptQueryParam: uploaded.DownloadQueryParam,
+				AESKey:            base64.StdEncoding.EncodeToString([]byte(uploaded.AESKeyHex)),
+				EncryptType:       1,
+			},
+			FileName: fileName,
+			Length:   fmt.Sprintf("%d", uploaded.FileSize),
+		},
+	}
+	return c.sendMediaItems(ctx, toUserID, contextToken, caption, item)
+}
+
+func (c *Client) sendMediaItems(ctx context.Context, toUserID, contextToken, caption string, item MsgItem) error {
+	if caption != "" {
+		if err := SendText(ctx, c, "", toUserID, contextToken, caption); err != nil {
+			return err
+		}
+	}
+	msg := &Message{
+		ToUserID:     toUserID,
+		ClientID:     GenerateClientID(),
+		MessageType:  MsgBot,
+		MessageState: 2,
+		ContextToken: contextToken,
+		ItemList:     []MsgItem{item},
+	}
+	raw, err := c.PostJSON(ctx, "/ilink/bot/sendmessage", &SendMessageRequest{
+		Msg:      msg,
+		BaseInfo: &BaseInfo{ChannelVersion: "1.0.3"},
+	})
+	if err != nil {
+		return err
+	}
+	var resp SendMessageResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return err
+	}
+	if resp.Ret != 0 {
+		return fmt.Errorf("wechat sendmessage ret=%d err=%s", resp.Ret, resp.ErrMsg)
+	}
+	return nil
+}
+
 func imageAESKey(image *ImageItem) ([]byte, bool, error) {
 	if image == nil {
 		return nil, false, nil
@@ -396,6 +596,20 @@ func decryptAESECBPKCS7(ciphertext, key []byte) ([]byte, error) {
 		}
 	}
 	return plain[:len(plain)-padding], nil
+}
+
+func encryptAESECBPKCS7(plaintext, key []byte) []byte {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		panic(err)
+	}
+	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
+	padded := append(append([]byte{}, plaintext...), bytes.Repeat([]byte{byte(padding)}, padding)...)
+	encrypted := make([]byte, len(padded))
+	for offset := 0; offset < len(padded); offset += aes.BlockSize {
+		block.Encrypt(encrypted[offset:offset+aes.BlockSize], padded[offset:offset+aes.BlockSize])
+	}
+	return encrypted
 }
 
 func isHexString(s string) bool {

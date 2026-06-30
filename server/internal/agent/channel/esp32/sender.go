@@ -18,9 +18,9 @@ type DeviceHubAdapter interface {
 
 // Sender implements Sender interface for ESP32 devices
 type Sender struct {
-	hub        DeviceHubAdapter
-	baseURL    string
-	storeArt   func(path, displayName, mimeType string, ttl time.Duration) (string, error) // returns URL
+	hub      DeviceHubAdapter
+	baseURL  string
+	storeArt func(path, displayName, mimeType string, ttl time.Duration) (string, error) // returns URL
 }
 
 // NewSender creates an ESP32 sender. The storeArt function takes file info
@@ -49,6 +49,9 @@ func (s *Sender) SendAttachment(ctx context.Context, target agentchannel.SendTar
 	if target.DeviceID == "" {
 		return fmt.Errorf("device_id required")
 	}
+	if !strings.HasPrefix(attachment.MIMEType, "image/") {
+		return fmt.Errorf("esp32 only supports image attachments")
+	}
 
 	// Store as artifact and get URL
 	url, err := s.storeArt(attachment.Path, attachment.DisplayName, attachment.MIMEType, 24*time.Hour)
@@ -57,37 +60,12 @@ func (s *Sender) SendAttachment(ctx context.Context, target agentchannel.SendTar
 	}
 
 	// Handle by MIME type
-	switch {
-	case strings.HasPrefix(attachment.MIMEType, "image/"):
-		// Try to display on device if supported
-		displayed, err := s.tryDisplayImage(ctx, target.DeviceID, url)
-		if err != nil {
-			return err
-		}
-		if displayed {
-			if caption != "" {
-				_, err := s.hub.Speak(ctx, target.DeviceID, caption)
-				return err
-			}
-			return nil
-		}
-		// Fall through: speak description
-
-	case attachment.MIMEType == "application/pdf":
-		if caption != "" {
-			_, err := s.hub.Speak(ctx, target.DeviceID, caption+"。文件链接已生成，可在后台查看。")
-			return err
-		}
-		_, err := s.hub.Speak(ctx, target.DeviceID, "已生成PDF文件，链接可在后台查看。")
+	displayed, err := s.tryDisplayImage(ctx, target.DeviceID, url)
+	if err != nil {
 		return err
-
-	default:
-		if caption != "" {
-			_, err := s.hub.Speak(ctx, target.DeviceID, caption+"。文件已生成。")
-			return err
-		}
-		_, err := s.hub.Speak(ctx, target.DeviceID, "已生成文件。")
-		return err
+	}
+	if displayed && caption == "" {
+		return nil
 	}
 
 	if caption != "" {

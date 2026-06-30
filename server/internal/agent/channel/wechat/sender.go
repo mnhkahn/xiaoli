@@ -3,12 +3,13 @@ package wechat
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	agentchannel "xiaoli/server/internal/agent/channel"
 )
 
 // Sender implements Sender interface for WeChat
-// Note: WeChat currently only supports text via channel_send
 type Sender struct {
 	client *Client
 }
@@ -27,15 +28,16 @@ func (s *Sender) SendText(ctx context.Context, target agentchannel.SendTarget, t
 	return SendText(ctx, s.client, "", target.UserID, target.ContextToken, text)
 }
 
-var ErrAttachmentNotSupported = fmt.Errorf("attachments not supported by WeChat channel")
-
 func (s *Sender) SendAttachment(ctx context.Context, target agentchannel.SendTarget, attachment agentchannel.Attachment, caption string) error {
-	// Send caption as text if provided
-	if caption != "" {
-		if err := s.SendText(ctx, target, caption); err != nil {
-			return err
-		}
+	if target.UserID == "" {
+		return fmt.Errorf("user_id required")
 	}
-	// WeChat does not support file uploads via bot yet
-	return ErrAttachmentNotSupported
+	if strings.HasPrefix(attachment.MIMEType, "image/") {
+		return s.client.SendImageAttachment(ctx, target.UserID, target.ContextToken, attachment.Path, caption)
+	}
+	fileName := attachment.DisplayName
+	if fileName == "" {
+		fileName = filepath.Base(attachment.Path)
+	}
+	return s.client.SendFileAttachment(ctx, target.UserID, target.ContextToken, attachment.Path, fileName, caption)
 }

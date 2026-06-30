@@ -4,12 +4,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/aes"
+	"crypto/md5"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	agentchannel "xiaoli/server/internal/agent/channel"
 )
 
 func TestSendTextLeavesFromUserIDEmpty(t *testing.T) {
@@ -232,6 +238,161 @@ func TestDownloadImagePrefersImageAESKeyHex(t *testing.T) {
 	}
 }
 
+func TestSendImageAttachmentUploadsToCDNAndSendsImageMessage(t *testing.T) {
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "photo.png")
+	plaintext := []byte("png-bytes")
+	if err := os.WriteFile(imagePath, plaintext, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	wantMD5 := md5.Sum(plaintext)
+
+	var sent []SendMessageRequest
+	var sawCDNUpload bool
+	c := NewClient(ClientConfig{
+		BaseURL: "https://wechat.test",
+		Token:   "token",
+		HTTPDo: func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Host + req.URL.Path {
+			case "wechat.test/ilink/bot/getuploadurl":
+				var body GetUploadURLRequest
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatalf("decode getuploadurl body: %v", err)
+				}
+				if body.MediaType != UploadMediaTypeImage || body.ToUserID != "user-1" {
+					t.Fatalf("getuploadurl body = %#v, want image upload for user-1", body)
+				}
+				if body.RawSize != len(plaintext) || body.FileSize != 16 || body.RawFileMD5 != hex.EncodeToString(wantMD5[:]) {
+					t.Fatalf("getuploadurl body sizes/md5 = %#v, want raw size/md5 and padded size", body)
+				}
+				if body.FileKey == "" || len(body.AESKey) != 32 || !isHexString(body.AESKey) {
+					t.Fatalf("getuploadurl body filekey/aeskey = %#v, want generated hex values", body)
+				}
+				return jsonHTTPResponse(http.StatusOK, map[string]any{
+					"upload_full_url": "https://cdn.test/upload",
+				}), nil
+			case "cdn.test/upload":
+				sawCDNUpload = true
+				if req.Header.Get("Authorization") != "" || req.Header.Get("AuthorizationType") != "" {
+					t.Fatalf("CDN upload auth headers = %q/%q, want empty", req.Header.Get("Authorization"), req.Header.Get("AuthorizationType"))
+				}
+				if req.Header.Get("Content-Type") != "application/octet-stream" {
+					t.Fatalf("CDN upload content-type = %q, want application/octet-stream", req.Header.Get("Content-Type"))
+				}
+				ciphertext, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatalf("read CDN upload body: %v", err)
+				}
+				if len(ciphertext) != 16 || bytes.Equal(ciphertext, plaintext) {
+					t.Fatalf("CDN upload body = %x, want encrypted padded bytes", ciphertext)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewReader(nil)),
+					Header:     http.Header{"X-Encrypted-Param": []string{"download-param-1"}},
+				}, nil
+			case "wechat.test/ilink/bot/sendmessage":
+				var body SendMessageRequest
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatalf("decode sendmessage body: %v", err)
+				}
+				sent = append(sent, body)
+				return jsonHTTPResponse(http.StatusOK, map[string]any{"ret": 0}), nil
+			default:
+				t.Fatalf("unexpected request URL = %s", req.URL.String())
+				return nil, nil
+			}
+		},
+	})
+
+	err := c.SendImageAttachment(context.Background(), "user-1", "ctx-1", imagePath, "看图")
+	if err != nil {
+		t.Fatalf("SendImageAttachment() error = %v", err)
+	}
+	if !sawCDNUpload {
+		t.Fatal("CDN upload was not called")
+	}
+	if len(sent) != 2 {
+		t.Fatalf("sent messages = %d, want caption and image", len(sent))
+	}
+	if got := sent[0].Msg.ItemList[0].TextItem.Text; got != "看图" {
+		t.Fatalf("caption text = %q, want 看图", got)
+	}
+	item := sent[1].Msg.ItemList[0]
+	if item.Type != ItemImage || item.ImageItem == nil || item.ImageItem.Media == nil {
+		t.Fatalf("image item = %#v, want image media item", item)
+	}
+	if item.ImageItem.Media.EncryptQueryParam != "download-param-1" || item.ImageItem.Media.EncryptType != 1 {
+		t.Fatalf("image media = %#v, want download param and encrypt type", item.ImageItem.Media)
+	}
+	if item.ImageItem.Media.AESKey == "" || item.ImageItem.MidSize != 16 {
+		t.Fatalf("image aes/mid_size = %#v, want aes key and ciphertext size", item.ImageItem)
+	}
+}
+
+func TestSenderSendAttachmentSupportsImageAndFile(t *testing.T) {
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "photo.png")
+	filePath := filepath.Join(dir, "report.pdf")
+	if err := os.WriteFile(imagePath, []byte("png-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filePath, []byte("%PDF-1.7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var uploadMediaTypes []UploadMediaType
+	var sentItemTypes []ItemType
+	c := NewClient(ClientConfig{
+		BaseURL: "https://wechat.test",
+		Token:   "token",
+		HTTPDo: func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Host + req.URL.Path {
+			case "wechat.test/ilink/bot/getuploadurl":
+				var body GetUploadURLRequest
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatalf("decode getuploadurl body: %v", err)
+				}
+				uploadMediaTypes = append(uploadMediaTypes, body.MediaType)
+				return jsonHTTPResponse(http.StatusOK, map[string]any{"upload_full_url": "https://cdn.test/upload"}), nil
+			case "cdn.test/upload":
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Body:       io.NopCloser(bytes.NewReader(nil)),
+					Header:     http.Header{"X-Encrypted-Param": []string{"download-param"}},
+				}, nil
+			case "wechat.test/ilink/bot/sendmessage":
+				var body SendMessageRequest
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Fatalf("decode sendmessage body: %v", err)
+				}
+				if len(body.Msg.ItemList) == 1 && body.Msg.ItemList[0].Type != ItemText {
+					sentItemTypes = append(sentItemTypes, body.Msg.ItemList[0].Type)
+				}
+				return jsonHTTPResponse(http.StatusOK, map[string]any{"ret": 0}), nil
+			default:
+				t.Fatalf("unexpected request URL = %s", req.URL.String())
+				return nil, nil
+			}
+		},
+	})
+	sender := NewSender(c)
+	target := SendTargetForTest("user-1", "ctx-1")
+
+	if err := sender.SendAttachment(context.Background(), target, AttachmentForTest(imagePath, "image/png", "photo.png"), "图片"); err != nil {
+		t.Fatalf("SendAttachment(image) error = %v", err)
+	}
+	if err := sender.SendAttachment(context.Background(), target, AttachmentForTest(filePath, "application/pdf", "report.pdf"), "文件"); err != nil {
+		t.Fatalf("SendAttachment(file) error = %v", err)
+	}
+	if len(uploadMediaTypes) != 2 || uploadMediaTypes[0] != UploadMediaTypeImage || uploadMediaTypes[1] != UploadMediaTypeFile {
+		t.Fatalf("upload media types = %#v, want image then file", uploadMediaTypes)
+	}
+	if len(sentItemTypes) != 2 || sentItemTypes[0] != ItemImage || sentItemTypes[1] != ItemFile {
+		t.Fatalf("sent item types = %#v, want image then file", sentItemTypes)
+	}
+}
+
 type fakeResponse struct {
 	path   string
 	status int
@@ -291,4 +452,29 @@ func encryptAesECBPKCS7ForTest(t *testing.T, plaintext, key []byte) []byte {
 		block.Encrypt(encrypted[offset:offset+aes.BlockSize], padded[offset:offset+aes.BlockSize])
 	}
 	return encrypted
+}
+
+func jsonHTTPResponse(status int, body any) *http.Response {
+	raw, _ := json.Marshal(body)
+	return &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(bytes.NewReader(raw)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
+}
+
+func SendTargetForTest(userID, contextToken string) agentchannel.SendTarget {
+	return agentchannel.SendTarget{
+		Channel:      agentchannel.TypeWechat,
+		UserID:       userID,
+		ContextToken: contextToken,
+	}
+}
+
+func AttachmentForTest(path, mimeType, displayName string) agentchannel.Attachment {
+	return agentchannel.Attachment{
+		Path:        path,
+		MIMEType:    mimeType,
+		DisplayName: displayName,
+	}
 }

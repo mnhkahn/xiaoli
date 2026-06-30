@@ -54,11 +54,11 @@ Use this tool when:
 
 Target is always "current" for the active conversation.
 
-For ESP32 devices: images are shown on display; PDFs and other files are announced via TTS.
+For ESP32 devices: images are shown on display; other files are not supported.
 
 For Lark: images and files are uploaded and sent as attachments.
 
-For WeChat: only text works; files will send the caption but not the file.`,
+For WeChat: images and files are uploaded and sent as attachments.`,
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"target": {
 				Type:     schema.String,
