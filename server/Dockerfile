@@ -60,13 +60,19 @@ RUN set -eux; \
     count=$(find /skills -name SKILL.md | wc -l); \
     echo "skills installed: $count"
 
-# 从源码编译 cyeam，保证最新版本
+# 从 release 下载 cyeam，保证版本信息可查；默认取 latest，也可用 CYEAM_VERSION 固定版本
+ARG CYEAM_VERSION=latest
 RUN set -eux; \
     mkdir -p /skill-bin; \
-    git clone https://github.com/mnhkahn/cyeam-cli.git /tmp/cyeam-cli; \
-    cd /tmp/cyeam-cli; \
-    go build -o /skill-bin/cyeam ./cmd/cyeam; \
-    rm -rf /tmp/cyeam-cli; \
+    echo "cyeam release: ${CYEAM_VERSION}, cache bust: ${XIAOLI_SKILLS_CACHE_BUST}"; \
+    if [ "${CYEAM_VERSION}" = "latest" ]; then \
+        cyeam_url="https://github.com/mnhkahn/cyeam-cli/releases/latest/download/cyeam_Linux_x86_64.tar.gz"; \
+    else \
+        cyeam_url="https://github.com/mnhkahn/cyeam-cli/releases/download/${CYEAM_VERSION}/cyeam_Linux_x86_64.tar.gz"; \
+    fi; \
+    curl -fsSL "$cyeam_url" -o /tmp/cyeam.tgz; \
+    tar -xzf /tmp/cyeam.tgz -C /skill-bin cyeam; \
+    rm -f /tmp/cyeam.tgz; \
     find /skills -path '*/bin/*' -type f -perm /111 -exec cp -a {} /skill-bin/ \; ; \
     find /skill-bin -type f -exec chmod +x {} \;
 
