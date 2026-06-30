@@ -106,6 +106,20 @@ variables. Run:
 xiaoli-tui
 ```
 
+The local TUI reads shared skills from `~/.agents/skills` and Xiaoli-specific
+skills from `~/.xiaoli/skills`. It loads prompts in this order when the files
+exist:
+
+1. `~/.agents/AGENT.md`
+2. `~/.xiaoli/AGENT.md`
+3. `~/.xiaoli/SOUL.md`
+
+The TUI reuses the server slash command handler. Useful local commands include
+`/skills`, `/model list`, `/model use <id>`, `/sessions`, `/resume <id>`,
+`/session <id>`, `/memory list`, `/mcp`, `/tasks`, and `/log <keyword>`. When
+bash is enabled and a command needs approval, reply with `允许` or `拒绝` in the
+TUI.
+
 ## Firmware OTA URL
 
 After the Fly app is deployed, rebuild the firmware with:

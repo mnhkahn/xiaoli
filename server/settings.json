@@ -128,6 +128,10 @@
       "enabled": true
     }
   },
+  "chat_react": {
+    "max_steps": 16,
+    "timeout": "180s"
+  },
   "cron": {
     "study_monitor": {
       "name": "学习状态监控",
