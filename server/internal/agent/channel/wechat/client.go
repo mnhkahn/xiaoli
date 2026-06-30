@@ -20,9 +20,13 @@ import (
 )
 
 const (
-	DefaultBaseURL    = "https://ilinkai.weixin.qq.com"
-	DefaultCDNBaseURL = "https://novac2c.cdn.weixin.qq.com/c2c"
-	BotType           = "3"
+	DefaultBaseURL     = "https://ilinkai.weixin.qq.com"
+	DefaultCDNBaseURL  = "https://novac2c.cdn.weixin.qq.com/c2c"
+	BotType            = "3"
+	ChannelVersion     = "2.4.6"
+	BotAgent           = "OpenClaw"
+	ILinkAppID         = "bot"
+	ILinkClientVersion = "132102"
 )
 
 type UploadMediaType int
@@ -182,6 +186,7 @@ type GetUploadURLResponse struct {
 type UploadedMedia struct {
 	FileKey            string
 	DownloadQueryParam string
+	AESKey             []byte
 	AESKeyHex          string
 	FileSize           int
 	CiphertextSize     int
@@ -203,6 +208,7 @@ type SendTypingRequest struct {
 
 type BaseInfo struct {
 	ChannelVersion string `json:"channel_version"`
+	BotAgent       string `json:"bot_agent,omitempty"`
 }
 
 type QRCodeResponse struct {
@@ -255,8 +261,7 @@ func (c *Client) PostJSON(ctx context.Context, path string, body any) ([]byte, e
 		return nil, fmt.Errorf("wechat request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("AuthorizationType", "ilink_bot_token")
-	req.Header.Set("X-WECHAT-UIN", generateUIN())
+	setCommonHeaders(req)
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
@@ -280,8 +285,7 @@ func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("wechat request: %w", err)
 	}
-	req.Header.Set("AuthorizationType", "ilink_bot_token")
-	req.Header.Set("X-WECHAT-UIN", generateUIN())
+	setCommonHeaders(req)
 	if c.Token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Token)
 	}
@@ -298,6 +302,20 @@ func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
 		return nil, fmt.Errorf("wechat http %d: %s", resp.StatusCode, string(raw))
 	}
 	return raw, nil
+}
+
+func defaultBaseInfo() *BaseInfo {
+	return &BaseInfo{
+		ChannelVersion: ChannelVersion,
+		BotAgent:       BotAgent,
+	}
+}
+
+func setCommonHeaders(req *http.Request) {
+	req.Header.Set("AuthorizationType", "ilink_bot_token")
+	req.Header.Set("X-WECHAT-UIN", generateUIN())
+	req.Header.Set("iLink-App-Id", ILinkAppID)
+	req.Header.Set("iLink-App-ClientVersion", ILinkClientVersion)
 }
 
 func (c *Client) DownloadImage(ctx context.Context, image *ImageItem) (string, []byte, error) {
@@ -390,7 +408,7 @@ func (c *Client) UploadMedia(ctx context.Context, path, toUserID string, mediaTy
 		FileSize:    len(encrypted),
 		NoNeedThumb: true,
 		AESKey:      aesKeyHex,
-		BaseInfo:    &BaseInfo{ChannelVersion: "1.0.3"},
+		BaseInfo:    defaultBaseInfo(),
 	})
 	if err != nil {
 		return UploadedMedia{}, err
@@ -402,6 +420,7 @@ func (c *Client) UploadMedia(ctx context.Context, path, toUserID string, mediaTy
 	return UploadedMedia{
 		FileKey:            fileKey,
 		DownloadQueryParam: downloadParam,
+		AESKey:             append([]byte(nil), aesKey...),
 		AESKeyHex:          aesKeyHex,
 		FileSize:           len(plaintext),
 		CiphertextSize:     len(encrypted),
@@ -465,7 +484,7 @@ func (c *Client) SendImageAttachment(ctx context.Context, toUserID, contextToken
 		ImageItem: &ImageItem{
 			Media: &CDNMedia{
 				EncryptQueryParam: uploaded.DownloadQueryParam,
-				AESKey:            base64.StdEncoding.EncodeToString([]byte(uploaded.AESKeyHex)),
+				AESKey:            base64.StdEncoding.EncodeToString(uploaded.AESKey),
 				EncryptType:       1,
 			},
 			MidSize: uploaded.CiphertextSize,
@@ -484,7 +503,7 @@ func (c *Client) SendFileAttachment(ctx context.Context, toUserID, contextToken,
 		FileItem: &FileItem{
 			Media: &CDNMedia{
 				EncryptQueryParam: uploaded.DownloadQueryParam,
-				AESKey:            base64.StdEncoding.EncodeToString([]byte(uploaded.AESKeyHex)),
+				AESKey:            base64.StdEncoding.EncodeToString(uploaded.AESKey),
 				EncryptType:       1,
 			},
 			FileName: fileName,
@@ -510,7 +529,7 @@ func (c *Client) sendMediaItems(ctx context.Context, toUserID, contextToken, cap
 	}
 	raw, err := c.PostJSON(ctx, "/ilink/bot/sendmessage", &SendMessageRequest{
 		Msg:      msg,
-		BaseInfo: &BaseInfo{ChannelVersion: "1.0.3"},
+		BaseInfo: defaultBaseInfo(),
 	})
 	if err != nil {
 		return err
@@ -625,7 +644,7 @@ func GetTypingTicket(ctx context.Context, c *Client, toUserID, contextToken stri
 	req := &GetConfigRequest{
 		ILinkUserID:  toUserID,
 		ContextToken: contextToken,
-		BaseInfo:     &BaseInfo{ChannelVersion: "1.0.3"},
+		BaseInfo:     defaultBaseInfo(),
 	}
 	raw, err := c.PostJSON(ctx, "/ilink/bot/getconfig", req)
 	if err != nil {
@@ -653,7 +672,7 @@ func SendTyping(ctx context.Context, c *Client, _ string, toUserID, contextToken
 		ILinkUserID:  toUserID,
 		TypingTicket: ticket,
 		Status:       1,
-		BaseInfo:     &BaseInfo{ChannelVersion: "1.0.3"},
+		BaseInfo:     defaultBaseInfo(),
 	}
 	raw, err := c.PostJSON(ctx, "/ilink/bot/sendtyping", req)
 	if err != nil {
@@ -676,7 +695,7 @@ func SendText(ctx context.Context, c *Client, _ string, toUserID, contextToken, 
 	}
 	req := &SendMessageRequest{
 		Msg:      msg,
-		BaseInfo: &BaseInfo{ChannelVersion: "1.0.3"},
+		BaseInfo: defaultBaseInfo(),
 	}
 	raw, err := c.PostJSON(ctx, "/ilink/bot/sendmessage", req)
 	if err != nil {

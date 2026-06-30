@@ -255,9 +255,24 @@ func TestSendImageAttachmentUploadsToCDNAndSendsImageMessage(t *testing.T) {
 		HTTPDo: func(req *http.Request) (*http.Response, error) {
 			switch req.URL.Host + req.URL.Path {
 			case "wechat.test/ilink/bot/getuploadurl":
+				if req.Header.Get("iLink-App-Id") != "bot" || req.Header.Get("iLink-App-ClientVersion") != "132102" {
+					t.Fatalf("getuploadurl app headers = %q/%q, want official app id/client version", req.Header.Get("iLink-App-Id"), req.Header.Get("iLink-App-ClientVersion"))
+				}
+				rawBody, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatalf("read getuploadurl body: %v", err)
+				}
 				var body GetUploadURLRequest
-				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				if err := json.Unmarshal(rawBody, &body); err != nil {
 					t.Fatalf("decode getuploadurl body: %v", err)
+				}
+				var raw map[string]any
+				if err := json.Unmarshal(rawBody, &raw); err != nil {
+					t.Fatalf("decode getuploadurl raw body: %v", err)
+				}
+				baseInfo, _ := raw["base_info"].(map[string]any)
+				if baseInfo["channel_version"] != "2.4.6" || baseInfo["bot_agent"] != "OpenClaw" {
+					t.Fatalf("getuploadurl base_info = %#v, want official channel version and bot agent", baseInfo)
 				}
 				if body.MediaType != UploadMediaTypeImage || body.ToUserID != "user-1" {
 					t.Fatalf("getuploadurl body = %#v, want image upload for user-1", body)
@@ -328,6 +343,13 @@ func TestSendImageAttachmentUploadsToCDNAndSendsImageMessage(t *testing.T) {
 	if item.ImageItem.Media.AESKey == "" || item.ImageItem.MidSize != 16 {
 		t.Fatalf("image aes/mid_size = %#v, want aes key and ciphertext size", item.ImageItem)
 	}
+	decodedAESKey, err := base64.StdEncoding.DecodeString(item.ImageItem.Media.AESKey)
+	if err != nil {
+		t.Fatalf("decode image aes key: %v", err)
+	}
+	if len(decodedAESKey) != aes.BlockSize {
+		t.Fatalf("image aes key decoded length = %d, want raw AES key length %d", len(decodedAESKey), aes.BlockSize)
+	}
 }
 
 func TestSenderSendAttachmentSupportsImageAndFile(t *testing.T) {
@@ -343,6 +365,7 @@ func TestSenderSendAttachmentSupportsImageAndFile(t *testing.T) {
 
 	var uploadMediaTypes []UploadMediaType
 	var sentItemTypes []ItemType
+	var sentFileAESKey string
 	c := NewClient(ClientConfig{
 		BaseURL: "https://wechat.test",
 		Token:   "token",
@@ -367,7 +390,11 @@ func TestSenderSendAttachmentSupportsImageAndFile(t *testing.T) {
 					t.Fatalf("decode sendmessage body: %v", err)
 				}
 				if len(body.Msg.ItemList) == 1 && body.Msg.ItemList[0].Type != ItemText {
-					sentItemTypes = append(sentItemTypes, body.Msg.ItemList[0].Type)
+					item := body.Msg.ItemList[0]
+					sentItemTypes = append(sentItemTypes, item.Type)
+					if item.Type == ItemFile && item.FileItem != nil && item.FileItem.Media != nil {
+						sentFileAESKey = item.FileItem.Media.AESKey
+					}
 				}
 				return jsonHTTPResponse(http.StatusOK, map[string]any{"ret": 0}), nil
 			default:
@@ -390,6 +417,13 @@ func TestSenderSendAttachmentSupportsImageAndFile(t *testing.T) {
 	}
 	if len(sentItemTypes) != 2 || sentItemTypes[0] != ItemImage || sentItemTypes[1] != ItemFile {
 		t.Fatalf("sent item types = %#v, want image then file", sentItemTypes)
+	}
+	decodedFileAESKey, err := base64.StdEncoding.DecodeString(sentFileAESKey)
+	if err != nil {
+		t.Fatalf("decode file aes key: %v", err)
+	}
+	if len(decodedFileAESKey) != aes.BlockSize {
+		t.Fatalf("file aes key decoded length = %d, want raw AES key length %d", len(decodedFileAESKey), aes.BlockSize)
 	}
 }
 

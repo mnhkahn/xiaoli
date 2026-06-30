@@ -24,7 +24,7 @@ func PollMessages(ctx context.Context, c *Client, onMessage func(context.Context
 		pollCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		raw, err := c.PostJSON(pollCtx, "/ilink/bot/getupdates", &GetUpdatesRequest{
 			GetUpdatesBuf: buf,
-			BaseInfo:      &BaseInfo{ChannelVersion: "1.0.3"},
+			BaseInfo:      defaultBaseInfo(),
 		})
 		cancel()
 
