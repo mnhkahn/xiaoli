@@ -84,6 +84,34 @@ func TestFileSkillBackendGetRejectsDisabledSkill(t *testing.T) {
 	}
 }
 
+func TestFileSkillBackendSkipsInvalidSkillMetadata(t *testing.T) {
+	root := t.TempDir()
+	writeTestSkill(t, root, "holiday", "假期查询", "holiday body")
+	badDir := filepath.Join(root, "bad")
+	if err := os.MkdirAll(badDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(bad) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(badDir, "SKILL.md"), []byte("# Bad Skill\n\nmissing frontmatter\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(bad) error = %v", err)
+	}
+
+	backend, err := NewFileBackend(BackendConfig{
+		Roots:    []string{root},
+		Enabled:  []string{"*"},
+		MaxBytes: 1024,
+	})
+	if err != nil {
+		t.Fatalf("NewFileBackend() error = %v", err)
+	}
+	got, err := backend.List(context.Background())
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "holiday" {
+		t.Fatalf("List() = %#v, want only valid holiday skill", got)
+	}
+}
+
 func TestFileSkillBackendGetEnforcesMaxBytes(t *testing.T) {
 	root := t.TempDir()
 	writeTestSkill(t, root, "holiday", "假期查询", "body is too long")

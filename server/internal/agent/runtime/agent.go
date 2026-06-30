@@ -562,6 +562,8 @@ func (a *Agent) NewSession(ctx context.Context, channelName, deviceID string) (s
 type ChatOptions struct {
 	MaxIterations int
 	Channel       string
+	SessionID     string
+	Stream        func(delta string) bool
 	SendTarget    agentchannel.SendTarget
 }
 
@@ -580,13 +582,22 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	channelUser := deviceID
 	channelName := opts.Channel
 	if a.sessionMgr != nil && channelName != "" && channelUser != "" {
-		sid, isNew, err := a.sessionMgr.GetOrCreate(ctx, channelName, channelUser, a.CurrentLLMModel())
-		if err != nil {
-			logger.Infof("session get/create failed: %v, fallback to conversationID", err)
+		if opts.SessionID != "" {
+			if _, err := a.sessionMgr.Get(ctx, opts.SessionID); err != nil {
+				logger.Infof("session lookup failed: %v, fallback to conversationID", err)
+			} else {
+				memoryID = opts.SessionID
+				usingSession = true
+			}
 		} else {
-			memoryID = sid
-			isNewSession = isNew
-			usingSession = true
+			sid, isNew, err := a.sessionMgr.GetOrCreate(ctx, channelName, channelUser, a.CurrentLLMModel())
+			if err != nil {
+				logger.Infof("session get/create failed: %v, fallback to conversationID", err)
+			} else {
+				memoryID = sid
+				isNewSession = isNew
+				usingSession = true
+			}
 		}
 		if isNewSession {
 			a.sessionMgr.SetTitle(ctx, memoryID, userText)
@@ -645,6 +656,8 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 
 	var askHolder *agentbuiltin.AskDataHolder
 	ctx, askHolder = agentbuiltin.NewAskDataHolder(ctx)
+	var sendStatus *agentbuiltin.ChannelSendStatus
+	ctx, sendStatus = agentbuiltin.NewChannelSendStatus(ctx)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, memoryID)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentDeviceIDKey, deviceID)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentChannelKey, channelName)
@@ -757,28 +770,65 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	}
 
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{
-		Agent: agent,
+		Agent:           agent,
+		EnableStreaming: opts.Stream != nil,
 	})
 
 	runCtx := a.recorder.WithContext(ctx, modelID)
 	events, err := runWithRetry(runCtx, runner, msgs)
 	if err != nil {
+		if sendStatus.Sent() {
+			logger.Infof("Agent.Chat completed after channel_send despite runner error: %v", err)
+			return a.completeAfterChannelSend(ctx, conversationID, memoryID, usingSession, channelName, channelUser, epochToday, history, userText, askHolder), nil
+		}
 		_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": err.Error()})
 		return "", fmt.Errorf("agent error: %w", err)
 	}
 
 	var result *schema.Message
+	var streamed strings.Builder
 	for _, event := range events {
 		if event.Err != nil {
 			logger.Infof("Agent.Chat event error: %v", event.Err)
+			if sendStatus.Sent() {
+				logger.Infof("Agent.Chat completed after channel_send despite event error: %v", event.Err)
+				return a.completeAfterChannelSend(ctx, conversationID, memoryID, usingSession, channelName, channelUser, epochToday, history, userText, askHolder), nil
+			}
 			_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": event.Err.Error()})
 			return "", fmt.Errorf("agent error: %w", event.Err)
 		}
-		if event.Output != nil && event.Output.MessageOutput != nil &&
-			event.Output.MessageOutput.Message != nil &&
-			event.Output.MessageOutput.Role == schema.Assistant {
-			result = event.Output.MessageOutput.Message
+		if event.Output == nil || event.Output.MessageOutput == nil {
+			continue
 		}
+		mv := event.Output.MessageOutput
+		if mv.Role != schema.Assistant {
+			continue
+		}
+		if mv.IsStreaming && mv.MessageStream != nil {
+			for {
+				chunk, recvErr := mv.MessageStream.Recv()
+				if recvErr != nil {
+					if recvErr == io.EOF {
+						break
+					}
+					_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": recvErr.Error()})
+					return "", fmt.Errorf("agent stream error: %w", recvErr)
+				}
+				if chunk != nil && chunk.Content != "" {
+					streamed.WriteString(chunk.Content)
+					if opts.Stream != nil && !opts.Stream(chunk.Content) {
+						return "", ctx.Err()
+					}
+				}
+			}
+			continue
+		}
+		if mv.Message != nil {
+			result = mv.Message
+		}
+	}
+	if streamed.Len() > 0 {
+		result = schema.AssistantMessage(streamed.String(), nil)
 	}
 	if result == nil || result.Content == "" {
 		_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": "agent returned empty response"})
@@ -808,6 +858,31 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		"history_len": len(updated),
 	})
 	return result.Content, nil
+}
+
+func (a *Agent) completeAfterChannelSend(ctx context.Context, conversationID string, memoryID string, usingSession bool, channelName string, channelUser string, epochToday string, history []*schema.Message, userText string, askHolder *agentbuiltin.AskDataHolder) string {
+	result := schema.AssistantMessage("已发送。", nil)
+	updated := append(history,
+		schema.UserMessage(userText),
+		result,
+	)
+	if err := a.memory.Save(ctx, memoryID, updated); err != nil {
+		logger.Infof("memory save failed after channel_send completion: %v", err)
+	} else if epochToday != "" {
+		a.sessionMgr.SetEpoch(ctx, channelName, channelUser, epochToday)
+	}
+	if usingSession {
+		a.sessionMgr.UpdateAfterChat(ctx, memoryID, len(updated))
+	}
+	if ask := askHolder.Get(); ask != nil {
+		a.storeAskData(conversationID, ask)
+	}
+	_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunCompleted, memoryID, map[string]any{
+		"message_len": len(result.Content),
+		"history_len": len(updated),
+		"after_send":  true,
+	})
+	return result.Content
 }
 
 func (a *Agent) toolGuide(interactive bool) string {

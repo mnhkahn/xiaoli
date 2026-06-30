@@ -3,6 +3,7 @@ package localconfig
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +20,10 @@ func TestLoadMissingUsesLocalSafeDefaults(t *testing.T) {
 	}
 	if cfg.Storage.MemoryFile != "Memory.md" {
 		t.Fatalf("memory file = %q, want Memory.md", cfg.Storage.MemoryFile)
+	}
+	roots := strings.Join(cfg.Skills.Roots, "\n")
+	if !strings.Contains(roots, filepath.Join(DefaultAgentsDir(), "skills")) {
+		t.Fatalf("default skill roots = %#v, want shared agents skills dir", cfg.Skills.Roots)
 	}
 }
 
@@ -111,5 +116,37 @@ func TestEnsureDefaultsWritesSettingsAndSecrets(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(settingsPath), "secrets.json")); err != nil {
 		t.Fatalf("secrets not written next to settings: %v", err)
+	}
+}
+
+func TestLoadPromptUsesSharedThenXiaoliFilesThenExtra(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".agents")
+	xiaoliDir := filepath.Join(dir, ".xiaoli")
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		t.Fatalf("MkdirAll agents error = %v", err)
+	}
+	if err := os.MkdirAll(xiaoliDir, 0755); err != nil {
+		t.Fatalf("MkdirAll xiaoli error = %v", err)
+	}
+	files := map[string]string{
+		filepath.Join(agentsDir, "AGENT.md"): "shared",
+		filepath.Join(xiaoliDir, "AGENT.md"): "xiaoli",
+		filepath.Join(xiaoliDir, "SOUL.md"):  "soul",
+	}
+	for path, body := range files {
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", path, err)
+		}
+	}
+	cfg := DefaultConfig()
+	cfg.DataDir = xiaoliDir
+	got, err := cfg.loadPrompt("extra", agentsDir)
+	if err != nil {
+		t.Fatalf("loadPrompt() error = %v", err)
+	}
+	want := "shared\n\nxiaoli\n\nsoul\n\nextra"
+	if got != want {
+		t.Fatalf("prompt = %q, want %q", got, want)
 	}
 }

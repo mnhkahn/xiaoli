@@ -55,6 +55,10 @@ func (fakeDeps) ListSessions(_ context.Context) string {
 	return "test sessions"
 }
 
+func (fakeDeps) ResumeSession(_ context.Context, id string) string {
+	return "resumed " + id
+}
+
 func (fakeDeps) SessionContext(_ context.Context, id string) string {
 	return "test session context " + id
 }
@@ -155,6 +159,29 @@ func TestHandleBuiltinsAndRejectsESP32(t *testing.T) {
 	}
 }
 
+func TestResumeSession(t *testing.T) {
+	handler := NewHandler(&fakeDeps{})
+
+	reply, handled := handler.Handle(context.Background(), channel.TypeLark, "/resume ses_123")
+	if !handled || !strings.Contains(reply, "resumed ses_123") {
+		t.Fatalf("/resume reply=%q handled=%v, want resumed session", reply, handled)
+	}
+
+	reply, handled = handler.Handle(context.Background(), channel.TypeLark, "/resume")
+	if !handled || !strings.Contains(reply, "用法") {
+		t.Fatalf("/resume without id reply=%q handled=%v, want usage", reply, handled)
+	}
+}
+
+func TestLogsAlias(t *testing.T) {
+	handler := NewHandler(&fakeDeps{})
+
+	reply, handled := handler.Handle(context.Background(), channel.TypeLark, "/logs error")
+	if !handled || !strings.Contains(reply, "test log search") {
+		t.Fatalf("/logs reply=%q handled=%v, want log search", reply, handled)
+	}
+}
+
 func TestUnknownCommandIsNotHandled(t *testing.T) {
 	handler := NewHandler(&fakeDeps{})
 
@@ -187,6 +214,25 @@ func TestSkillPromptSkipsBuiltinCommandConflict(t *testing.T) {
 
 	if ok || prompt != "" {
 		t.Fatalf("SkillPrompt() = %q, %v; want skipped builtin conflict", prompt, ok)
+	}
+}
+
+func TestSuggestionsIncludeBuiltinsAndSkills(t *testing.T) {
+	handler := NewHandler(&fakeDeps{})
+
+	got := handler.Suggestions(context.Background(), "/h")
+	var names []string
+	for _, item := range got {
+		names = append(names, item.Kind+":"+item.Name)
+	}
+	joined := strings.Join(names, ",")
+	if !strings.Contains(joined, "cmd:help") || !strings.Contains(joined, "skill:holiday") {
+		t.Fatalf("Suggestions(/h) = %#v, want help and holiday", got)
+	}
+
+	got = handler.Suggestions(context.Background(), "/mo")
+	if len(got) != 1 || got[0].Name != "model" || got[0].Kind != "cmd" {
+		t.Fatalf("Suggestions(/mo) = %#v, want model builtin only", got)
 	}
 }
 

@@ -72,6 +72,7 @@ type Config struct {
 	BashTimeout             time.Duration
 	BashMaxOutputBytes      int64
 	AgentFileRoots          []string
+	ChatReact               agentworkflow.AgentSpec
 	Workflows               []agentworkflow.Definition
 	LarkWebhookURL          string
 	LarkAppID               string
@@ -239,6 +240,7 @@ func LoadConfig() Config {
 		BashTimeout:             settings.bashTimeout(),
 		BashMaxOutputBytes:      int64(settings.bashMaxOutputBytes()),
 		AgentFileRoots:          agentbuiltin.FileAgentRoots(),
+		ChatReact:               parseChatReact(settings.ChatReact),
 		Workflows:               parseWorkflows(settings.Workflows),
 		LarkWebhookURL:          env("LARK_BOT_WEBHOOK_URL", ""),
 		LarkAppID:               env("LARK_APP_ID", ""),
@@ -318,6 +320,7 @@ type settingsConfig struct {
 	MCPServers []settingsMCPServer            `json:"mcp_servers"`
 	Tools      settingsTools                  `json:"tools"`
 	Storage    settingsStorage                `json:"storage"`
+	ChatReact  settingsWorkflowAgent          `json:"chat_react"`
 	Workflows  map[string]settingsWorkflowDef `json:"cron"`
 	A2A        settingsA2AConfig              `json:"a2a"`
 }
@@ -522,6 +525,32 @@ func parseWorkflows(raw map[string]settingsWorkflowDef) []agentworkflow.Definiti
 		})
 	}
 	return defs
+}
+
+func parseChatReact(agent settingsWorkflowAgent) agentworkflow.AgentSpec {
+	spec := agentworkflow.AgentSpec{
+		Name:     strings.TrimSpace(agent.Name),
+		Mode:     strings.TrimSpace(agent.Mode),
+		MaxSteps: agent.MaxSteps,
+		Timeout:  120 * time.Second,
+	}
+	if spec.Name == "" {
+		spec.Name = "dispatch_agent"
+	}
+	if spec.Mode == "" {
+		spec.Mode = "react"
+	}
+	if spec.MaxSteps <= 0 {
+		spec.MaxSteps = 8
+	}
+	if agent.Timeout != "" {
+		if d, err := time.ParseDuration(agent.Timeout); err == nil {
+			spec.Timeout = d
+		} else {
+			logger.Infof("[chat_react] invalid agent timeout %q, using default", agent.Timeout)
+		}
+	}
+	return spec
 }
 
 func metadataString(m map[string]any, key, fallback string) string {

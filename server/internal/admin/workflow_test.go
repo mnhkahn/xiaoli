@@ -2,6 +2,23 @@ package admin
 
 import "testing"
 
+func TestWorkflowDefinitionsUseConfiguredChatReactAgent(t *testing.T) {
+	cfg := testConfig()
+	cfg.ChatReact = parseChatReact(settingsWorkflowAgent{MaxSteps: 16, Timeout: "180s"})
+	srv := NewServer(cfg)
+
+	def := srv.workflowByID("chat_react")
+	if def == nil {
+		t.Fatal("chat_react workflow not found")
+	}
+	if def.Agent.MaxSteps != 16 {
+		t.Fatalf("chat_react max_steps = %d, want 16", def.Agent.MaxSteps)
+	}
+	if got := def.Agent.Timeout.String(); got != "3m0s" {
+		t.Fatalf("chat_react timeout = %s, want 3m0s", got)
+	}
+}
+
 func TestWorkflowDefinitionsIncludeChatAndCronJobs(t *testing.T) {
 	cfg := testConfig()
 	hour := 8

@@ -55,6 +55,7 @@ func TestChannelSendToolSendsAttachmentToCurrentChannel(t *testing.T) {
 		ChatID:           "oc_chat",
 		ReplyToMessageID: "om_message",
 	})
+	ctx, status := NewChannelSendStatus(ctx)
 
 	got, err := inv.InvokableRun(ctx, `{"target":"current","file_path":"`+filePath+`","display_name":"练习纸.pdf","mime_type":"application/pdf","text":"已生成"}`)
 	if err != nil {
@@ -75,5 +76,8 @@ func TestChannelSendToolSendsAttachmentToCurrentChannel(t *testing.T) {
 	}
 	if sender.caption != "已生成" {
 		t.Fatalf("caption = %q, want 已生成", sender.caption)
+	}
+	if !status.Sent() {
+		t.Fatal("status.Sent() = false, want true after successful send")
 	}
 }

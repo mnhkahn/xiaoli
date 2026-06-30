@@ -65,8 +65,16 @@ func DefaultDataDir() string {
 	return ".xiaoli"
 }
 
+func DefaultAgentsDir() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".agents")
+	}
+	return ".agents"
+}
+
 func DefaultConfig() Config {
 	dataDir := DefaultDataDir()
+	agentsDir := DefaultAgentsDir()
 	return Config{
 		DataDir: dataDir,
 		Storage: StorageConfig{
@@ -84,9 +92,9 @@ func DefaultConfig() Config {
 			AllowedRoots:       []string{dataDir},
 		},
 		Skills: SkillConfig{
-			Roots:         []string{filepath.Join(dataDir, "skills")},
+			Roots:         []string{filepath.Join(agentsDir, "skills"), filepath.Join(dataDir, "skills")},
 			Enabled:       []string{"*"},
-			GlobalBinDirs: []string{filepath.Join(dataDir, "bin"), "/usr/local/bin"},
+			GlobalBinDirs: []string{filepath.Join(agentsDir, "bin"), filepath.Join(dataDir, "bin"), "/usr/local/bin"},
 		},
 	}
 }
@@ -260,6 +268,39 @@ func (c Config) RuntimeConfig(prompt string) (agentruntime.Config, error) {
 		LogDir:   filepath.Join(c.DataDir, "logs"),
 		Timezone: "Asia/Shanghai",
 	}, nil
+}
+
+func (c Config) LoadPrompt(extra string) (string, error) {
+	return c.loadPrompt(extra, DefaultAgentsDir())
+}
+
+func (c Config) loadPrompt(extra string, agentsDir string) (string, error) {
+	paths := []string{
+		filepath.Join(agentsDir, "AGENT.md"),
+		filepath.Join(c.DataDir, "AGENT.md"),
+		filepath.Join(c.DataDir, "SOUL.md"),
+	}
+	parts := make([]string, 0, len(paths)+1)
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", err
+		}
+		text := strings.TrimSpace(string(data))
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+	if strings.TrimSpace(extra) != "" {
+		parts = append(parts, strings.TrimSpace(extra))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "你是小李，一个本地运行的中文 Agent。回答要清楚、直接、适合终端阅读。")
+	}
+	return strings.Join(parts, "\n\n"), nil
 }
 
 func (c Config) RunLogDir() string {

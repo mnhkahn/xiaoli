@@ -431,13 +431,13 @@ type ConversationPipeline struct {
 	workflow *agentworkflow.Runner
 }
 
-func newConversationPipeline(agent *EinoAgent, devices DeviceController) *ConversationPipeline {
+func newConversationPipeline(agent *EinoAgent, devices DeviceController, chatReact agentworkflow.AgentSpec) *ConversationPipeline {
 	var chat conversationChat
 	if agent != nil {
 		chat = einoConversationChat{agent: agent}
 	}
 	pipeline := &ConversationPipeline{chat: chat, agent: agent, devices: devices}
-	registry, err := agentworkflow.NewRegistry(DefinitionChatReact())
+	registry, err := agentworkflow.NewRegistry(DefinitionChatReact(chatReact))
 	if err == nil {
 		pipeline.workflow = agentworkflow.NewRunner(agentworkflow.RunnerConfig{
 			Registry: registry,
@@ -522,19 +522,26 @@ func (p *ConversationPipeline) runDirect(ctx context.Context, turn ConversationT
 	return p.withAskData(ConversationReply{Text: answer}, turn.ConversationID), nil
 }
 
-func DefinitionChatReact() agentworkflow.Definition {
+func DefinitionChatReact(agent agentworkflow.AgentSpec) agentworkflow.Definition {
+	if agent.Name == "" {
+		agent.Name = "dispatch_agent"
+	}
+	if agent.Mode == "" {
+		agent.Mode = "react"
+	}
+	if agent.MaxSteps <= 0 {
+		agent.MaxSteps = 8
+	}
+	if agent.Timeout <= 0 {
+		agent.Timeout = 120 * time.Second
+	}
 	return agentworkflow.Definition{
 		ID:          "chat_react",
 		Name:        "调度 Agent",
 		Description: "由 channel 消息触发，使用 ReAct Agent 编排工具、技能和 MCP 调用并返回回复。",
 		Enabled:     true,
 		Trigger:     agentworkflow.Trigger{Kind: agentworkflow.TriggerMessage},
-		Agent: agentworkflow.AgentSpec{
-			Name:     "dispatch_agent",
-			Mode:     "react",
-			MaxSteps: 8,
-			Timeout:  120 * time.Second,
-		},
+		Agent:       agent,
 	}
 }
 

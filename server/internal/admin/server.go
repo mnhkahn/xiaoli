@@ -124,7 +124,7 @@ func NewServer(cfg Config) *AdminServer {
 		agent.SetDeviceTools(deviceHub)
 		agent.SetVisionTools(vision, recentImages)
 	}
-	conversation := newConversationPipeline(agent, deviceHub)
+	conversation := newConversationPipeline(agent, deviceHub, cfg.ChatReact)
 	deviceHub.setConversation(conversation)
 
 	// Create channel senders for channel_send tool

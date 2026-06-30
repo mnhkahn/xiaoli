@@ -101,7 +101,7 @@ func (b *Backend) scan(roots []string) error {
 		}
 		if _, err := os.Stat(filepath.Join(root, "SKILL.md")); err == nil {
 			if err := b.indexSkill(next, root); err != nil {
-				return err
+				continue
 			}
 		}
 		for _, entry := range entries {
@@ -111,7 +111,7 @@ func (b *Backend) scan(roots []string) error {
 			dir := filepath.Join(root, entry.Name())
 			if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err == nil {
 				if err := b.indexSkill(next, dir); err != nil {
-					return err
+					continue
 				}
 			}
 		}

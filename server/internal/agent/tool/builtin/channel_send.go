@@ -14,6 +14,27 @@ import (
 	agentchannel "xiaoli/server/internal/agent/channel"
 )
 
+type channelSendStatusKey struct{}
+
+type ChannelSendStatus struct {
+	sent bool
+}
+
+func NewChannelSendStatus(ctx context.Context) (context.Context, *ChannelSendStatus) {
+	status := &ChannelSendStatus{}
+	return context.WithValue(ctx, channelSendStatusKey{}, status), status
+}
+
+func (s *ChannelSendStatus) Sent() bool {
+	return s != nil && s.sent
+}
+
+func markChannelSent(ctx context.Context) {
+	if status, _ := ctx.Value(channelSendStatusKey{}).(*ChannelSendStatus); status != nil {
+		status.sent = true
+	}
+}
+
 // ChannelSendTool provides channel_send tool
 type ChannelSendTool struct {
 	senders struct {
@@ -150,6 +171,7 @@ func (t *ChannelSendTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 		if err := sender.SendAttachment(ctx, target, attachment, caption); err != nil {
 			return errorResponse("send attachment failed: %v", err), nil
 		}
+		markChannelSent(ctx)
 		return successResponse("file sent successfully"), nil
 	}
 
@@ -161,6 +183,7 @@ func (t *ChannelSendTool) InvokableRun(ctx context.Context, argumentsInJSON stri
 		if err := sender.SendText(ctx, target, args.Text); err != nil {
 			return errorResponse("send text failed: %v", err), nil
 		}
+		markChannelSent(ctx)
 		return successResponse("text sent successfully"), nil
 	}
 

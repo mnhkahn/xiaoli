@@ -29,7 +29,11 @@ func New(opts Options) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	rt, err := cfg.RuntimeConfig(opts.Prompt)
+	prompt, err := cfg.LoadPrompt(opts.Prompt)
+	if err != nil {
+		return nil, err
+	}
+	rt, err := cfg.RuntimeConfig(prompt)
 	if err != nil {
 		return nil, err
 	}

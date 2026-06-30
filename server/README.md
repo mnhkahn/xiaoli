@@ -106,6 +106,13 @@ variables. Run:
 xiaoli-tui
 ```
 
+After exit, the TUI prints the current session ID and a continue command. Resume
+that session later with:
+
+```bash
+xiaoli-tui -s <session-id>
+```
+
 The local TUI reads shared skills from `~/.agents/skills` and Xiaoli-specific
 skills from `~/.xiaoli/skills`. It loads prompts in this order when the files
 exist:
@@ -116,9 +123,16 @@ exist:
 
 The TUI reuses the server slash command handler. Useful local commands include
 `/skills`, `/model list`, `/model use <id>`, `/sessions`, `/resume <id>`,
-`/session <id>`, `/memory list`, `/mcp`, `/tasks`, and `/log <keyword>`. When
-bash is enabled and a command needs approval, reply with `允许` or `拒绝` in the
-TUI.
+`/session <id>`, `/memory list`, `/mcp`, `/tasks`, `/log <keyword>`, and
+`/reminder list`. Local log search also supports `/log --all`, `/log --tools`,
+and `/log --errors`. When bash is enabled and a command needs approval, reply
+with `允许` or `拒绝` in the TUI.
+
+Runtime logs are written to `~/.xiaoli/logs/tui.log` so they do not corrupt the
+terminal UI. The main transcript keeps only readable agent events and assistant
+output. Use the mouse wheel, Up/Down, PgUp/PgDn, Ctrl+U/Ctrl+D, Home, and End to
+scroll inside the TUI. The right sidebar keeps status, model, cwd, context
+usage, task/MCP summaries, and key hints visible with a fixed-priority layout.
 
 ## Firmware OTA URL
 

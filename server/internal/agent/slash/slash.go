@@ -37,6 +37,12 @@ type SkillInfo struct {
 	Version     string
 }
 
+type Suggestion struct {
+	Name        string
+	Description string
+	Kind        string
+}
+
 type ModelInfo struct {
 	LLM           string
 	VLLM          string
@@ -57,6 +63,7 @@ type Dependencies interface {
 	LLMStats(ctx context.Context) string
 	NewSession(ctx context.Context) string
 	ListSessions(ctx context.Context) string
+	ResumeSession(ctx context.Context, id string) string
 	SessionContext(ctx context.Context, id string) string
 	CompressSession(ctx context.Context) string
 	ProviderBalances(ctx context.Context) map[string]string
@@ -120,6 +127,8 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 		return h.deps.NewSession(ctx), true
 	case "sessions":
 		return h.deps.ListSessions(ctx), true
+	case "resume":
+		return h.resumeSession(ctx, cmd.Args), true
 	case "session":
 		return h.sessionContext(ctx, cmd.Args), true
 	case "compact":
@@ -139,7 +148,7 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 			return h.deps.TaskStatusListGrouped(ctx), true
 		}
 		return h.taskStatus(ctx, cmd.Args), true
-	case "log":
+	case "log", "logs":
 		return h.deps.LogSearch(ctx, cmd.Args, 50), true
 	case "help":
 		return helpText(), true
@@ -165,9 +174,59 @@ func (h Handler) SkillPrompt(ctx context.Context, text string) (string, bool) {
 	return "", false
 }
 
+func (h Handler) Suggestions(ctx context.Context, prefix string) []Suggestion {
+	prefix = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(prefix, "/")))
+	var out []Suggestion
+	for _, cmd := range builtinSuggestions() {
+		if strings.HasPrefix(strings.ToLower(cmd.Name), prefix) {
+			out = append(out, cmd)
+		}
+	}
+	skills, err := h.deps.ListSkills(ctx)
+	if err == nil {
+		for _, skill := range skills {
+			name := strings.TrimSpace(skill.Name)
+			if name == "" || !strings.HasPrefix(strings.ToLower(name), prefix) || isBuiltinCommandName(strings.ToLower(name)) {
+				continue
+			}
+			out = append(out, Suggestion{Name: name, Description: skill.Description, Kind: "skill"})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind == "cmd"
+		}
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out
+}
+
+func builtinSuggestions() []Suggestion {
+	return []Suggestion{
+		{Name: "help", Description: "显示帮助", Kind: "cmd"},
+		{Name: "skills", Description: "列出可用 skills", Kind: "cmd"},
+		{Name: "model", Description: "查看或切换模型", Kind: "cmd"},
+		{Name: "status", Description: "查看状态和 LLM 统计", Kind: "cmd"},
+		{Name: "sessions", Description: "列出会话", Kind: "cmd"},
+		{Name: "resume", Description: "切换历史会话", Kind: "cmd"},
+		{Name: "session", Description: "查看会话上下文", Kind: "cmd"},
+		{Name: "new", Description: "新建会话", Kind: "cmd"},
+		{Name: "compact", Description: "压缩当前会话", Kind: "cmd"},
+		{Name: "memory", Description: "管理记忆", Kind: "cmd"},
+		{Name: "mcp", Description: "查看 MCP 状态", Kind: "cmd"},
+		{Name: "tasks", Description: "查看任务", Kind: "cmd"},
+		{Name: "task", Description: "查看单个任务", Kind: "cmd"},
+		{Name: "log", Description: "搜索日志", Kind: "cmd"},
+		{Name: "logs", Description: "搜索日志", Kind: "cmd"},
+		{Name: "reminder", Description: "管理提醒", Kind: "cmd"},
+		{Name: "cron", Description: "查看定时任务", Kind: "cmd"},
+		{Name: "channel", Description: "查看渠道", Kind: "cmd"},
+	}
+}
+
 func isBuiltinCommandName(name string) bool {
 	switch name {
-	case "skills", "model", "channel", "status", "new", "sessions", "session", "compact", "memory", "cron", "reminder", "mcp", "tasks", "task", "log", "help":
+	case "skills", "model", "channel", "status", "new", "sessions", "resume", "session", "compact", "memory", "cron", "reminder", "mcp", "tasks", "task", "log", "logs", "help":
 		return true
 	default:
 		return false
@@ -187,6 +246,14 @@ func (h Handler) sessionContext(ctx context.Context, id string) string {
 		return "用法：/session <id>"
 	}
 	return h.deps.SessionContext(ctx, id)
+}
+
+func (h Handler) resumeSession(ctx context.Context, id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "用法：/resume <id>"
+	}
+	return h.deps.ResumeSession(ctx, id)
 }
 
 func (h Handler) memory(ctx context.Context, args string) string {
@@ -470,9 +537,10 @@ func helpText() string {
 	/channel    - 查看可用消息渠道
 	/status     - 查看 LLM 调用统计
 	/sessions   - 列出所有会话
+	/resume     - 切换到历史会话，/resume <id>
 	/session    - 查看会话上下文，/session <id>
 	/new        - 新建会话
-	/log        - 搜索服务器日志，/log <关键词>
+	/log        - 搜索日志，/log <关键词>
 	/help       - 显示此帮助信息`
 }
 

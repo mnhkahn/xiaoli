@@ -385,6 +385,25 @@ func (d adminSlashDeps) ListSessions(ctx context.Context) string {
 	return b.String()
 }
 
+func (d adminSlashDeps) ResumeSession(ctx context.Context, id string) string {
+	if d.s.agent == nil {
+		return "LLM agent 未初始化。"
+	}
+	sm := d.s.agent.SessionManager()
+	if sm == nil {
+		return "会话功能未启用（需要 Redis）。"
+	}
+	info, err := sm.Get(ctx, id)
+	if err != nil {
+		return "读取失败：" + err.Error()
+	}
+	deviceID := slash.DeviceIDFromContext(ctx)
+	if deviceID == "" || info.ChannelUser != deviceID || info.ChannelName != slash.ChannelNameFromContext(ctx) {
+		return "无权访问该会话。"
+	}
+	return "服务端渠道暂不支持切换当前会话；可用 /session " + id + " 查看上下文。"
+}
+
 func (d adminSlashDeps) ProviderBalances(ctx context.Context) map[string]string {
 	models := d.s.cfg.GoLLMModelConfigs
 	if models == nil {
@@ -1039,7 +1058,7 @@ func (s *AdminServer) handleVisionExplain(w http.ResponseWriter, r *http.Request
 }
 
 func (s *AdminServer) workflowDefinitions() []agentworkflow.Definition {
-	defs := []agentworkflow.Definition{DefinitionChatReact()}
+	defs := []agentworkflow.Definition{DefinitionChatReact(s.cfg.ChatReact)}
 	defs = append(defs, s.cfg.Workflows...)
 	return defs
 }
