@@ -72,6 +72,20 @@
       "api_key_env": "GITHUB_PERSONAL_ACCESS_TOKEN"
     }
   ],
+  "storage": {
+    "backend": "redis",
+    "redis": {
+      "url_env": "XIAOLI_REDIS_URL",
+      "key_prefix": "xiaoli:cp:",
+      "memory_ttl_hours": 24
+    },
+    "local": {
+      "data_dir": "~/.xiaoli",
+      "memory_file": "Memory.md",
+      "conversation_dir": "conversations",
+      "history_max_messages": 40
+    }
+  },
   "a2a": {
     "enabled": true,
     "public_agent_card": false,

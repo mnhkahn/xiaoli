@@ -58,7 +58,7 @@ type Agent struct {
 	skillMW         adk.ChatModelAgentMiddleware // 普通 channel 用
 	a2aSkillMW      adk.ChatModelAgentMiddleware // A2A channel 用（skill 白名单）
 	recorder        *Recorder
-	sessionMgr      *agentsession.Manager
+	sessionMgr      agentsession.Store
 	askData         map[string]*agentbuiltin.AskData
 	askDataMu       sync.Mutex
 	taskTool        *agentbuiltin.TaskTool
@@ -108,11 +108,15 @@ func NewAgent(cfg Config, eventBus agentevent.Publisher) *Agent {
 
 	ctx := context.Background()
 	selector := newModelSelector(cfg)
-	memory := NewRedisMemory(cfg)
+	memory := NewMemory(cfg)
 
-	var sessionMgr *agentsession.Manager
+	var sessionMgr agentsession.Store
 	if memory != nil {
-		sessionMgr = agentsession.NewManager(memory.client, cfg.RedisKeyPrefix)
+		if strings.EqualFold(strings.TrimSpace(cfg.StorageBackend), storageBackendLocal) {
+			sessionMgr = agentsession.NewLocalManager(memory.localDataDir)
+		} else if memory.client != nil {
+			sessionMgr = agentsession.NewManager(memory.client, cfg.RedisKeyPrefix)
+		}
 	}
 
 	recorder := GlobalRecorder()
@@ -474,7 +478,7 @@ func (a *Agent) Chat(ctx context.Context, deviceID string, userText string) (str
 	return a.ChatWithContext(ctx, deviceID, deviceID, userText)
 }
 
-func (a *Agent) SessionManager() *agentsession.Manager {
+func (a *Agent) SessionManager() agentsession.Store {
 	return a.sessionMgr
 }
 
@@ -588,6 +592,14 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	}
 
 	logger.Infof("Agent.Chat called: conversation=%s device=%s memory=%s text=%q", conversationID, deviceID, memoryID, userText)
+	ctx = withRunEventSession(ctx, memoryID)
+	_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunStarted, memoryID, map[string]any{
+		"conversation_id": conversationID,
+		"device_id":       deviceID,
+		"channel":         channelName,
+		"model":           a.CurrentLLMModel(),
+		"text":            userText,
+	})
 
 	history := a.memory.Load(ctx, memoryID)
 
@@ -749,6 +761,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	runCtx := a.recorder.WithContext(ctx, modelID)
 	events, err := runWithRetry(runCtx, runner, msgs)
 	if err != nil {
+		_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": err.Error()})
 		return "", fmt.Errorf("agent error: %w", err)
 	}
 
@@ -756,6 +769,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	for _, event := range events {
 		if event.Err != nil {
 			logger.Infof("Agent.Chat event error: %v", event.Err)
+			_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": event.Err.Error()})
 			return "", fmt.Errorf("agent error: %w", event.Err)
 		}
 		if event.Output != nil && event.Output.MessageOutput != nil &&
@@ -765,6 +779,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		}
 	}
 	if result == nil || result.Content == "" {
+		_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": "agent returned empty response"})
 		return "", fmt.Errorf("agent returned empty response")
 	}
 
@@ -786,6 +801,10 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		a.storeAskData(conversationID, ask)
 	}
 
+	_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunCompleted, memoryID, map[string]any{
+		"message_len": len(result.Content),
+		"history_len": len(updated),
+	})
 	return result.Content, nil
 }
 
@@ -852,9 +871,7 @@ func (a *Agent) loadMemories(ctx context.Context, channelName, deviceID string) 
 	if a.memory == nil || channelName == "" || deviceID == "" {
 		return ""
 	}
-	globalB := agentbuiltin.NewMemoryBackendScoped(a.memory.Client(), a.memory.Prefix(), channelName, deviceID, "global")
-	channelB := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
-	return agentbuiltin.LoadMemories(ctx, &agentbuiltin.MemoryBackends{Global: globalB, Channel: channelB})
+	return agentbuiltin.LoadMemories(ctx, a.memory.MemoryBackends(channelName, deviceID))
 }
 
 func (a *Agent) CurrentContext(ctx context.Context, channelName, deviceID string) *ContextUsage {
@@ -1712,9 +1729,7 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 	}
 	if a.memory != nil && channelName != "" && deviceID != "" {
 		filter |= agentbuiltin.ToolMemorySave | agentbuiltin.ToolMemoryForget | agentbuiltin.ToolMemoryList
-		globalB := agentbuiltin.NewMemoryBackendScoped(a.memory.Client(), a.memory.Prefix(), channelName, deviceID, "global")
-		channelB := agentbuiltin.NewMemoryBackend(a.memory.Client(), a.memory.Prefix(), channelName, deviceID)
-		opts.MemoryBackends = &agentbuiltin.MemoryBackends{Global: globalB, Channel: channelB}
+		opts.MemoryBackends = a.memory.MemoryBackends(channelName, deviceID)
 	}
 	if a.cfg.ReminderStore != nil {
 		filter |= agentbuiltin.ToolReminder

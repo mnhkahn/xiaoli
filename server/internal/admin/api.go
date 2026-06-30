@@ -483,9 +483,7 @@ func (d adminSlashDeps) memoryBackends(ctx context.Context) *agentbuiltin.Memory
 		return nil
 	}
 	mem := d.s.agent.MemoryReader()
-	globalB := agentbuiltin.NewMemoryBackendScoped(mem.Client(), mem.Prefix(), channelName, deviceID, "global")
-	channelB := agentbuiltin.NewMemoryBackend(mem.Client(), mem.Prefix(), channelName, deviceID)
-	return &agentbuiltin.MemoryBackends{Global: globalB, Channel: channelB}
+	return mem.MemoryBackends(channelName, deviceID)
 }
 
 func (d adminSlashDeps) MemoryList(ctx context.Context) string {

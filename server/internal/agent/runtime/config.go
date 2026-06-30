@@ -50,6 +50,11 @@ type Config struct {
 	RedisURL                string
 	RedisKeyPrefix          string
 	MemoryTTL               time.Duration
+	StorageBackend          string
+	LocalDataDir            string
+	LocalMemoryFile         string
+	LocalConversationDir    string
+	LocalHistoryMaxMessages int
 	ExternalMCPEndpoints    []MCPEndpoint
 	BuiltinWebFetchEnabled  bool
 	SkillRoots              []string

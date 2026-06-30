@@ -82,6 +82,11 @@ type Config struct {
 	RedisURL                string
 	RedisKeyPrefix          string
 	MemoryTTL               time.Duration
+	StorageBackend          string
+	LocalDataDir            string
+	LocalMemoryFile         string
+	LocalConversationDir    string
+	LocalHistoryMaxMessages int
 	DataDir                 string
 	LogDir                  string
 	Timezone                string
@@ -258,6 +263,25 @@ func LoadConfig() Config {
 		EmailFromName:    env("EMAIL_FROM_NAME", ""),
 		EmailFromAddress: env("EMAIL_FROM_ADDRESS", ""),
 	}
+	rawStorage := settings.Storage
+	storage := settings.storageConfig()
+	cfg.StorageBackend = storage.Backend
+	if cfg.StorageBackend == "" && cfg.RedisURL != "" {
+		cfg.StorageBackend = "redis"
+	}
+	cfg.LocalDataDir = storage.Local.DataDir
+	cfg.LocalMemoryFile = storage.Local.MemoryFile
+	cfg.LocalConversationDir = storage.Local.ConversationDir
+	cfg.LocalHistoryMaxMessages = storage.Local.HistoryMaxMessages
+	if rawStorage.Redis.URLEnv != "" {
+		cfg.RedisURL = env(storage.Redis.URLEnv, cfg.RedisURL)
+	}
+	if rawStorage.Redis.KeyPrefix != "" {
+		cfg.RedisKeyPrefix = storage.Redis.KeyPrefix
+	}
+	if rawStorage.Redis.MemoryTTLHours > 0 {
+		cfg.MemoryTTL = time.Duration(storage.Redis.MemoryTTLHours) * time.Hour
+	}
 	cfg.A2A = A2AConfig{
 		Enabled:             settings.a2aEnabled(),
 		PublicAgentCard:     settings.a2aPublicAgentCard(),
@@ -293,8 +317,28 @@ type settingsConfig struct {
 	Models     settingsModels                 `json:"models"`
 	MCPServers []settingsMCPServer            `json:"mcp_servers"`
 	Tools      settingsTools                  `json:"tools"`
+	Storage    settingsStorage                `json:"storage"`
 	Workflows  map[string]settingsWorkflowDef `json:"cron"`
 	A2A        settingsA2AConfig              `json:"a2a"`
+}
+
+type settingsStorage struct {
+	Backend string               `json:"backend"`
+	Redis   settingsStorageRedis `json:"redis"`
+	Local   settingsStorageLocal `json:"local"`
+}
+
+type settingsStorageRedis struct {
+	URLEnv         string `json:"url_env"`
+	KeyPrefix      string `json:"key_prefix"`
+	MemoryTTLHours int    `json:"memory_ttl_hours"`
+}
+
+type settingsStorageLocal struct {
+	DataDir            string `json:"data_dir"`
+	MemoryFile         string `json:"memory_file"`
+	ConversationDir    string `json:"conversation_dir"`
+	HistoryMaxMessages int    `json:"history_max_messages"`
 }
 
 type settingsTools struct {
@@ -683,6 +727,33 @@ func (s settingsConfig) webFetchEnabled() bool {
 		return true
 	}
 	return *s.Tools.WebFetch.Enabled
+}
+
+func (s settingsConfig) storageConfig() settingsStorage {
+	st := s.Storage
+	st.Backend = strings.TrimSpace(st.Backend)
+	if st.Redis.URLEnv == "" {
+		st.Redis.URLEnv = "XIAOLI_REDIS_URL"
+	}
+	if st.Redis.KeyPrefix == "" {
+		st.Redis.KeyPrefix = "xiaoli:cp:"
+	}
+	if st.Redis.MemoryTTLHours <= 0 {
+		st.Redis.MemoryTTLHours = 24
+	}
+	if st.Local.DataDir == "" {
+		st.Local.DataDir = "~/.xiaoli"
+	}
+	if st.Local.MemoryFile == "" {
+		st.Local.MemoryFile = "Memory.md"
+	}
+	if st.Local.ConversationDir == "" {
+		st.Local.ConversationDir = "conversations"
+	}
+	if st.Local.HistoryMaxMessages <= 0 {
+		st.Local.HistoryMaxMessages = 40
+	}
+	return st
 }
 
 func (s settingsConfig) bashEnabled() bool {

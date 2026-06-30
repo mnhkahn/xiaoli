@@ -15,6 +15,8 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
+
+	agentevent "xiaoli/server/internal/event"
 )
 
 type minuteBucket struct {
@@ -411,15 +413,16 @@ type toolCounter struct {
 	toolName string
 	category string
 	recorder *Recorder
+	eventBus agentevent.Publisher
 }
 
-func newToolCounter(inner tool.InvokableTool, recorder *Recorder, category string) *toolCounter {
+func newToolCounter(inner tool.InvokableTool, recorder *Recorder, category string, eventBus agentevent.Publisher) *toolCounter {
 	info, _ := inner.Info(context.Background())
 	toolName := "unknown"
 	if info != nil && info.Name != "" {
 		toolName = info.Name
 	}
-	return &toolCounter{inner: inner, toolName: toolName, category: category, recorder: recorder}
+	return &toolCounter{inner: inner, toolName: toolName, category: category, recorder: recorder, eventBus: eventBus}
 }
 
 func (w *toolCounter) Info(ctx context.Context) (*schema.ToolInfo, error) {
@@ -431,6 +434,12 @@ func (w *toolCounter) InvokableRun(ctx context.Context, argumentsInJSON string, 
 	st := traceFromContext(ctx)
 	step := 0
 	start := time.Now()
+	sessionID := runEventSessionID(ctx)
+	_ = publishRunEvent(ctx, w.eventBus, agentevent.TypeAgentToolStarted, sessionID, map[string]any{
+		"name":      w.toolName,
+		"category":  w.category,
+		"arguments": argumentsInJSON,
+	})
 	if st != nil {
 		step = st.nextToolStep()
 		logTraceToolStart(ctx, step, w.toolName, w.category, argumentsInJSON)
@@ -442,6 +451,16 @@ func (w *toolCounter) InvokableRun(ctx context.Context, argumentsInJSON string, 
 	if st != nil {
 		logTraceToolEnd(ctx, step, w.toolName, w.category, len(result), time.Since(start), err, result)
 	}
+	data := map[string]any{
+		"name":       w.toolName,
+		"category":   w.category,
+		"elapsed_ms": time.Since(start).Milliseconds(),
+		"result_len": len(result),
+	}
+	if err != nil {
+		data["error"] = err.Error()
+	}
+	_ = publishRunEvent(ctx, w.eventBus, agentevent.TypeAgentToolFinished, sessionID, data)
 	return result, err
 }
 
@@ -450,7 +469,7 @@ func (a *Agent) WrapTool(t tool.BaseTool, category string) tool.BaseTool {
 		return t
 	}
 	if invokable, ok := t.(tool.InvokableTool); ok {
-		return newToolCounter(invokable, a.recorder, category)
+		return newToolCounter(invokable, a.recorder, category, a.eventBus)
 	}
 	return t
 }

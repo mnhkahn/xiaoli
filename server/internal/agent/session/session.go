@@ -40,6 +40,20 @@ type Manager struct {
 	prefix string
 }
 
+type Store interface {
+	GetOrCreate(ctx context.Context, channelName, channelUser, model string) (string, bool, error)
+	Create(ctx context.Context, channelName, channelUser, model string) (string, bool, error)
+	SetTitle(ctx context.Context, sessionID, title string)
+	GetEpoch(ctx context.Context, channelName, channelUser string) string
+	SetEpoch(ctx context.Context, channelName, channelUser, day string)
+	ListByChannel(ctx context.Context, channelName, channelUser string) ([]Info, error)
+	ListChannels(ctx context.Context) ([]ChannelEntry, error)
+	GetChannelSession(ctx context.Context, channelName, channelUser string) string
+	Get(ctx context.Context, sessionID string) (Info, error)
+	UpdateAfterChat(ctx context.Context, sessionID string, count int)
+	LoadMessages(ctx context.Context, sessionID string) []*schema.Message
+}
+
 func NewManager(client *redis.Client, prefix string) *Manager {
 	return &Manager{client: client, prefix: prefix}
 }

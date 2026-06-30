@@ -3,6 +3,8 @@ package wechat
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -151,6 +153,85 @@ func TestPollMessagesCarriesBufferAndDeliversUserMessagesOnly(t *testing.T) {
 	}
 }
 
+func TestDownloadImageUsesWeixinCDNAndDecryptsQueryMedia(t *testing.T) {
+	key := []byte("0123456789abcdef")
+	plaintext := []byte("fake-jpeg-bytes")
+	encrypted := encryptAesECBPKCS7ForTest(t, plaintext, key)
+
+	c := NewClient(ClientConfig{
+		BaseURL: "https://wechat.test",
+		Token:   "token",
+		HTTPDo: func(req *http.Request) (*http.Response, error) {
+			if req.Method != http.MethodGet {
+				t.Fatalf("request method = %s, want GET", req.Method)
+			}
+			if req.URL.Scheme != "https" || req.URL.Host != "novac2c.cdn.weixin.qq.com" || req.URL.Path != "/c2c/download" {
+				t.Fatalf("request URL = %s, want Weixin CDN download URL", req.URL.String())
+			}
+			if got := req.URL.Query().Get("encrypted_query_param"); got != "fileid=abc&token=secret" {
+				t.Fatalf("encrypted_query_param = %q, want original query", got)
+			}
+			for _, header := range []string{"Authorization", "AuthorizationType", "X-WECHAT-UIN"} {
+				if got := req.Header.Get(header); got != "" {
+					t.Fatalf("%s header = %q, want empty for CDN request", header, got)
+				}
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(encrypted)),
+				Header:     make(http.Header),
+			}, nil
+		},
+	})
+
+	contentType, body, err := c.DownloadImage(context.Background(), &ImageItem{
+		Media: &CDNMedia{
+			EncryptQueryParam: "fileid=abc&token=secret",
+			AESKey:            base64.StdEncoding.EncodeToString(key),
+		},
+	})
+	if err != nil {
+		t.Fatalf("DownloadImage() error = %v", err)
+	}
+	if contentType != "image/jpeg" {
+		t.Fatalf("contentType = %q, want image/jpeg fallback", contentType)
+	}
+	if string(body) != string(plaintext) {
+		t.Fatalf("body = %q, want decrypted plaintext %q", string(body), string(plaintext))
+	}
+}
+
+func TestDownloadImagePrefersImageAESKeyHex(t *testing.T) {
+	mediaKey := []byte("wrong-wrong-key!")
+	imageKey := []byte("0123456789abcdef")
+	plaintext := []byte("image-key-plaintext")
+	encrypted := encryptAesECBPKCS7ForTest(t, plaintext, imageKey)
+
+	c := NewClient(ClientConfig{
+		HTTPDo: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(encrypted)),
+				Header:     make(http.Header),
+			}, nil
+		},
+	})
+
+	_, body, err := c.DownloadImage(context.Background(), &ImageItem{
+		AESKeyHex: "30313233343536373839616263646566",
+		Media: &CDNMedia{
+			EncryptQueryParam: "fileid=abc",
+			AESKey:            base64.StdEncoding.EncodeToString(mediaKey),
+		},
+	})
+	if err != nil {
+		t.Fatalf("DownloadImage() error = %v", err)
+	}
+	if string(body) != string(plaintext) {
+		t.Fatalf("body = %q, want plaintext decrypted with image aeskey", string(body))
+	}
+}
+
 type fakeResponse struct {
 	path   string
 	status int
@@ -195,4 +276,19 @@ func fakeClientSequence(t *testing.T, sent any, responses ...fakeResponse) (*Cli
 			}, nil
 		},
 	}), &captured
+}
+
+func encryptAesECBPKCS7ForTest(t *testing.T, plaintext, key []byte) []byte {
+	t.Helper()
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatalf("NewCipher() error = %v", err)
+	}
+	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
+	padded := append(append([]byte{}, plaintext...), bytes.Repeat([]byte{byte(padding)}, padding)...)
+	encrypted := make([]byte, len(padded))
+	for offset := 0; offset < len(padded); offset += aes.BlockSize {
+		block.Encrypt(encrypted[offset:offset+aes.BlockSize], padded[offset:offset+aes.BlockSize])
+	}
+	return encrypted
 }

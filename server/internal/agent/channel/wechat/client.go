@@ -3,6 +3,7 @@ package wechat
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -11,13 +12,15 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
 
 const (
-	DefaultBaseURL = "https://ilinkai.weixin.qq.com"
-	BotType        = "3"
+	DefaultBaseURL    = "https://ilinkai.weixin.qq.com"
+	DefaultCDNBaseURL = "https://novac2c.cdn.weixin.qq.com/c2c"
+	BotType           = "3"
 )
 
 type MessageType int
@@ -84,9 +87,10 @@ type TextItem struct {
 }
 
 type ImageItem struct {
-	Media   *CDNMedia `json:"media,omitempty"`
-	AESKey  string    `json:"aes_key,omitempty"`
-	MidSize int       `json:"mid_size,omitempty"`
+	Media     *CDNMedia `json:"media,omitempty"`
+	AESKey    string    `json:"aes_key,omitempty"`
+	AESKeyHex string    `json:"aeskey,omitempty"`
+	MidSize   int       `json:"mid_size,omitempty"`
 }
 
 type VoiceItem struct {
@@ -111,6 +115,7 @@ type CDNMedia struct {
 	EncryptQueryParam string `json:"encrypt_query_param,omitempty"`
 	AESKey            string `json:"aes_key,omitempty"`
 	EncryptType       int    `json:"encrypt_type,omitempty"`
+	FullURL           string `json:"full_url,omitempty"`
 }
 
 type GetUpdatesRequest struct {
@@ -258,16 +263,26 @@ func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
 }
 
 func (c *Client) DownloadImage(ctx context.Context, image *ImageItem) (string, []byte, error) {
-	if image == nil || image.Media == nil || strings.TrimSpace(image.Media.EncryptQueryParam) == "" {
+	if image == nil || image.Media == nil {
 		return "", nil, fmt.Errorf("wechat image missing media URL")
 	}
 	ref := strings.TrimSpace(image.Media.EncryptQueryParam)
+	fullURL := strings.TrimSpace(image.Media.FullURL)
+	if ref == "" && fullURL == "" {
+		return "", nil, fmt.Errorf("wechat image missing media URL")
+	}
 	endpoint := ""
+	useBotAuth := false
 	switch {
+	case fullURL != "":
+		endpoint = fullURL
 	case strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://"):
 		endpoint = ref
 	case strings.HasPrefix(ref, "/"):
 		endpoint = strings.TrimRight(c.BaseURL, "/") + ref
+		useBotAuth = true
+	case ref != "":
+		endpoint = strings.TrimRight(DefaultCDNBaseURL, "/") + "/download?encrypted_query_param=" + url.QueryEscape(ref)
 	default:
 		return "", nil, fmt.Errorf("wechat image media format is not supported yet")
 	}
@@ -275,10 +290,12 @@ func (c *Client) DownloadImage(ctx context.Context, image *ImageItem) (string, [
 	if err != nil {
 		return "", nil, fmt.Errorf("wechat image request: %w", err)
 	}
-	req.Header.Set("AuthorizationType", "ilink_bot_token")
-	req.Header.Set("X-WECHAT-UIN", generateUIN())
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
+	if useBotAuth {
+		req.Header.Set("AuthorizationType", "ilink_bot_token")
+		req.Header.Set("X-WECHAT-UIN", generateUIN())
+		if c.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.Token)
+		}
 	}
 	resp, err := c.HTTPDo(req)
 	if err != nil {
@@ -292,11 +309,102 @@ func (c *Client) DownloadImage(ctx context.Context, image *ImageItem) (string, [
 	if resp.StatusCode >= 400 {
 		return "", nil, fmt.Errorf("wechat image http %d: %s", resp.StatusCode, string(raw))
 	}
+	if key, ok, err := imageAESKey(image); err != nil {
+		return "", nil, err
+	} else if ok {
+		decrypted, err := decryptAESECBPKCS7(raw, key)
+		if err != nil {
+			return "", nil, fmt.Errorf("wechat image decrypt: %w", err)
+		}
+		raw = decrypted
+	}
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "image/jpeg"
 	}
 	return contentType, raw, nil
+}
+
+func imageAESKey(image *ImageItem) ([]byte, bool, error) {
+	if image == nil {
+		return nil, false, nil
+	}
+	if keyHex := strings.TrimSpace(image.AESKeyHex); keyHex != "" {
+		key, err := hex.DecodeString(keyHex)
+		if err != nil {
+			return nil, false, fmt.Errorf("wechat image aeskey hex: %w", err)
+		}
+		if len(key) != aes.BlockSize {
+			return nil, false, fmt.Errorf("wechat image aeskey hex length = %d, want 16", len(key))
+		}
+		return key, true, nil
+	}
+	keyBase64 := ""
+	if image.Media != nil {
+		keyBase64 = strings.TrimSpace(image.Media.AESKey)
+	}
+	if keyBase64 == "" {
+		keyBase64 = strings.TrimSpace(image.AESKey)
+	}
+	if keyBase64 == "" {
+		return nil, false, nil
+	}
+	decoded, err := base64.StdEncoding.DecodeString(keyBase64)
+	if err != nil {
+		return nil, false, fmt.Errorf("wechat image aes_key base64: %w", err)
+	}
+	if len(decoded) == aes.BlockSize {
+		return decoded, true, nil
+	}
+	if len(decoded) == 32 {
+		hexText := string(decoded)
+		if isHexString(hexText) {
+			key, err := hex.DecodeString(hexText)
+			if err != nil {
+				return nil, false, fmt.Errorf("wechat image aes_key hex: %w", err)
+			}
+			if len(key) == aes.BlockSize {
+				return key, true, nil
+			}
+		}
+	}
+	return nil, false, fmt.Errorf("wechat image aes_key decoded length = %d, want 16 raw bytes or 32 hex chars", len(decoded))
+}
+
+func decryptAESECBPKCS7(ciphertext, key []byte) ([]byte, error) {
+	if len(key) != aes.BlockSize {
+		return nil, fmt.Errorf("key length = %d, want 16", len(key))
+	}
+	if len(ciphertext) == 0 || len(ciphertext)%aes.BlockSize != 0 {
+		return nil, fmt.Errorf("ciphertext length = %d, want positive multiple of 16", len(ciphertext))
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	plain := make([]byte, len(ciphertext))
+	for offset := 0; offset < len(ciphertext); offset += aes.BlockSize {
+		block.Decrypt(plain[offset:offset+aes.BlockSize], ciphertext[offset:offset+aes.BlockSize])
+	}
+	padding := int(plain[len(plain)-1])
+	if padding == 0 || padding > aes.BlockSize || padding > len(plain) {
+		return nil, fmt.Errorf("invalid pkcs7 padding")
+	}
+	for i := len(plain) - padding; i < len(plain); i++ {
+		if int(plain[i]) != padding {
+			return nil, fmt.Errorf("invalid pkcs7 padding")
+		}
+	}
+	return plain[:len(plain)-padding], nil
+}
+
+func isHexString(s string) bool {
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
+			return false
+		}
+	}
+	return true
 }
 
 func GetTypingTicket(ctx context.Context, c *Client, toUserID, contextToken string) (string, error) {

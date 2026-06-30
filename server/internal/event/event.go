@@ -13,6 +13,13 @@ const (
 	// Message events
 	TypeMessagePartDelta = "message.part.delta"
 
+	// Agent run events
+	TypeAgentRunStarted   = "agent.run.started"
+	TypeAgentRunCompleted = "agent.run.completed"
+	TypeAgentRunFailed    = "agent.run.failed"
+	TypeAgentToolStarted  = "agent.tool.started"
+	TypeAgentToolFinished = "agent.tool.finished"
+
 	// Session events
 	TypeSessionDiff  = "session.diff"
 	TypeSessionError = "session.error"
@@ -50,13 +57,13 @@ type UnsubscribeFunc func()
 
 // Event represents a generic event in the system
 type Event struct {
-	ID         string         `json:"id"`          // Unique event ID (ULID)
-	Type       string         `json:"type"`        // Event type, e.g., "todo.updated"
-	SessionID  string         `json:"session_id"`  // Optional: associated session
-	ChannelID  string         `json:"channel_id"`  // Optional: target channel
-	Data       any            `json:"data"`        // Event payload
-	Timestamp  time.Time      `json:"timestamp"`   // Event creation time
-	Metadata   map[string]any `json:"metadata"`    // Extended fields
+	ID        string         `json:"id"`         // Unique event ID (ULID)
+	Type      string         `json:"type"`       // Event type, e.g., "todo.updated"
+	SessionID string         `json:"session_id"` // Optional: associated session
+	ChannelID string         `json:"channel_id"` // Optional: target channel
+	Data      any            `json:"data"`       // Event payload
+	Timestamp time.Time      `json:"timestamp"`  // Event creation time
+	Metadata  map[string]any `json:"metadata"`   // Extended fields
 }
 
 // === Event Data Structures ===
@@ -65,18 +72,18 @@ type Event struct {
 // Contains tasks scoped to a specific parent session.
 // Subscribers may filter by ParentSession if handling multiple concurrent sessions.
 type TodoUpdatedData struct {
-	SessionID       string `json:"session_id"`        // The parent session this update is scoped to
-	ChangedTaskID   string `json:"changed_task_id"`   // Which task triggered this update (empty if all changed)
-	Todos           []Todo `json:"todos"`             // All tasks for this session
+	SessionID     string `json:"session_id"`      // The parent session this update is scoped to
+	ChangedTaskID string `json:"changed_task_id"` // Which task triggered this update (empty if all changed)
+	Todos         []Todo `json:"todos"`           // All tasks for this session
 }
 
 type Todo struct {
 	ID            string `json:"id"`
 	Title         string `json:"title"`
-	Status        string `json:"status"`      // pending, running, completed, cancelled, failed
-	Progress      int    `json:"progress"`    // 0-100
-	ChannelID     string `json:"channel_id"`  // Which channel this task belongs to
-	SessionID     string `json:"session_id"`  // Associated session
+	Status        string `json:"status"`         // pending, running, completed, cancelled, failed
+	Progress      int    `json:"progress"`       // 0-100
+	ChannelID     string `json:"channel_id"`     // Which channel this task belongs to
+	SessionID     string `json:"session_id"`     // Associated session
 	ParentSession string `json:"parent_session"` // Parent session for background tasks
 	StartedAt     int64  `json:"started_at"`
 	CompletedAt   int64  `json:"completed_at,omitempty"`
