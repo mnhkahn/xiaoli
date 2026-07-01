@@ -1,0 +1,714 @@
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+type explorerMode string
+
+const (
+	explorerTree explorerMode = "tree"
+	explorerDiff explorerMode = "diff"
+)
+
+type explorerEntry struct {
+	Path   string
+	Label  string
+	Status string
+	Staged bool
+	Depth  int
+	IsDir  bool
+}
+
+type tuiExplorer struct {
+	mode        explorerMode
+	cwd         string
+	width       int
+	height      int
+	leftWidth   int
+	selected    int
+	leftScroll  int
+	rightScroll int
+	entries     []explorerEntry
+	expanded    map[string]bool
+	previewPath string
+	preview     string
+	previewRaw  string
+	previewCode bool
+	err         string
+}
+
+func newTreeExplorer(cwd string, width, height int) *tuiExplorer {
+	ex := &tuiExplorer{
+		mode:      explorerTree,
+		cwd:       cwd,
+		width:     width,
+		height:    height,
+		expanded:  map[string]bool{"": true},
+		leftWidth: explorerLeftWidth(width),
+	}
+	ex.reloadTree()
+	ex.selectFirstFile()
+	return ex
+}
+
+func newDiffExplorer(cwd string, width, height int) *tuiExplorer {
+	ex := &tuiExplorer{
+		mode:      explorerDiff,
+		cwd:       cwd,
+		width:     width,
+		height:    height,
+		leftWidth: explorerLeftWidth(width),
+	}
+	ex.reloadDiff()
+	ex.refreshPreview()
+	return ex
+}
+
+func (e *tuiExplorer) resize(width, height int) {
+	if e == nil {
+		return
+	}
+	e.width = width
+	e.height = height
+	e.leftWidth = explorerLeftWidth(width)
+}
+
+func (e *tuiExplorer) handleKey(msg tea.KeyMsg) (*tuiExplorer, tea.Cmd, bool) {
+	if e == nil {
+		return e, nil, false
+	}
+	switch msg.String() {
+	case "q", "esc":
+		return nil, tea.EnableMouseCellMotion, true
+	case "up", "k":
+		e.moveSelection(-1)
+		return e, nil, true
+	case "down", "j":
+		e.moveSelection(1)
+		return e, nil, true
+	case "pgup", "ctrl+u":
+		e.moveSelection(-e.listHeight())
+		return e, nil, true
+	case "pgdown", "ctrl+d":
+		e.moveSelection(e.listHeight())
+		return e, nil, true
+	case "home":
+		e.selected = 0
+		e.ensureSelectionVisible()
+		e.refreshPreview()
+		return e, nil, true
+	case "end":
+		if len(e.entries) > 0 {
+			e.selected = len(e.entries) - 1
+			e.ensureSelectionVisible()
+			e.refreshPreview()
+		}
+		return e, nil, true
+	case "enter":
+		e.activateSelected()
+		return e, nil, true
+	case "y":
+		text := e.copyText()
+		if strings.TrimSpace(text) == "" {
+			e.err = "没有可复制的内容"
+			return e, nil, true
+		}
+		if err := copyTextToClipboard(text); err != nil {
+			e.err = "复制失败：" + err.Error()
+		} else {
+			e.err = "已复制"
+		}
+		return e, nil, true
+	}
+	return e, nil, false
+}
+
+func (e *tuiExplorer) handleMouse(msg tea.MouseMsg) bool {
+	if e == nil {
+		return false
+	}
+	left := msg.X < e.leftWidth
+	switch msg.Type {
+	case tea.MouseWheelUp:
+		if left {
+			e.leftScroll = max(0, e.leftScroll-3)
+		} else {
+			e.rightScroll = max(0, e.rightScroll-3)
+		}
+		return true
+	case tea.MouseWheelDown:
+		if left {
+			e.leftScroll = min(max(0, len(e.entries)-e.listHeight()), e.leftScroll+3)
+		} else {
+			e.rightScroll = min(max(0, len(e.previewLines())-e.previewHeight()), e.rightScroll+3)
+		}
+		return true
+	case tea.MouseLeft:
+		if msg.Action != tea.MouseActionPress || !left {
+			return true
+		}
+		row := msg.Y - 3
+		if row < 0 || row >= e.listHeight() {
+			return true
+		}
+		idx := e.leftScroll + row
+		if idx < 0 || idx >= len(e.entries) {
+			return true
+		}
+		e.selected = idx
+		e.ensureSelectionVisible()
+		e.activateSelected()
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *tuiExplorer) View() string {
+	if e == nil {
+		return ""
+	}
+	width := max(40, e.width)
+	height := max(10, e.height)
+	e.leftWidth = explorerLeftWidth(width)
+	frameW := boxStyle.GetHorizontalFrameSize()
+	leftContentWidth := max(12, e.leftWidth-frameW)
+	rightTotalWidth := max(20, width-e.leftWidth)
+	rightContentWidth := max(12, rightTotalWidth-frameW)
+	bodyHeight := max(4, height-5-boxStyle.GetVerticalFrameSize())
+
+	title := "Xiaoli /" + string(e.mode)
+	if e.mode == explorerTree {
+		title = "Xiaoli /tree"
+	}
+	header := titleStyle.Render(title) + "  " + hintStyle.Render("cwd: "+compactPath(e.cwd, max(12, width-28)))
+	help := hintStyle.Render("q close · click select · wheel scroll · y copy")
+
+	left := e.renderLeft(leftContentWidth, bodyHeight)
+	right := e.renderRight(rightContentWidth, bodyHeight)
+	body := lipgloss.JoinHorizontal(lipgloss.Top,
+		boxStyle.Width(leftContentWidth).Height(bodyHeight).Render(left),
+		boxStyle.Width(rightContentWidth).Height(bodyHeight).Render(right),
+	)
+	footer := ""
+	if e.err != "" {
+		footer = eventStyle.Render(truncateDisplay(e.err, width))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, fitDisplay(header, width), body, fitDisplay(help, width), footer)
+}
+
+func (e *tuiExplorer) renderLeft(width, height int) string {
+	title := "Project Tree"
+	if e.mode == explorerDiff {
+		title = "Changed Files"
+	}
+	lines := []string{titleStyle.Render(title), ""}
+	visible := e.entries
+	start := clamp(e.leftScroll, 0, len(visible))
+	end := min(len(visible), start+max(0, height-2))
+	for i := start; i < end; i++ {
+		entry := visible[i]
+		prefix := "  "
+		style := eventStyle
+		if i == e.selected {
+			prefix = "› "
+			style = userStyle
+		}
+		line := prefix + e.entryLabel(entry)
+		lines = append(lines, style.Render(fitDisplay(line, width)))
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (e *tuiExplorer) renderRight(width, height int) string {
+	title := "Preview"
+	if e.mode == explorerDiff {
+		title = "Diff"
+	} else if e.previewPath != "" {
+		if lang := languageForPath(e.previewPath); lang != "" {
+			title = "Preview · " + lang
+		}
+	}
+	lines := []string{titleStyle.Render(title), ""}
+	for _, line := range visibleLines(e.previewLines(), e.rightScroll, max(0, height-3)) {
+		if e.mode == explorerDiff {
+			lines = append(lines, styleDiffLine(line, width))
+		} else {
+			lines = append(lines, stylePreviewLine(line, width))
+		}
+	}
+	if e.previewPath != "" {
+		lines = append(lines, hintStyle.Render(fitDisplay("file: "+e.previewPath, width)))
+	}
+	for len(lines) < height {
+		lines = append(lines, "")
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (e *tuiExplorer) entryLabel(entry explorerEntry) string {
+	if e.mode == explorerDiff {
+		marker := "[ ]"
+		if entry.Staged {
+			marker = "[+]"
+		} else if strings.HasPrefix(entry.Status, "??") {
+			marker = "[?]"
+		}
+		return strings.TrimSpace(marker + " " + entry.Status + "  " + entry.Path)
+	}
+	indent := strings.Repeat("  ", entry.Depth)
+	if entry.IsDir {
+		marker := "▸"
+		if e.expanded[entry.Path] {
+			marker = "▾"
+		}
+		return indent + marker + " " + entry.Label
+	}
+	return indent + "  " + entry.Label
+}
+
+func (e *tuiExplorer) reloadTree() {
+	paths, err := projectFiles(e.cwd)
+	if err != nil {
+		e.err = err.Error()
+		paths = nil
+	}
+	root := buildTree(paths)
+	e.entries = e.visibleTreeEntries(root)
+}
+
+func (e *tuiExplorer) reloadDiff() {
+	entries, err := changedFiles(e.cwd)
+	if err != nil {
+		e.err = err.Error()
+	}
+	e.entries = entries
+}
+
+func (e *tuiExplorer) visibleTreeEntries(root *treeNode) []explorerEntry {
+	var out []explorerEntry
+	var walk func(node *treeNode, depth int)
+	walk = func(node *treeNode, depth int) {
+		for _, child := range node.sortedChildren() {
+			path := child.path
+			out = append(out, explorerEntry{
+				Path:  path,
+				Label: child.name,
+				Depth: depth,
+				IsDir: child.dir,
+			})
+			if child.dir && e.expanded[path] {
+				walk(child, depth+1)
+			}
+		}
+	}
+	walk(root, 0)
+	return out
+}
+
+func (e *tuiExplorer) selectFirstFile() {
+	for attempt := 0; attempt < 8; attempt++ {
+		for i, entry := range e.entries {
+			if !entry.IsDir {
+				e.selected = i
+				e.refreshPreview()
+				return
+			}
+		}
+		expanded := false
+		for _, entry := range e.entries {
+			if entry.IsDir && !e.expanded[entry.Path] {
+				e.expanded[entry.Path] = true
+				expanded = true
+				break
+			}
+		}
+		if !expanded {
+			break
+		}
+		e.reloadTree()
+	}
+	e.refreshPreview()
+}
+
+func (e *tuiExplorer) activateSelected() {
+	if len(e.entries) == 0 || e.selected < 0 || e.selected >= len(e.entries) {
+		return
+	}
+	entry := e.entries[e.selected]
+	if e.mode == explorerTree && entry.IsDir {
+		e.expanded[entry.Path] = !e.expanded[entry.Path]
+		e.reloadTree()
+		if e.selected >= len(e.entries) {
+			e.selected = max(0, len(e.entries)-1)
+		}
+		e.ensureSelectionVisible()
+		return
+	}
+	if e.mode == explorerDiff && !entry.IsDir {
+		if err := e.toggleSelectedStage(entry); err != nil {
+			e.err = err.Error()
+		}
+		return
+	}
+	e.refreshPreview()
+}
+
+func (e *tuiExplorer) toggleSelectedStage(entry explorerEntry) error {
+	add, args := stageToggleArgs(entry)
+	if _, err := runGit(e.cwd, args...); err != nil {
+		action := "暂存"
+		if !add {
+			action = "取消暂存"
+		}
+		return fmt.Errorf("%s失败: %w", action, err)
+	}
+	if add {
+		e.err = "已暂存 " + entry.Path
+	} else {
+		e.err = "已取消暂存 " + entry.Path
+	}
+	e.reloadDiff()
+	if e.selected >= len(e.entries) {
+		e.selected = max(0, len(e.entries)-1)
+	}
+	e.ensureSelectionVisible()
+	e.refreshPreview()
+	return nil
+}
+
+func (e *tuiExplorer) refreshPreview() {
+	e.rightScroll = 0
+	e.preview = ""
+	e.previewRaw = ""
+	e.previewCode = false
+	e.previewPath = ""
+	if len(e.entries) == 0 || e.selected < 0 || e.selected >= len(e.entries) {
+		if e.mode == explorerDiff {
+			e.preview = "No changes."
+		}
+		return
+	}
+	entry := e.entries[e.selected]
+	if entry.IsDir {
+		e.preview = "Click a file to preview it."
+		e.previewPath = entry.Path
+		return
+	}
+	e.previewPath = entry.Path
+	var err error
+	if e.mode == explorerDiff {
+		e.preview, err = fileDiff(e.cwd, entry)
+		e.previewRaw = e.preview
+	} else {
+		e.preview, err = filePreview(e.cwd, entry.Path)
+		e.previewRaw = e.preview
+		if err == nil {
+			e.preview = highlightCode(entry.Path, e.preview)
+			e.previewCode = true
+		}
+	}
+	if err != nil {
+		e.preview = err.Error()
+		e.previewRaw = e.preview
+	}
+}
+
+func (e *tuiExplorer) moveSelection(delta int) {
+	if len(e.entries) == 0 {
+		return
+	}
+	e.selected = clamp(e.selected+delta, 0, len(e.entries)-1)
+	e.ensureSelectionVisible()
+	e.refreshPreview()
+}
+
+func (e *tuiExplorer) ensureSelectionVisible() {
+	height := e.listHeight()
+	if height <= 0 {
+		return
+	}
+	if e.selected < e.leftScroll {
+		e.leftScroll = e.selected
+	}
+	if e.selected >= e.leftScroll+height {
+		e.leftScroll = e.selected - height + 1
+	}
+	e.leftScroll = clamp(e.leftScroll, 0, max(0, len(e.entries)-height))
+}
+
+func (e *tuiExplorer) listHeight() int {
+	return max(1, e.height-7)
+}
+
+func (e *tuiExplorer) previewHeight() int {
+	return max(1, e.height-8)
+}
+
+func (e *tuiExplorer) previewLines() []string {
+	if e.preview == "" {
+		return nil
+	}
+	return strings.Split(e.preview, "\n")
+}
+
+func (e *tuiExplorer) copyText() string {
+	if e.mode == explorerDiff {
+		return e.previewRaw
+	}
+	if len(e.entries) == 0 || e.selected < 0 || e.selected >= len(e.entries) {
+		return ""
+	}
+	if e.entries[e.selected].IsDir {
+		return ""
+	}
+	text, err := readProjectFile(e.cwd, e.entries[e.selected].Path, 512*1024)
+	if err != nil {
+		return ""
+	}
+	return text
+}
+
+type treeNode struct {
+	name     string
+	path     string
+	dir      bool
+	children map[string]*treeNode
+}
+
+func buildTree(paths []string) *treeNode {
+	root := &treeNode{dir: true, children: map[string]*treeNode{}}
+	for _, path := range paths {
+		parts := strings.Split(filepath.ToSlash(path), "/")
+		cur := root
+		var prefix []string
+		for i, part := range parts {
+			if part == "" {
+				continue
+			}
+			prefix = append(prefix, part)
+			child, ok := cur.children[part]
+			if !ok {
+				child = &treeNode{
+					name:     part,
+					path:     strings.Join(prefix, "/"),
+					dir:      i < len(parts)-1,
+					children: map[string]*treeNode{},
+				}
+				cur.children[part] = child
+			}
+			if i < len(parts)-1 {
+				child.dir = true
+			}
+			cur = child
+		}
+	}
+	return root
+}
+
+func (n *treeNode) sortedChildren() []*treeNode {
+	if n == nil {
+		return nil
+	}
+	out := make([]*treeNode, 0, len(n.children))
+	for _, child := range n.children {
+		out = append(out, child)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].dir != out[j].dir {
+			return out[i].dir
+		}
+		return out[i].name < out[j].name
+	})
+	return out
+}
+
+func projectFiles(cwd string) ([]string, error) {
+	if out, err := runGit(cwd, "ls-files", "-co", "--exclude-standard"); err == nil {
+		return cleanPathLines(out), nil
+	}
+	var paths []string
+	err := filepath.WalkDir(cwd, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		name := d.Name()
+		if d.IsDir() && (name == ".git" || name == "node_modules" || name == "dist" || name == "build") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(cwd, path)
+		if err == nil {
+			paths = append(paths, filepath.ToSlash(rel))
+		}
+		return nil
+	})
+	sort.Strings(paths)
+	return paths, err
+}
+
+func changedFiles(cwd string) ([]explorerEntry, error) {
+	out, err := runGit(cwd, "status", "--porcelain=v1")
+	if err != nil {
+		return nil, err
+	}
+	var entries []explorerEntry
+	for _, line := range strings.Split(out, "\n") {
+		entry, ok := parseChangedFileStatus(line)
+		if ok {
+			entries = append(entries, entry)
+		}
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	return entries, nil
+}
+
+func parseChangedFileStatus(line string) (explorerEntry, bool) {
+	if len(line) < 4 {
+		return explorerEntry{}, false
+	}
+	rawStatus := line[:2]
+	status := strings.TrimSpace(rawStatus)
+	path := strings.TrimSpace(line[3:])
+	if strings.Contains(path, " -> ") {
+		parts := strings.Split(path, " -> ")
+		path = strings.TrimSpace(parts[len(parts)-1])
+	}
+	if path == "" {
+		return explorerEntry{}, false
+	}
+	staged := rawStatus[0] != ' ' && rawStatus[0] != '?'
+	return explorerEntry{Path: path, Status: status, Staged: staged}, true
+}
+
+func stageToggleArgs(entry explorerEntry) (bool, []string) {
+	if entry.Staged {
+		return false, []string{"restore", "--staged", "--", entry.Path}
+	}
+	return true, []string{"add", "--", entry.Path}
+}
+
+func filePreview(cwd, rel string) (string, error) {
+	return readProjectFile(cwd, rel, 256*1024)
+}
+
+func fileDiff(cwd string, entry explorerEntry) (string, error) {
+	if strings.HasPrefix(entry.Status, "??") {
+		text, err := readProjectFile(cwd, entry.Path, 256*1024)
+		if err != nil {
+			return "", err
+		}
+		return "untracked file: " + entry.Path + "\n\n" + text, nil
+	}
+	var parts []string
+	if out, err := runGit(cwd, "diff", "--", entry.Path); err == nil && strings.TrimSpace(out) != "" {
+		parts = append(parts, out)
+	}
+	if out, err := runGit(cwd, "diff", "--cached", "--", entry.Path); err == nil && strings.TrimSpace(out) != "" {
+		parts = append(parts, out)
+	}
+	if len(parts) == 0 {
+		return "No diff for " + entry.Path, nil
+	}
+	return strings.Join(parts, "\n"), nil
+}
+
+func readProjectFile(cwd, rel string, maxBytes int64) (string, error) {
+	clean := filepath.Clean(rel)
+	if filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean == ".." {
+		return "", fmt.Errorf("path outside project: %s", rel)
+	}
+	path := filepath.Join(cwd, clean)
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("%s is a directory", rel)
+	}
+	if info.Size() > maxBytes {
+		return fmt.Sprintf("%s is %.1f KB, preview skipped", rel, float64(info.Size())/1024), nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if bytes.IndexByte(data, 0) >= 0 {
+		return "binary file preview skipped", nil
+	}
+	return string(data), nil
+}
+
+func runGit(cwd string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = cwd
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func cleanPathLines(s string) []string {
+	var paths []string
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			paths = append(paths, filepath.ToSlash(line))
+		}
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func visibleLines(lines []string, scroll, height int) []string {
+	if height <= 0 || len(lines) == 0 {
+		return nil
+	}
+	scroll = clamp(scroll, 0, max(0, len(lines)-height))
+	end := min(len(lines), scroll+height)
+	return lines[scroll:end]
+}
+
+func stylePreviewLine(line string, width int) string {
+	return fitDisplay(line, width)
+}
+
+func styleDiffLine(line string, width int) string {
+	return highlightDiffLine(fitDisplay(line, width))
+}
+
+func explorerLeftWidth(width int) int {
+	if width < 90 {
+		return max(28, width/2)
+	}
+	return min(48, max(32, width/3))
+}
+
+func clamp(n, low, high int) int {
+	if n < low {
+		return low
+	}
+	if n > high {
+		return high
+	}
+	return n
+}

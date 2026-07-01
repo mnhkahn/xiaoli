@@ -4,13 +4,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 )
 
 func TestComposeSidebarKeepsKeys(t *testing.T) {
 	top := []string{"title", "status", "model", "cwd", "context", "log"}
 	middle := []string{"tasks", "- one", "MCP", "- up"}
-	keys := []string{"keys", "enter send", "wheel scroll", "esc quit"}
+	keys := []string{"workspace", "repo", "main"}
 
 	got := composeSidebar(top, middle, keys, 8)
 	if len(got) != 8 {
@@ -23,6 +24,77 @@ func TestComposeSidebarKeepsKeys(t *testing.T) {
 	}
 	if !containsLine(got, "...") {
 		t.Fatalf("composeSidebar() = %#v, want ellipsis when top is truncated", got)
+	}
+}
+
+func TestSidebarFooterShowsCWDAndGit(t *testing.T) {
+	lines := sidebarFooterLines(model{cwd: "/tmp/work/repo", gitStatus: "main ↑2"}, 40)
+	if !containsLine(lines, "repo") {
+		t.Fatalf("sidebarFooterLines() = %#v, want cwd basename", lines)
+	}
+	if !containsLine(lines, "main ↑2") {
+		t.Fatalf("sidebarFooterLines() = %#v, want git status", lines)
+	}
+}
+
+func TestParseGitSyncSummary(t *testing.T) {
+	got := parseGitSyncSummary("## main...origin/main [ahead 2, behind 1]\n M a.go\n?? b.go\n")
+	if got != "main ↑2↓1 *2" {
+		t.Fatalf("parseGitSyncSummary() = %q", got)
+	}
+	got = parseGitSyncSummary("## main...origin/main\n")
+	if got != "main ✓" {
+		t.Fatalf("parseGitSyncSummary clean = %q", got)
+	}
+}
+
+func TestParseGitSyncState(t *testing.T) {
+	state := parseGitSyncState("## main...origin/main [ahead 2]\n")
+	if state.Branch != "main" || state.Ahead != 2 || state.Behind != 0 || !state.Actionable() {
+		t.Fatalf("parseGitSyncState(ahead) = %#v", state)
+	}
+	state = parseGitSyncState("## main...origin/main [behind 1]\n M a.go\n")
+	if state.Branch != "main" || state.Ahead != 0 || state.Behind != 1 || state.Dirty != 1 {
+		t.Fatalf("parseGitSyncState(behind) = %#v", state)
+	}
+}
+
+func TestGitSyncAction(t *testing.T) {
+	action, args := gitSyncAction(gitSyncState{Ahead: 2})
+	if action != "push" || strings.Join(args, " ") != "push" {
+		t.Fatalf("gitSyncAction(ahead) = %q %#v", action, args)
+	}
+	action, args = gitSyncAction(gitSyncState{Behind: 1})
+	if action != "pull" || strings.Join(args, " ") != "pull --ff-only" {
+		t.Fatalf("gitSyncAction(behind) = %q %#v", action, args)
+	}
+	action, args = gitSyncAction(gitSyncState{Ahead: 1, Behind: 1})
+	if action != "pull" || strings.Join(args, " ") != "pull --rebase" {
+		t.Fatalf("gitSyncAction(diverged) = %q %#v", action, args)
+	}
+}
+
+func TestInputHistoryNavigation(t *testing.T) {
+	input := textinput.New()
+	input.SetValue("draft")
+	m := model{input: input}
+	m.recordInputHistory("first")
+	m.recordInputHistory("second")
+
+	if !m.navigateInputHistory(-1) || m.input.Value() != "second" {
+		t.Fatalf("first up input = %q", m.input.Value())
+	}
+	if !m.navigateInputHistory(-1) || m.input.Value() != "first" {
+		t.Fatalf("second up input = %q", m.input.Value())
+	}
+	if m.navigateInputHistory(-1) {
+		t.Fatalf("third up should not navigate")
+	}
+	if !m.navigateInputHistory(1) || m.input.Value() != "second" {
+		t.Fatalf("first down input = %q", m.input.Value())
+	}
+	if !m.navigateInputHistory(1) || m.input.Value() != "draft" {
+		t.Fatalf("second down input = %q", m.input.Value())
 	}
 }
 
@@ -141,6 +213,17 @@ func TestTranscriptPlainText(t *testing.T) {
 	got := transcriptPlainText(items)
 	if !strings.Contains(got, "user: 你好") || !strings.Contains(got, "assistant: 世界") {
 		t.Fatalf("transcriptPlainText() = %q", got)
+	}
+}
+
+func TestExitLogoUsesFigletStyle(t *testing.T) {
+	logo := exitLogo()
+	plain := stripTestANSI(logo)
+	if !strings.Contains(plain, "___") || !strings.Contains(plain, "/ __") {
+		t.Fatalf("exitLogo() = %q, want FIGlet-like strokes", logo)
+	}
+	if len(strings.Split(strings.TrimSpace(plain), "\n")) < 8 {
+		t.Fatalf("exitLogo() lines too few: %q", logo)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -56,19 +57,46 @@ type eventMsg struct {
 	event agentevent.Event
 }
 
+type gitSyncDoneMsg struct {
+	action string
+	output string
+	err    error
+}
+
+type gitSyncState struct {
+	Branch string
+	Ahead  int
+	Behind int
+	Dirty  int
+	Valid  bool
+}
+
+func (s gitSyncState) Actionable() bool {
+	return s.Valid && (s.Ahead > 0 || s.Behind > 0)
+}
+
 type model struct {
 	app             *localapp.App
 	events          chan agentevent.Event
 	chatMsgs        chan tea.Msg
 	input           textinput.Model
+	inputHistory    []string
+	historyIndex    int
+	historyDraft    string
+	shellHistory    []string
+	shellHistIndex  int
+	shellHistDraft  string
 	items           []transcriptItem
 	sessionID       string
 	cwd             string
+	gitStatus       string
+	gitSync         gitSyncState
 	logPath         string
 	contextUsage    *agentruntime.ContextUsage
 	scroll          int
 	viewport        viewport.Model
 	streamingIndex  int
+	hadChatInput    bool
 	width           int
 	height          int
 	busy            bool
@@ -78,6 +106,7 @@ type model struct {
 	pendingQuestion string
 	pendingOptions  []string
 	pendingChoice   int
+	explorer        *tuiExplorer
 	quitting        bool
 }
 
@@ -85,6 +114,7 @@ var (
 	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86"))
 	userStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75"))
 	agentStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("114"))
+	shellStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))
 	eventStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	hintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
@@ -133,7 +163,7 @@ func main() {
 		return
 	}
 
-	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "xiaoli-tui: %v\n", err)
@@ -204,6 +234,7 @@ func newModel(app *localapp.App, resumeSessionID string, logPath string) model {
 		items = restoreTranscript(app.Agent, resumeSessionID)
 		items = append(items, transcriptItem{role: "system", text: "Resumed session " + resumeSessionID})
 	}
+	gitSync := gitSyncStateForCWD(cwd)
 
 	return model{
 		app:            app,
@@ -212,6 +243,8 @@ func newModel(app *localapp.App, resumeSessionID string, logPath string) model {
 		input:          input,
 		sessionID:      strings.TrimSpace(resumeSessionID),
 		cwd:            cwd,
+		gitStatus:      gitSync.Format(),
+		gitSync:        gitSync,
 		logPath:        logPath,
 		viewport:       vp,
 		status:         "idle",
@@ -225,6 +258,10 @@ func (m model) Init() tea.Cmd {
 }
 
 func printExitSummary(app *localapp.App, m model, configPath string) {
+	fmt.Println(exitLogo())
+	if !m.hadChatInput {
+		return
+	}
 	sessionID := strings.TrimSpace(m.sessionID)
 	if sessionID == "" && app != nil && app.Agent != nil && app.Agent.SessionManager() != nil {
 		sessionID = app.Agent.SessionManager().GetChannelSession(context.Background(), channelName, channelUser)
@@ -235,7 +272,6 @@ func printExitSummary(app *localapp.App, m model, configPath string) {
 			title = info.Title
 		}
 	}
-	fmt.Println(exitLogo())
 	fmt.Printf("  Session   %s\n", title)
 	if sessionID != "" {
 		fmt.Printf("  ID        %s\n", sessionID)
@@ -246,41 +282,37 @@ func printExitSummary(app *localapp.App, m model, configPath string) {
 }
 
 func exitLogo() string {
-	return renderBanner("cyeam.com")
+	return renderFigletLogo()
 }
 
-func renderBanner(text string) string {
-	glyphs := bannerGlyphs()
-	lines := make([]string, 5)
-	for _, r := range strings.ToUpper(text) {
-		glyph, ok := glyphs[r]
-		if !ok {
-			glyph = glyphs[' ']
-		}
-		for i := range lines {
-			if lines[i] != "" {
-				lines[i] += " "
-			}
-			lines[i] += glyph[i]
-		}
+func renderFigletLogo() string {
+	lines := []string{
+		"  ___ _   _  ___  __ _ _ __ ___      ___ ___  _ __ ___",
+		" / __| | | |/ _ \\/ _` | '_ ` _ \\    / __/ _ \\| '_ ` _ \\",
+		"| (__| |_| |  __/ (_| | | | | | |  | (_| (_) | | | | | |",
+		" \\___|\\__, |\\___|\\__,_|_| |_| |_| (_)___\\___/|_| |_| |_|",
+		"      |___/",
 	}
-	for i := range lines {
-		lines[i] = strings.TrimRight(lines[i], " ")
+	mainColors := []lipgloss.Color{"81", "45", "51", "49", "86"}
+	shadow := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Faint(true)
+	fill := lipgloss.NewStyle().Foreground(lipgloss.Color("30")).Faint(true)
+	var out []string
+	out = append(out, "")
+	out = append(out, "")
+	for _, line := range lines {
+		out = append(out, fill.Render("   "+line))
 	}
-	return "\n  " + strings.Join(lines, "\n  ") + "\n"
-}
-
-func bannerGlyphs() map[rune][5]string {
-	return map[rune][5]string{
-		' ': {"   ", "   ", "   ", "   ", "   "},
-		'.': {"  ", "  ", "  ", "  ", "o "},
-		'A': {" ___ ", "/ _ \\", "| |_|", "|  _|", "|_|  "},
-		'C': {" ___ ", "/ __|", "| |  ", "| |__", "\\___|"},
-		'E': {" ___ ", "| __|", "| _| ", "| |__", "|___|"},
-		'M': {" __  __ ", "|  \\/  |", "| |\\/| |", "| |  | |", "|_|  |_|"},
-		'O': {" ___ ", "/ _ \\", "| | |", "| |_|", "\\___/"},
-		'Y': {"__   __", "\\ \\ / /", " \\ V / ", "  | |  ", "  |_|  "},
+	out = append(out, fmt.Sprintf("\x1b[%dA", len(lines)+1))
+	for _, line := range lines {
+		out = append(out, shadow.Render("    "+line))
 	}
+	out = append(out, fmt.Sprintf("\x1b[%dA", len(lines)))
+	for i, line := range lines {
+		color := mainColors[i%len(mainColors)]
+		out = append(out, lipgloss.NewStyle().Bold(true).Foreground(color).Render("  "+line))
+	}
+	out = append(out, "")
+	return strings.Join(out, "\n")
 }
 
 func continueCommand(sessionID string, configPath string) string {
@@ -309,14 +341,46 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		if m.explorer != nil {
+			m.explorer.resize(m.width, m.height)
+		}
 		mainW, _, _, _ := layoutSizes(m.width, m.height)
 		m.input.Width = max(20, mainW-2)
 		m.refreshContextUsage()
 		m.syncViewport(false)
 		return m, nil
+	case tea.MouseMsg:
+		if m.explorer != nil && m.explorer.handleMouse(msg) {
+			return m, nil
+		}
+		if m.handleGitSyncClick(msg) {
+			return m, startGitSync(m.cwd, m.gitSync)
+		}
+		var vpCmd tea.Cmd
+		m.viewport, vpCmd = m.viewport.Update(msg)
+		return m, vpCmd
 	case tea.KeyMsg:
+		if m.explorer != nil {
+			next, cmd, handled := m.explorer.handleKey(msg)
+			if handled {
+				m.explorer = next
+				if m.explorer == nil {
+					m.refreshGitSync()
+				}
+				return m, cmd
+			}
+		}
 		switch msg.String() {
-		case "ctrl+c", "esc":
+		case "ctrl+c":
+			m.quitting = true
+			return m, tea.Quit
+		case "esc":
+			if isShellInput(m.input.Value()) {
+				m.input.SetValue("")
+				m.shellHistIndex = 0
+				m.shellHistDraft = ""
+				return m, nil
+			}
 			m.quitting = true
 			return m, tea.Quit
 		case "ctrl+l":
@@ -341,6 +405,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "end":
 			m.viewport.GotoBottom()
 			return m, nil
+		case "up":
+			if m.navigateInputHistory(-1) {
+				return m, nil
+			}
+		case "down":
+			if m.navigateInputHistory(1) {
+				return m, nil
+			}
 		case "left", "shift+tab":
 			if m.hasPendingOptions() {
 				m.pendingChoice = (m.pendingChoice + len(m.pendingOptions) - 1) % len(m.pendingOptions)
@@ -356,6 +428,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingChoice = (m.pendingChoice + 1) % len(m.pendingOptions)
 				return m, nil
 			}
+			if isShellInput(m.input.Value()) {
+				if suggestions := m.shellSuggestions(1); len(suggestions) > 0 {
+					m.input.SetValue(applyShellCompletion(m.input.Value(), suggestions[0].Name))
+					m.input.CursorEnd()
+					return m, nil
+				}
+			}
 			if suggestions := m.slashSuggestions(1); len(suggestions) > 0 {
 				m.input.SetValue("/" + suggestions[0].Name + " ")
 				m.input.CursorEnd()
@@ -369,12 +448,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if text == "" || m.busy {
 				return m, nil
 			}
+			if isShellInput(m.input.Value()) {
+				command := shellCommand(m.input.Value())
+				if command == "" {
+					return m, nil
+				}
+				m.recordShellHistory(command)
+				m.input.SetValue("")
+				m.busy = true
+				m.status = "shell running"
+				m.items = append(m.items, transcriptItem{role: "event", text: "shell started: " + command})
+				m.syncViewport(true)
+				return m, startShellCommand(m.cwd, command)
+			}
+			m.recordInputHistory(text)
 			if selected, ok := m.pendingOptionByInput(text); ok {
 				text = selected
 			}
 			if strings.EqualFold(text, "/quit") || strings.EqualFold(text, "/exit") {
 				m.quitting = true
 				return m, tea.Quit
+			}
+			if explorer := m.openExplorerCommand(text); explorer != nil {
+				m.explorer = explorer
+				m.input.SetValue("")
+				return m, tea.EnableMouseCellMotion
 			}
 			if m.handleCopyCommand(text) {
 				m.input.SetValue("")
@@ -422,6 +520,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				text = cmd.prompt
 			}
 			m.input.SetValue("")
+			m.hadChatInput = true
 			m.busy = true
 			m.status = "running"
 			m.streamingIndex = -1
@@ -444,6 +543,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chatDoneMsg:
 		m.busy = false
 		m.status = "idle"
+		m.refreshGitSync()
 		if m.sessionID == "" {
 			if sid := m.currentChannelSession(); sid != "" {
 				m.sessionID = sid
@@ -476,6 +576,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshContextUsage()
 		m.syncViewport(true)
 		return m, waitForEvent(m.events)
+	case shellDoneMsg:
+		m.busy = false
+		m.status = "idle"
+		if strings.TrimSpace(msg.cwd) != "" {
+			m.cwd = msg.cwd
+		}
+		m.refreshGitSync()
+		m.items = append(m.items, msg.transcriptItem())
+		m.syncViewport(true)
+		return m, nil
+	case gitSyncDoneMsg:
+		m.busy = false
+		m.status = "idle"
+		m.refreshGitSync()
+		text := "$ git " + msg.action
+		if strings.TrimSpace(msg.output) != "" {
+			text += "\n" + strings.TrimRight(msg.output, "\n")
+		}
+		if msg.err != nil {
+			m.items = append(m.items, transcriptItem{role: "error", text: text + "\n" + msg.err.Error()})
+		} else {
+			m.items = append(m.items, transcriptItem{role: "shell", text: text})
+		}
+		m.syncViewport(true)
+		return m, nil
 	case eventMsg:
 		m.items = append(m.items, transcriptItem{role: "event", text: eventSummary(msg.event)})
 		m.refreshContextUsage()
@@ -497,6 +622,10 @@ func (m model) View() string {
 	if m.width == 0 {
 		return "Loading..."
 	}
+	if m.explorer != nil {
+		m.explorer.resize(m.width, m.height)
+		return m.explorer.View()
+	}
 	mainW, sideW, bodyH, promptW := layoutSizes(m.width, m.height)
 
 	m.syncViewport(false)
@@ -511,7 +640,9 @@ func (m model) View() string {
 	top := lipgloss.JoinHorizontal(lipgloss.Top, topParts...)
 
 	promptParts := []string{}
-	if suggestions := m.slashSuggestions(8); len(suggestions) > 0 {
+	if suggestions := m.shellSuggestions(8); len(suggestions) > 0 {
+		promptParts = append(promptParts, renderShellSuggestions(suggestions, promptW-2))
+	} else if suggestions := m.slashSuggestions(8); len(suggestions) > 0 {
 		promptParts = append(promptParts, renderSlashSuggestions(suggestions, promptW-2))
 	}
 	promptParts = append(promptParts, m.input.View())
@@ -579,6 +710,9 @@ func renderTranscriptContent(items []transcriptItem, width int) string {
 		case "assistant":
 			plain = wrapText(item.text, textWidth)
 			style = agentStyle
+		case "shell":
+			plain = wrapText(item.text, textWidth)
+			style = shellStyle
 		case "event":
 			plain = wrapWithPrefix("· ", item.text, textWidth)
 			style = eventStyle
@@ -609,6 +743,8 @@ func renderTranscript(items []transcriptItem, width, height int, scroll int) str
 			lines = append(lines, userStyle.Render(wrapWithPrefix("› ", item.text, textWidth)))
 		case "assistant":
 			lines = append(lines, agentStyle.Render(wrapText(item.text, textWidth)))
+		case "shell":
+			lines = append(lines, shellStyle.Render(wrapText(item.text, textWidth)))
 		case "event":
 			lines = append(lines, eventStyle.Render(wrapWithPrefix("· ", item.text, textWidth)))
 		case "error":
@@ -726,17 +862,10 @@ func renderSidebar(m model, width, height int) string {
 		return ""
 	}
 	bodyWidth := max(8, width-4)
-	keys := []string{
-		"keys",
-		"enter send",
-		"tab choice",
-		"keys scroll",
-		"ctrl+y copy reply",
-		"esc quit",
-	}
+	footer := sidebarFooterLines(m, bodyWidth)
 	top := sidebarTopLines(m, bodyWidth)
-	middle := sidebarMiddleLines(m, bodyWidth, max(0, height-len(top)-len(keys)))
-	lines := composeSidebar(top, middle, keys, height)
+	middle := sidebarMiddleLines(m, bodyWidth, max(0, height-len(top)-len(footer)))
+	lines := composeSidebar(top, middle, footer, height)
 	return strings.Join(lines, "\n")
 }
 
@@ -787,9 +916,6 @@ func sidebarTopLines(m model, width int) []string {
 	if m.sessionID != "" {
 		lines = append(lines, "session: "+shortID(m.sessionID))
 	}
-	if m.cwd != "" {
-		lines = append(lines, "cwd: "+compactPath(m.cwd, width-5))
-	}
 	if ctxUsage := m.contextUsage; ctxUsage != nil && ctxUsage.ContextLength > 0 {
 		lines = append(lines, "", "context")
 		lines = append(lines, strings.Split(renderContextUsage(ctxUsage, width), "\n")...)
@@ -797,6 +923,26 @@ func sidebarTopLines(m model, width int) []string {
 	if m.logPath != "" {
 		lines = append(lines, "log: "+truncateDisplay(filepath.Base(m.logPath), width))
 	}
+	return lines
+}
+
+func sidebarFooterLines(m model, width int) []string {
+	lines := []string{"workspace"}
+	cwd := cwdDisplayName(m.cwd)
+	if cwd == "" {
+		cwd = "-"
+	}
+	lines = append(lines, truncateDisplay(cwd, width))
+	git := strings.TrimSpace(m.gitStatus)
+	if git == "" {
+		git = "-"
+	}
+	if m.gitSync.Actionable() {
+		if action, _ := gitSyncAction(m.gitSync); action != "" {
+			git += " [" + action + "]"
+		}
+	}
+	lines = append(lines, truncateDisplay(git, width))
 	return lines
 }
 
@@ -910,7 +1056,36 @@ func (m model) slashSuggestions(limit int) []slashSuggestion {
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
+	out = appendLocalSuggestions(value, out)
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out
+}
+
+func appendLocalSuggestions(value string, suggestions []slashSuggestion) []slashSuggestion {
+	prefix := strings.TrimPrefix(strings.TrimSpace(value), "/")
+	local := []slashSuggestion{
+		{Name: "tree", Description: "打开项目目录树", Kind: "tui"},
+		{Name: "diff", Description: "查看当前 Git 变更", Kind: "tui"},
+	}
+	seen := map[string]bool{}
+	for _, item := range suggestions {
+		seen[item.Name] = true
+	}
+	for _, item := range local {
+		if seen[item.Name] || !strings.HasPrefix(item.Name, prefix) {
+			continue
+		}
+		suggestions = append(suggestions, item)
+	}
+	sort.SliceStable(suggestions, func(i, j int) bool {
+		if suggestions[i].Kind == suggestions[j].Kind {
+			return suggestions[i].Name < suggestions[j].Name
+		}
+		return suggestions[i].Kind == "tui"
+	})
+	return suggestions
 }
 
 func renderSlashSuggestions(items []slashSuggestion, width int) string {
@@ -1022,6 +1197,62 @@ func (m model) pendingOptionByInput(text string) (string, bool) {
 func pendingOptionValue(option string) string {
 	title, _ := splitPendingOption(option)
 	return title
+}
+
+func (m *model) recordInputHistory(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	m.inputHistory = append(m.inputHistory, text)
+	m.historyIndex = 0
+	m.historyDraft = ""
+}
+
+func (m *model) navigateInputHistory(direction int) bool {
+	if isShellInput(m.input.Value()) {
+		return m.navigateShellHistory(direction)
+	}
+	if len(m.inputHistory) == 0 || direction == 0 || m.busy || m.hasPendingOptions() {
+		return false
+	}
+	if m.historyIndex == 0 {
+		m.historyDraft = m.input.Value()
+	}
+	next := m.historyIndex
+	if direction < 0 {
+		next++
+	} else {
+		next--
+	}
+	if next < 0 {
+		return false
+	}
+	if next == 0 {
+		m.historyIndex = 0
+		m.input.SetValue(m.historyDraft)
+		m.input.CursorEnd()
+		return true
+	}
+	if next > len(m.inputHistory) {
+		return false
+	}
+	m.historyIndex = next
+	m.input.SetValue(m.inputHistory[len(m.inputHistory)-next])
+	m.input.CursorEnd()
+	return true
+}
+
+func (m model) openExplorerCommand(text string) *tuiExplorer {
+	cmd := strings.TrimSpace(text)
+	switch cmd {
+	case "/tree":
+		return newTreeExplorer(m.cwd, m.width, m.height)
+	case "/diff":
+		return newDiffExplorer(m.cwd, m.width, m.height)
+	default:
+		return nil
+	}
 }
 
 func (m *model) handleCopyCommand(text string) bool {
@@ -1225,6 +1456,156 @@ func compactPath(path string, maxLen int) string {
 		}
 	}
 	return "..." + path[len(path)-maxLen+3:]
+}
+
+func cwdDisplayName(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	clean := filepath.Clean(path)
+	base := filepath.Base(clean)
+	if base == "." || base == string(filepath.Separator) {
+		return clean
+	}
+	return base
+}
+
+func gitSyncSummary(cwd string) string {
+	return gitSyncStateForCWD(cwd).Format()
+}
+
+func gitSyncStateForCWD(cwd string) gitSyncState {
+	out, err := runGit(cwd, "status", "--porcelain=v1", "--branch")
+	if err != nil {
+		return gitSyncState{Branch: "no git"}
+	}
+	return parseGitSyncState(out)
+}
+
+func parseGitSyncSummary(out string) string {
+	return parseGitSyncState(out).Format()
+}
+
+func parseGitSyncState(out string) gitSyncState {
+	lines := strings.Split(out, "\n")
+	if len(lines) == 0 || !strings.HasPrefix(lines[0], "## ") {
+		return gitSyncState{Branch: "no upstream"}
+	}
+	head := strings.TrimSpace(strings.TrimPrefix(lines[0], "## "))
+	branch := head
+	if idx := strings.Index(branch, "..."); idx >= 0 {
+		branch = branch[:idx]
+	}
+	branch = strings.TrimSpace(branch)
+	if branch == "" {
+		branch = "detached"
+	}
+	ahead, behind := parseAheadBehind(head)
+	dirty := 0
+	for _, line := range lines[1:] {
+		if strings.TrimSpace(line) != "" {
+			dirty++
+		}
+	}
+	return gitSyncState{Branch: branch, Ahead: ahead, Behind: behind, Dirty: dirty, Valid: true}
+}
+
+func (s gitSyncState) Format() string {
+	branch := strings.TrimSpace(s.Branch)
+	if branch == "" {
+		branch = "no git"
+	}
+	if !s.Valid {
+		return branch
+	}
+	var sync string
+	switch {
+	case s.Ahead > 0 && s.Behind > 0:
+		sync = fmt.Sprintf("↑%d↓%d", s.Ahead, s.Behind)
+	case s.Ahead > 0:
+		sync = fmt.Sprintf("↑%d", s.Ahead)
+	case s.Behind > 0:
+		sync = fmt.Sprintf("↓%d", s.Behind)
+	default:
+		sync = "✓"
+	}
+	if s.Dirty > 0 {
+		sync += fmt.Sprintf(" *%d", s.Dirty)
+	}
+	return branch + " " + sync
+}
+
+func parseAheadBehind(head string) (ahead, behind int) {
+	if start := strings.Index(head, "["); start >= 0 {
+		if end := strings.Index(head[start:], "]"); end >= 0 {
+			body := head[start+1 : start+end]
+			for _, part := range strings.Split(body, ",") {
+				part = strings.TrimSpace(part)
+				switch {
+				case strings.HasPrefix(part, "ahead "):
+					n, _ := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(part, "ahead ")))
+					ahead = n
+				case strings.HasPrefix(part, "behind "):
+					n, _ := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(part, "behind ")))
+					behind = n
+				}
+			}
+		}
+	}
+	return ahead, behind
+}
+
+func (m *model) refreshGitSync() {
+	m.gitSync = gitSyncStateForCWD(m.cwd)
+	m.gitStatus = m.gitSync.Format()
+}
+
+func gitSyncAction(state gitSyncState) (string, []string) {
+	switch {
+	case state.Ahead > 0 && state.Behind > 0:
+		return "pull", []string{"pull", "--rebase"}
+	case state.Behind > 0:
+		return "pull", []string{"pull", "--ff-only"}
+	case state.Ahead > 0:
+		return "push", []string{"push"}
+	default:
+		return "", nil
+	}
+}
+
+func startGitSync(cwd string, state gitSyncState) tea.Cmd {
+	return func() tea.Msg {
+		action, args := gitSyncAction(state)
+		if action == "" || len(args) == 0 {
+			return gitSyncDoneMsg{action: "sync", err: fmt.Errorf("no git sync action available")}
+		}
+		out, err := runGit(cwd, args...)
+		return gitSyncDoneMsg{action: strings.Join(args, " "), output: out, err: err}
+	}
+}
+
+func (m *model) handleGitSyncClick(msg tea.MouseMsg) bool {
+	if msg.Type != tea.MouseLeft || msg.Action != tea.MouseActionPress || m.busy || !m.gitSync.Actionable() {
+		return false
+	}
+	mainW, sideW, bodyH, _ := layoutSizes(m.width, m.height)
+	if sideW <= 0 {
+		return false
+	}
+	sideStart := mainW + boxStyle.GetHorizontalFrameSize() + 1
+	if msg.X < sideStart || msg.Y < max(0, bodyH-3) || msg.Y > bodyH+1 {
+		return false
+	}
+	action, _ := gitSyncAction(m.gitSync)
+	if action == "" {
+		return false
+	}
+	m.busy = true
+	m.status = "git " + action
+	m.items = append(m.items, transcriptItem{role: "event", text: "git " + action + " started"})
+	m.syncViewport(true)
+	return true
 }
 
 func renderContextUsage(ctx *agentruntime.ContextUsage, width int) string {

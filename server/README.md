@@ -134,6 +134,14 @@ The TUI reuses the server slash command handler. Useful local commands include
 and `/log --errors`. When bash is enabled and a command needs approval, reply
 with `允许` or `拒绝` in the TUI.
 
+For coding workflows, `/tree` opens a full-screen project browser and `/diff`
+opens a full-screen Git changes browser. In those browsers, click files or
+directories with the mouse, use the mouse wheel to scroll the pane under the
+cursor, press `y` to copy the current file or diff, and press `q` or `Esc` to
+return to chat. File previews use syntax highlighting, diffs highlight metadata,
+hunks, additions, and deletions. The chat screen leaves normal terminal text
+selection available; mouse capture is enabled only inside `/tree` and `/diff`.
+
 Model-visible built-in tools in local TUI include web search, optional web
 fetch, local memory, local run-log search, tasks, reminders stored at
 `~/.xiaoli/state/reminders.json`, and `file_write` under
