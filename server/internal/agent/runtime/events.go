@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 
-	agentevent "xiaoli/server/internal/event"
+	agentevent "github.com/mnhkahn/xiaoli-esp32/server/internal/event"
 )
 
 type runEventSessionKeyType struct{}

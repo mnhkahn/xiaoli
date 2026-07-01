@@ -10,7 +10,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
-	agentworkflow "xiaoli/server/internal/agent/workflow"
+	agentworkflow "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/workflow"
 )
 
 // reminderLocation 返回配置时区，无效或为空时回退到 Asia/Shanghai。
@@ -166,8 +166,8 @@ func NewReminderListTool(store *agentworkflow.ReminderStore) *ReminderListTool {
 
 func (t *ReminderListTool) Info(context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
-		Name: "reminder_list",
-		Desc: `列出当前所有提醒，含每条的 ID、内容、触发时间和状态。当用户问"我有哪些提醒""我设了什么提醒"时调用；删除提醒前也先调用它拿到 ID。`,
+		Name:        "reminder_list",
+		Desc:        `列出当前所有提醒，含每条的 ID、内容、触发时间和状态。当用户问"我有哪些提醒""我设了什么提醒"时调用；删除提醒前也先调用它拿到 ID。`,
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{}),
 	}, nil
 }

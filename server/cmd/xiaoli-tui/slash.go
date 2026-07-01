@@ -11,16 +11,16 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
-	agentchannel "xiaoli/server/internal/agent/channel"
-	"xiaoli/server/internal/agent/localapp"
-	agentmodel "xiaoli/server/internal/agent/model"
-	"xiaoli/server/internal/agent/runlog"
-	agentruntime "xiaoli/server/internal/agent/runtime"
-	agentsession "xiaoli/server/internal/agent/session"
-	"xiaoli/server/internal/agent/slash"
-	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
-	agentskill "xiaoli/server/internal/agent/tool/skill"
-	agentworkflow "xiaoli/server/internal/agent/workflow"
+	agentchannel "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/channel"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/agent/localapp"
+	agentmodel "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/model"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/agent/runlog"
+	agentruntime "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/runtime"
+	agentsession "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/session"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/agent/slash"
+	agentbuiltin "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/tool/builtin"
+	agentskill "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/tool/skill"
+	agentworkflow "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/workflow"
 )
 
 type tuiSlashDeps struct {

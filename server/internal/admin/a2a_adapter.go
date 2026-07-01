@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"strings"
 
-	a2a "xiaoli/server/internal/a2a"
-	agentruntime "xiaoli/server/internal/agent/runtime"
+	a2a "github.com/mnhkahn/xiaoli-esp32/server/internal/a2a"
+	agentruntime "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/runtime"
 )
 
 // a2aPipeline adapts the EinoAgent's named subagent invocation to the

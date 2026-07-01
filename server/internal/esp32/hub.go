@@ -17,7 +17,7 @@ import (
 
 	"github.com/mnhkahn/gogogo/logger"
 
-	esp32ws "xiaoli/server/internal/esp32/ws"
+	esp32ws "github.com/mnhkahn/xiaoli-esp32/server/internal/esp32/ws"
 )
 
 const (

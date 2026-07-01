@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	agentevent "xiaoli/server/internal/event"
+	agentevent "github.com/mnhkahn/xiaoli-esp32/server/internal/event"
 )
 
 type Writer struct {

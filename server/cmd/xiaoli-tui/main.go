@@ -22,13 +22,13 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
 
-	agentchannel "xiaoli/server/internal/agent/channel"
-	"xiaoli/server/internal/agent/localapp"
-	"xiaoli/server/internal/agent/localconfig"
-	agentruntime "xiaoli/server/internal/agent/runtime"
-	"xiaoli/server/internal/agent/slash"
-	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
-	agentevent "xiaoli/server/internal/event"
+	agentchannel "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/channel"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/agent/localapp"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/agent/localconfig"
+	agentruntime "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/runtime"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/agent/slash"
+	agentbuiltin "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/tool/builtin"
+	agentevent "github.com/mnhkahn/xiaoli-esp32/server/internal/event"
 )
 
 const (

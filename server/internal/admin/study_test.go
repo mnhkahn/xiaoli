@@ -1,9 +1,9 @@
 package admin
 
 import (
+	agentworkflow "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/workflow"
 	"testing"
 	"time"
-	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
 
 func TestPickOnlineDevice(t *testing.T) {

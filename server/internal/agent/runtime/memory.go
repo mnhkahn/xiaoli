@@ -13,7 +13,7 @@ import (
 	"github.com/mnhkahn/gogogo/logger"
 	"github.com/redis/go-redis/v9"
 
-	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
+	agentbuiltin "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/tool/builtin"
 )
 
 const maxHistoryMessages = 40

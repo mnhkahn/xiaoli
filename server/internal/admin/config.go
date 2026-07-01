@@ -5,16 +5,16 @@ import (
 	"regexp"
 
 	"github.com/mnhkahn/gogogo/logger"
+	agentruntime "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/runtime"
+	agentbuiltin "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/tool/builtin"
+	agentskill "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/tool/skill"
+	agentworkflow "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/workflow"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-	agentruntime "xiaoli/server/internal/agent/runtime"
-	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
-	agentskill "xiaoli/server/internal/agent/tool/skill"
-	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
 
 const fallbackLLMPrompt = "你是一个叫小李的中文语音助手。回答要简短、自然、适合通过扬声器播放。"

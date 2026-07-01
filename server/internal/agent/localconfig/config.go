@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	agentruntime "xiaoli/server/internal/agent/runtime"
+	agentruntime "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/runtime"
 )
 
 type Config struct {

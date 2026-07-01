@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"xiaoli/server/internal/agent/localconfig"
-	"xiaoli/server/internal/agent/runlog"
-	agentruntime "xiaoli/server/internal/agent/runtime"
-	agentworkflow "xiaoli/server/internal/agent/workflow"
-	agentevent "xiaoli/server/internal/event"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/agent/localconfig"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/agent/runlog"
+	agentruntime "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/runtime"
+	agentworkflow "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/workflow"
+	agentevent "github.com/mnhkahn/xiaoli-esp32/server/internal/event"
 )
 
 type App struct {

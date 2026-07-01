@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	agentchannel "xiaoli/server/internal/agent/channel"
+	agentchannel "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/channel"
 )
 
 func TestSendTextLeavesFromUserIDEmpty(t *testing.T) {

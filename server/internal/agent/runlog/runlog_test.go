@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	agentevent "xiaoli/server/internal/event"
+	agentevent "github.com/mnhkahn/xiaoli-esp32/server/internal/event"
 )
 
 func TestWriterAppendsJSONLBySession(t *testing.T) {

@@ -4,12 +4,12 @@ import (
 	"bufio"
 	"crypto/sha1"
 	"encoding/base64"
+	esp32ws "github.com/mnhkahn/xiaoli-esp32/server/internal/esp32/ws"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
-	esp32ws "xiaoli/server/internal/esp32/ws"
 )
 
 type StreamEvent struct {

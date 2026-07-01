@@ -3,7 +3,7 @@ package runtime
 import (
 	"time"
 
-	agentworkflow "xiaoli/server/internal/agent/workflow"
+	agentworkflow "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/workflow"
 )
 
 type BashConfig struct {

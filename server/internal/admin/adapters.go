@@ -22,17 +22,17 @@ import (
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 	"github.com/mnhkahn/gogogo/logger"
 
-	agentchannel "xiaoli/server/internal/agent/channel"
-	agentlark "xiaoli/server/internal/agent/channel/lark"
-	agentwechat "xiaoli/server/internal/agent/channel/wechat"
-	agentmedia "xiaoli/server/internal/agent/media"
-	agentruntime "xiaoli/server/internal/agent/runtime"
-	agentslash "xiaoli/server/internal/agent/slash"
-	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
-	agentworkflow "xiaoli/server/internal/agent/workflow"
-	agentesp32 "xiaoli/server/internal/esp32"
-	esp32audio "xiaoli/server/internal/esp32/audio"
-	agentevent "xiaoli/server/internal/event"
+	agentchannel "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/channel"
+	agentlark "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/channel/lark"
+	agentwechat "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/channel/wechat"
+	agentmedia "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/media"
+	agentruntime "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/runtime"
+	agentslash "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/slash"
+	agentbuiltin "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/tool/builtin"
+	agentworkflow "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/workflow"
+	agentesp32 "github.com/mnhkahn/xiaoli-esp32/server/internal/esp32"
+	esp32audio "github.com/mnhkahn/xiaoli-esp32/server/internal/esp32/audio"
+	agentevent "github.com/mnhkahn/xiaoli-esp32/server/internal/event"
 )
 
 type SpeechRecognizer = agentmedia.SpeechRecognizer

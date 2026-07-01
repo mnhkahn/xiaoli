@@ -25,15 +25,15 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
 
-	a2aPKG "xiaoli/server/internal/a2a"
-	agentesp32 "xiaoli/server/internal/agent/channel/esp32"
-	agentlark "xiaoli/server/internal/agent/channel/lark"
-	agentwechat "xiaoli/server/internal/agent/channel/wechat"
-	agentmedia "xiaoli/server/internal/agent/media"
-	agentruntime "xiaoli/server/internal/agent/runtime"
-	"xiaoli/server/internal/agent/session"
-	agentworkflow "xiaoli/server/internal/agent/workflow"
-	agentevent "xiaoli/server/internal/event"
+	a2aPKG "github.com/mnhkahn/xiaoli-esp32/server/internal/a2a"
+	agentesp32 "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/channel/esp32"
+	agentlark "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/channel/lark"
+	agentwechat "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/channel/wechat"
+	agentmedia "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/media"
+	agentruntime "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/runtime"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/agent/session"
+	agentworkflow "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/workflow"
+	agentevent "github.com/mnhkahn/xiaoli-esp32/server/internal/event"
 )
 
 const (

@@ -17,13 +17,13 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
 
-	agentchannel "xiaoli/server/internal/agent/channel"
-	agentmodel "xiaoli/server/internal/agent/model"
-	agentsession "xiaoli/server/internal/agent/session"
-	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
-	agentmcp "xiaoli/server/internal/agent/tool/mcp"
-	agentskill "xiaoli/server/internal/agent/tool/skill"
-	agentevent "xiaoli/server/internal/event"
+	agentchannel "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/channel"
+	agentmodel "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/model"
+	agentsession "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/session"
+	agentbuiltin "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/tool/builtin"
+	agentmcp "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/tool/mcp"
+	agentskill "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/tool/skill"
+	agentevent "github.com/mnhkahn/xiaoli-esp32/server/internal/event"
 )
 
 type DeviceTools interface {

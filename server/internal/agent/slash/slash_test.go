@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"xiaoli/server/internal/agent/channel"
-	"xiaoli/server/internal/agent/model"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/agent/channel"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/agent/model"
 )
 
 type fakeDeps struct {

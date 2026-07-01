@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	agentskill "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/tool/skill"
 	"github.com/stretchr/testify/assert"
-	agentskill "xiaoli/server/internal/agent/tool/skill"
 )
 
 func TestLoadConfigSetsDefaultSkillConfig(t *testing.T) {

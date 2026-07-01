@@ -88,6 +88,12 @@ curl https://xiaoli-server.fly.dev/xiaozhi/ota/
 Install the local Xiaoli TUI into the current Go environment:
 
 ```bash
+go install github.com/mnhkahn/xiaoli-esp32/server/cmd/xiaoli-tui@latest
+```
+
+For local development from this repository:
+
+```bash
 cd server
 go install ./cmd/xiaoli-tui
 ```

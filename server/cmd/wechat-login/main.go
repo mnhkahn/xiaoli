@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"xiaoli/server/internal/admin"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/admin"
 
 	"github.com/mnhkahn/gogogo/logger"
 )

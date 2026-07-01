@@ -11,7 +11,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
-	"xiaoli/server/internal/event"
+	"github.com/mnhkahn/xiaoli-esp32/server/internal/event"
 )
 
 type SubAgentSpec struct {
@@ -42,12 +42,12 @@ type BackgroundJob struct {
 	Done          chan struct{}
 	CreatedAt     time.Time
 	ParentSession string
-		AgentName     string
-		AgentType     string
-		Description   string
-		StartedAt     time.Time
-		FinishedAt    *time.Time
-		Duration      time.Duration
+	AgentName     string
+	AgentType     string
+	Description   string
+	StartedAt     time.Time
+	FinishedAt    *time.Time
+	Duration      time.Duration
 }
 
 func (j *BackgroundJob) Snapshot() BackgroundJob {
@@ -57,9 +57,9 @@ func (j *BackgroundJob) Snapshot() BackgroundJob {
 		ID: j.ID, Status: j.Status, Result: j.Result,
 		Error: j.Error, Done: j.Done, CreatedAt: j.CreatedAt,
 		ParentSession: j.ParentSession,
-		AgentName: j.AgentName, AgentType: j.AgentType,
+		AgentName:     j.AgentName, AgentType: j.AgentType,
 		Description: j.Description,
-		StartedAt: j.StartedAt, FinishedAt: j.FinishedAt,
+		StartedAt:   j.StartedAt, FinishedAt: j.FinishedAt,
 		Duration: j.Duration,
 	}
 }
@@ -201,7 +201,7 @@ func (t *TaskTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ .
 		TaskID       string `json:"task_id,omitempty"`
 		Background   bool   `json:"background,omitempty"`
 		TaskStatus   string `json:"task_status,omitempty"`
-Fork         bool   `json:"fork,omitempty"`
+		Fork         bool   `json:"fork,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return taskResult("error", "参数解析失败："+err.Error()), nil
@@ -282,8 +282,8 @@ Fork         bool   `json:"fork,omitempty"`
 		}
 		t.activeJobs++
 		parentSession, _ := ctx.Value(SubAgentParentKey).(string)
-	deviceID, _ := ctx.Value(SubAgentDeviceIDKey).(string)
-	channelName, _ := ctx.Value(SubAgentChannelKey).(string)
+		deviceID, _ := ctx.Value(SubAgentDeviceIDKey).(string)
+		channelName, _ := ctx.Value(SubAgentChannelKey).(string)
 		now := time.Now()
 		job := &BackgroundJob{
 			ID:            effectiveTaskID,
