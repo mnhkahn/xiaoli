@@ -1,127 +1,221 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 850" font-family="Menlo, Monaco, 'Courier New', monospace">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1180" font-family="Menlo, Monaco, 'Courier New', monospace">
   <defs>
-    <linearGradient id="in-progress" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#f59e0b"/>
-      <stop offset="100%" stop-color="#fbbf24"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#182033"/>
     </linearGradient>
-    <linearGradient id="done" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#10b981"/>
-      <stop offset="100%" stop-color="#34d399"/>
+    <linearGradient id="entry" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#7dd3fc"/>
+    </linearGradient>
+    <linearGradient id="core" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#86efac"/>
+    </linearGradient>
+    <linearGradient id="agent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#a78bfa"/>
+      <stop offset="100%" stop-color="#c4b5fd"/>
+    </linearGradient>
+    <linearGradient id="device" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="100%" stop-color="#fde68a"/>
+    </linearGradient>
+    <linearGradient id="state" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#fb7185"/>
+      <stop offset="100%" stop-color="#fda4af"/>
     </linearGradient>
     <filter id="shadow" x="-2%" y="-2%" width="104%" height="108%">
-      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.15"/>
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-opacity="0.22"/>
     </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#94a3b8"/>
+    </marker>
   </defs>
 
-  <rect width="900" height="850" fill="#1a1b2e" rx="12"/>
-  <text x="450" y="32" text-anchor="middle" fill="#ffffff" font-size="17" font-weight="bold">Xiaoli Server — 分层架构</text>
+  <rect width="1280" height="1180" rx="16" fill="url(#bg)"/>
+  <text x="640" y="36" text-anchor="middle" fill="#f8fafc" font-size="22" font-weight="bold">Xiaoli Server 当前架构图</text>
+  <text x="640" y="58" text-anchor="middle" fill="#94a3b8" font-size="12">server/README.md 引用：docs/architecture.svg · 单 Go 进程承载设备、Admin、Agent、A2A、本地 TUI 共享运行时</text>
 
-  <line x1="450" y1="42" x2="450" y2="58" stroke="#555" stroke-width="1"/>
+  <!-- External callers -->
+  <rect x="40" y="82" width="1200" height="92" rx="10" fill="#0f172a" stroke="#334155" stroke-width="1.2"/>
+  <text x="60" y="108" fill="#e2e8f0" font-size="14" font-weight="bold">入口使用方</text>
+  <rect x="60" y="124" width="170" height="34" rx="7" fill="url(#entry)" filter="url(#shadow)"/>
+  <text x="145" y="146" text-anchor="middle" fill="#082f49" font-size="11" font-weight="bold">ESP32 设备</text>
+  <rect x="250" y="124" width="170" height="34" rx="7" fill="url(#entry)" filter="url(#shadow)"/>
+  <text x="335" y="146" text-anchor="middle" fill="#082f49" font-size="11" font-weight="bold">浏览器 Admin</text>
+  <rect x="440" y="124" width="170" height="34" rx="7" fill="url(#entry)" filter="url(#shadow)"/>
+  <text x="525" y="146" text-anchor="middle" fill="#082f49" font-size="11" font-weight="bold">Lark 事件/WS</text>
+  <rect x="630" y="124" width="170" height="34" rx="7" fill="url(#entry)" filter="url(#shadow)"/>
+  <text x="715" y="146" text-anchor="middle" fill="#082f49" font-size="11" font-weight="bold">WeChat 轮询</text>
+  <rect x="820" y="124" width="170" height="34" rx="7" fill="url(#entry)" filter="url(#shadow)"/>
+  <text x="905" y="146" text-anchor="middle" fill="#082f49" font-size="11" font-weight="bold">A2A 客户端</text>
+  <rect x="1010" y="124" width="190" height="34" rx="7" fill="url(#entry)" filter="url(#shadow)"/>
+  <text x="1105" y="146" text-anchor="middle" fill="#082f49" font-size="11" font-weight="bold">本地终端 / TUI</text>
 
-  <!-- 入口点层 -->
-  <rect x="120" y="58" width="660" height="48" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="145" y="80" fill="#064e3b" font-size="13" font-weight="bold">入口点层</text>
-  <text x="145" y="98" fill="#064e3b" font-size="10" opacity="0.85">cmd/xiaoli-admin/main.go → LoadConfig() → NewServer(cfg) → http.ListenAndServe</text>
+  <line x1="640" y1="174" x2="640" y2="198" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#arrow)"/>
 
-  <line x1="450" y1="106" x2="450" y2="118" stroke="#10b981" stroke-width="2"/>
+  <!-- Commands -->
+  <rect x="40" y="198" width="1200" height="104" rx="10" fill="#111827" stroke="#475569" stroke-width="1.2"/>
+  <text x="60" y="224" fill="#e2e8f0" font-size="14" font-weight="bold">命令入口 / 部署入口</text>
+  <rect x="60" y="240" width="255" height="42" rx="7" fill="url(#entry)" filter="url(#shadow)"/>
+  <text x="74" y="258" fill="#082f49" font-size="11" font-weight="bold">cmd/xiaoli-admin</text>
+  <text x="74" y="274" fill="#082f49" font-size="9">LoadConfig · NewServer · ListenAndServe</text>
+  <rect x="335" y="240" width="255" height="42" rx="7" fill="url(#entry)" filter="url(#shadow)"/>
+  <text x="349" y="258" fill="#082f49" font-size="11" font-weight="bold">cmd/xiaoli-tui</text>
+  <text x="349" y="274" fill="#082f49" font-size="9">Bubble Tea UI · /tree · /diff · local session</text>
+  <rect x="610" y="240" width="255" height="42" rx="7" fill="url(#entry)" filter="url(#shadow)"/>
+  <text x="624" y="258" fill="#082f49" font-size="11" font-weight="bold">cmd/tts-play · cmd/wechat-login</text>
+  <text x="624" y="274" fill="#082f49" font-size="9">TTS 调试播放 · WeChat 登录辅助</text>
+  <rect x="885" y="240" width="315" height="42" rx="7" fill="#1e293b" stroke="#64748b" stroke-width="1"/>
+  <text x="899" y="258" fill="#cbd5e1" font-size="11" font-weight="bold">Dockerfile · fly.toml · fly/nginx.conf · tools/*</text>
+  <text x="899" y="274" fill="#94a3b8" font-size="9">Fly 部署、边缘限制、串口/硬件/性能调试脚本</text>
 
-  <!-- 管理界面 / Dashboard -->
-  <rect x="200" y="118" width="500" height="40" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="225" y="138" fill="#064e3b" font-size="12" font-weight="bold">管理界面 / Dashboard</text>
-  <text x="225" y="152" fill="#064e3b" font-size="9" opacity="0.75">admin/pages.go — 设备控制·MCP·视频流·TTS·记忆查看·日程</text>
+  <line x1="640" y1="302" x2="640" y2="326" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#arrow)"/>
 
-  <line x1="450" y1="158" x2="450" y2="173" stroke="#10b981" stroke-width="2"/>
+  <!-- HTTP and admin shell -->
+  <rect x="40" y="326" width="1200" height="176" rx="10" fill="#0f172a" stroke="#334155" stroke-width="1.2"/>
+  <text x="60" y="352" fill="#e2e8f0" font-size="14" font-weight="bold">HTTP 路由与 Admin 装配层：internal/admin</text>
+  <rect x="60" y="370" width="230" height="106" rx="7" fill="url(#core)" filter="url(#shadow)"/>
+  <text x="76" y="390" fill="#064e3b" font-size="11" font-weight="bold">server.go</text>
+  <text x="76" y="407" fill="#064e3b" font-size="9">/health · /admin · /admin/api/*</text>
+  <text x="76" y="422" fill="#064e3b" font-size="9">/xiaozhi/ota · /xiaozhi/v1 WS</text>
+  <text x="76" y="437" fill="#064e3b" font-size="9">/lark/events · /mcp/vision/*</text>
+  <text x="76" y="452" fill="#064e3b" font-size="9">/a2a · /.well-known/agent-card.json</text>
+  <rect x="310" y="370" width="230" height="106" rx="7" fill="url(#core)" filter="url(#shadow)"/>
+  <text x="326" y="390" fill="#064e3b" font-size="11" font-weight="bold">adapters.go</text>
+  <text x="326" y="407" fill="#064e3b" font-size="9">NewDeviceHub · newEinoAgent</text>
+  <text x="326" y="422" fill="#064e3b" font-size="9">ConversationPipeline · Lark/WeChat</text>
+  <text x="326" y="437" fill="#064e3b" font-size="9">ASR · Vision · TTS · Cron Scheduler</text>
+  <text x="326" y="452" fill="#064e3b" font-size="9">A2A pipeline · channel senders</text>
+  <rect x="560" y="370" width="230" height="106" rx="7" fill="url(#core)" filter="url(#shadow)"/>
+  <text x="576" y="390" fill="#064e3b" font-size="11" font-weight="bold">pages.go · api.go · stream.go</text>
+  <text x="576" y="407" fill="#064e3b" font-size="9">Dashboard · Memory Viewer</text>
+  <text x="576" y="422" fill="#064e3b" font-size="9">设备控制 · 工具调用 · TTS 播放</text>
+  <text x="576" y="437" fill="#064e3b" font-size="9">摄像头帧 · 图片浏览 · SSE/WS</text>
+  <text x="576" y="452" fill="#064e3b" font-size="9">artifact 下载与临时资源</text>
+  <rect x="810" y="370" width="180" height="106" rx="7" fill="url(#core)" filter="url(#shadow)"/>
+  <text x="826" y="390" fill="#064e3b" font-size="11" font-weight="bold">auth.go · config.go</text>
+  <text x="826" y="407" fill="#064e3b" font-size="9">Logto OIDC</text>
+  <text x="826" y="422" fill="#064e3b" font-size="9">settings.json/env</text>
+  <text x="826" y="437" fill="#064e3b" font-size="9">模型、技能、MCP、Cron</text>
+  <text x="826" y="452" fill="#064e3b" font-size="9">设备鉴权与允许列表</text>
+  <rect x="1010" y="370" width="190" height="106" rx="7" fill="url(#core)" filter="url(#shadow)"/>
+  <text x="1026" y="390" fill="#064e3b" font-size="11" font-weight="bold">Artifact · Model Limits</text>
+  <text x="1026" y="407" fill="#064e3b" font-size="9">artifact.go · model_limits.go</text>
+  <text x="1026" y="422" fill="#064e3b" font-size="9">direct_device · command</text>
+  <text x="1026" y="437" fill="#064e3b" font-size="9">study/lark adapters</text>
+  <text x="1026" y="452" fill="#064e3b" font-size="9">测试辅助与管理 API</text>
 
-  <!-- HTTP 路由层 -->
-  <rect x="30" y="173" width="840" height="48" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="55" y="195" fill="#064e3b" font-size="13" font-weight="bold">HTTP 路由层</text>
-  <text x="55" y="213" fill="#064e3b" font-size="10" opacity="0.85">server.go — /health · /xiaozhi/ota/ · /xiaozhi/v1/(WS) · /lark/events · /mcp/vision/ · /admin/*</text>
+  <line x1="260" y1="502" x2="260" y2="532" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="640" y1="502" x2="640" y2="532" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="1020" y1="502" x2="1020" y2="532" stroke="#94a3b8" stroke-width="1.6" marker-end="url(#arrow)"/>
 
-  <line x1="450" y1="221" x2="450" y2="236" stroke="#10b981" stroke-width="2"/>
+  <!-- Core runtime groups -->
+  <rect x="40" y="532" width="365" height="272" rx="10" fill="#111827" stroke="#475569" stroke-width="1.2"/>
+  <text x="60" y="558" fill="#fef3c7" font-size="14" font-weight="bold">设备协议与音视频：internal/esp32</text>
+  <rect x="60" y="576" width="150" height="70" rx="7" fill="url(#device)" filter="url(#shadow)"/>
+  <text x="74" y="596" fill="#422006" font-size="11" font-weight="bold">hub.go</text>
+  <text x="74" y="612" fill="#422006" font-size="9">设备注册 · ToolSnapshot</text>
+  <text x="74" y="627" fill="#422006" font-size="9">Speak/Stop · MCP 转发</text>
+  <rect x="230" y="576" width="150" height="70" rx="7" fill="url(#device)" filter="url(#shadow)"/>
+  <text x="244" y="596" fill="#422006" font-size="11" font-weight="bold">protocol/auth/ws</text>
+  <text x="244" y="612" fill="#422006" font-size="9">OTA token · WebSocket</text>
+  <text x="244" y="627" fill="#422006" font-size="9">frame.go · types.go</text>
+  <rect x="60" y="664" width="150" height="90" rx="7" fill="url(#device)" filter="url(#shadow)"/>
+  <text x="74" y="684" fill="#422006" font-size="11" font-weight="bold">voice.go · mcp.go</text>
+  <text x="74" y="700" fill="#422006" font-size="9">Opus 输入 · ASR</text>
+  <text x="74" y="715" fill="#422006" font-size="9">对话回复 · TTS</text>
+  <text x="74" y="730" fill="#422006" font-size="9">self.audio_speaker.play_ogg_url</text>
+  <rect x="230" y="664" width="150" height="90" rx="7" fill="url(#device)" filter="url(#shadow)"/>
+  <text x="244" y="684" fill="#422006" font-size="11" font-weight="bold">audio/*</text>
+  <text x="244" y="700" fill="#422006" font-size="9">Silero VAD ONNX</text>
+  <text x="244" y="715" fill="#422006" font-size="9">Ogg Opus 构建/解析</text>
+  <text x="244" y="730" fill="#422006" font-size="9">重编码与音频管线测试</text>
+  <text x="60" y="780" fill="#fbbf24" font-size="10">依赖：agent/media ASR/TTS · admin streamHub · ConversationPipeline</text>
 
-  <!-- 渠道层 -->
-  <rect x="30" y="236" width="840" height="48" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="55" y="258" fill="#064e3b" font-size="13" font-weight="bold">渠道层</text>
-  <text x="55" y="276" fill="#064e3b" font-size="10" opacity="0.85">agent/channel — Lark (WS) · WeChat (轮询) · ESP32 (Device WS) · Slash 斜杠命令 · ConversationPipeline</text>
+  <rect x="458" y="532" width="365" height="272" rx="10" fill="#111827" stroke="#475569" stroke-width="1.2"/>
+  <text x="478" y="558" fill="#ddd6fe" font-size="14" font-weight="bold">Agent 运行时：internal/agent</text>
+  <rect x="478" y="576" width="150" height="70" rx="7" fill="url(#agent)" filter="url(#shadow)"/>
+  <text x="492" y="596" fill="#312e81" font-size="11" font-weight="bold">runtime</text>
+  <text x="492" y="612" fill="#312e81" font-size="9">Eino Agent · ReAct</text>
+  <text x="492" y="627" fill="#312e81" font-size="9">stats · trace · retry · config</text>
+  <rect x="648" y="576" width="150" height="70" rx="7" fill="url(#agent)" filter="url(#shadow)"/>
+  <text x="662" y="596" fill="#312e81" font-size="11" font-weight="bold">workflow</text>
+  <text x="662" y="612" fill="#312e81" font-size="9">runner · registry · cron</text>
+  <text x="662" y="627" fill="#312e81" font-size="9">reminders · chat_react</text>
+  <rect x="478" y="664" width="150" height="70" rx="7" fill="url(#agent)" filter="url(#shadow)"/>
+  <text x="492" y="684" fill="#312e81" font-size="11" font-weight="bold">session · memory</text>
+  <text x="492" y="700" fill="#312e81" font-size="9">Redis/local 会话</text>
+  <text x="492" y="715" fill="#312e81" font-size="9">global/channel 记忆</text>
+  <rect x="648" y="664" width="150" height="70" rx="7" fill="url(#agent)" filter="url(#shadow)"/>
+  <text x="662" y="684" fill="#312e81" font-size="11" font-weight="bold">model · provider</text>
+  <text x="662" y="700" fill="#312e81" font-size="9">模型选择器</text>
+  <text x="662" y="715" fill="#312e81" font-size="9">OpenRouter/ARK/SiliconFlow/NVIDIA</text>
+  <rect x="478" y="752" width="150" height="34" rx="7" fill="url(#agent)" filter="url(#shadow)"/>
+  <text x="553" y="774" text-anchor="middle" fill="#312e81" font-size="10" font-weight="bold">media · runlog</text>
+  <rect x="648" y="752" width="150" height="34" rx="7" fill="url(#agent)" filter="url(#shadow)"/>
+  <text x="723" y="774" text-anchor="middle" fill="#312e81" font-size="10" font-weight="bold">event bus client</text>
 
-  <line x1="165" y1="284" x2="165" y2="299" stroke="#10b981" stroke-width="2"/>
-  <line x1="450" y1="284" x2="450" y2="299" stroke="#10b981" stroke-width="2"/>
-  <line x1="735" y1="284" x2="735" y2="299" stroke="#10b981" stroke-width="2"/>
+  <rect x="875" y="532" width="365" height="272" rx="10" fill="#111827" stroke="#475569" stroke-width="1.2"/>
+  <text x="895" y="558" fill="#bbf7d0" font-size="14" font-weight="bold">渠道、A2A、本地应用</text>
+  <rect x="895" y="576" width="150" height="70" rx="7" fill="url(#core)" filter="url(#shadow)"/>
+  <text x="909" y="596" fill="#064e3b" font-size="11" font-weight="bold">agent/channel</text>
+  <text x="909" y="612" fill="#064e3b" font-size="9">sender 接口</text>
+  <text x="909" y="627" fill="#064e3b" font-size="9">lark · wechat · esp32</text>
+  <rect x="1065" y="576" width="150" height="70" rx="7" fill="url(#core)" filter="url(#shadow)"/>
+  <text x="1079" y="596" fill="#064e3b" font-size="11" font-weight="bold">internal/a2a</text>
+  <text x="1079" y="612" fill="#064e3b" font-size="9">JSON-RPC · executor</text>
+  <text x="1079" y="627" fill="#064e3b" font-size="9">auth · rate limit · taskstore</text>
+  <rect x="895" y="664" width="150" height="70" rx="7" fill="url(#core)" filter="url(#shadow)"/>
+  <text x="909" y="684" fill="#064e3b" font-size="11" font-weight="bold">localapp/localconfig</text>
+  <text x="909" y="700" fill="#064e3b" font-size="9">~/.xiaoli 配置</text>
+  <text x="909" y="715" fill="#064e3b" font-size="9">本地 Agent 组装</text>
+  <rect x="1065" y="664" width="150" height="70" rx="7" fill="url(#core)" filter="url(#shadow)"/>
+  <text x="1079" y="684" fill="#064e3b" font-size="11" font-weight="bold">slash · xiaoli-tui</text>
+  <text x="1079" y="700" fill="#064e3b" font-size="9">/skills · /model · /mcp</text>
+  <text x="1079" y="715" fill="#064e3b" font-size="9">explorer · shell · highlight</text>
+  <text x="895" y="760" fill="#86efac" font-size="10">后台：Lark WS、WeChat polling、A2A AgentCard、Cron 调度共同进入 ConversationPipeline</text>
 
-  <!-- 编排层 -->
-  <rect x="30" y="299" width="270" height="148" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="55" y="321" fill="#064e3b" font-size="12" font-weight="bold">编排层</text>
-  <text x="55" y="340" fill="#064e3b" font-size="10">agent/runtime — Agent 运行时</text>
-  <text x="55" y="356" fill="#064e3b" font-size="10">agent/session — 会话管理</text>
-  <text x="55" y="372" fill="#064e3b" font-size="10">Context 管理 — 窗口追踪·压缩</text>
-  <text x="55" y="388" fill="#064e3b" font-size="10">会话压缩 — 历史摘要·截断</text>
-  <text x="55" y="404" fill="#064e3b" font-size="10">agent/slash — 斜杠命令</text>
-  <text x="55" y="420" fill="#064e3b" font-size="9" opacity="0.65">/skills·/model·/channel·/status·/new·/sessions·/session</text>
-  <text x="55" y="435" fill="#064e3b" font-size="9" opacity="0.65">/compact·/memory·/cron·/mcp·/task·/help</text>
+  <line x1="640" y1="804" x2="640" y2="830" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#arrow)"/>
 
-  <!-- AI 服务层 -->
-  <rect x="315" y="299" width="270" height="148" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="340" y="321" fill="#064e3b" font-size="12" font-weight="bold">AI 服务层</text>
-  <text x="340" y="340" fill="#064e3b" font-size="10">agent/provider — LLM Provider 层</text>
-  <text x="340" y="356" fill="#064e3b" font-size="10">ASR: OpenAITranscriber (direct_ai)</text>
-  <text x="340" y="372" fill="#064e3b" font-size="10">VLLM: GoVisionClient (direct_vision)</text>
-  <text x="340" y="388" fill="#064e3b" font-size="10">TTS: HTTPSpeechSynthesizer (direct_tts)</text>
-  <text x="340" y="404" fill="#064e3b" font-size="9" opacity="0.65">ARK · SiliconFlow · OpenRouter · NVIDIA</text>
+  <!-- Tools and persistence -->
+  <rect x="40" y="830" width="1200" height="174" rx="10" fill="#0f172a" stroke="#334155" stroke-width="1.2"/>
+  <text x="60" y="856" fill="#e2e8f0" font-size="14" font-weight="bold">工具、状态与横切模块</text>
+  <rect x="60" y="874" width="210" height="98" rx="7" fill="url(#agent)" filter="url(#shadow)"/>
+  <text x="76" y="894" fill="#312e81" font-size="11" font-weight="bold">agent/tool/builtin</text>
+  <text x="76" y="910" fill="#312e81" font-size="9">ask · task · reminder · memory</text>
+  <text x="76" y="925" fill="#312e81" font-size="9">websearch · webfetch · vision</text>
+  <text x="76" y="940" fill="#312e81" font-size="9">channel_send · file_write · shell</text>
+  <text x="76" y="955" fill="#312e81" font-size="9">agents · prompt · log</text>
+  <rect x="290" y="874" width="210" height="98" rx="7" fill="url(#agent)" filter="url(#shadow)"/>
+  <text x="306" y="894" fill="#312e81" font-size="11" font-weight="bold">agent/tool/mcp</text>
+  <text x="306" y="910" fill="#312e81" font-size="9">外部 MCP client</text>
+  <text x="306" y="925" fill="#312e81" font-size="9">设备 MCP tool adapter</text>
+  <text x="306" y="940" fill="#312e81" font-size="9">认证、工具列表、调用代理</text>
+  <rect x="520" y="874" width="210" height="98" rx="7" fill="url(#agent)" filter="url(#shadow)"/>
+  <text x="536" y="894" fill="#312e81" font-size="11" font-weight="bold">agent/tool/skill · agents/*</text>
+  <text x="536" y="910" fill="#312e81" font-size="9">Skill backend · lazy load</text>
+  <text x="536" y="925" fill="#312e81" font-size="9">exec timeout/output limit</text>
+  <text x="536" y="940" fill="#312e81" font-size="9">planner/researcher/verifier 等子 Agent</text>
+  <rect x="750" y="874" width="210" height="98" rx="7" fill="url(#state)" filter="url(#shadow)"/>
+  <text x="766" y="894" fill="#7f1d1d" font-size="11" font-weight="bold">internal/event</text>
+  <text x="766" y="910" fill="#7f1d1d" font-size="9">Bus · Event · Publisher</text>
+  <text x="766" y="925" fill="#7f1d1d" font-size="9">TUI、runtime、task、UI 状态同步</text>
+  <rect x="980" y="874" width="220" height="98" rx="7" fill="url(#state)" filter="url(#shadow)"/>
+  <text x="996" y="894" fill="#7f1d1d" font-size="11" font-weight="bold">持久化与运行数据</text>
+  <text x="996" y="910" fill="#7f1d1d" font-size="9">Redis · local storage · /data</text>
+  <text x="996" y="925" fill="#7f1d1d" font-size="9">sessions · memory · reminders</text>
+  <text x="996" y="940" fill="#7f1d1d" font-size="9">artifacts · recent images · logs</text>
 
-  <!-- 工具层 -->
-  <rect x="600" y="299" width="270" height="148" rx="8" fill="url(#in-progress)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="625" y="321" fill="#1a1b2e" font-size="12" font-weight="bold">工具层</text>
-  <text x="625" y="340" fill="#1a1b2e" font-size="10">agent/tool/builtin — 内置工具</text>
-  <text x="625" y="356" fill="#1a1b2e" font-size="10">agent/tool/skill — Skill 后端</text>
-  <text x="625" y="372" fill="#1a1b2e" font-size="10">agent/tool/mcp — MCP 客户端</text>
-  <text x="625" y="390" fill="#1a1b2e" font-size="9" opacity="0.65">ask_user·bash·websearch·webfetch·task</text>
-  <text x="625" y="405" fill="#1a1b2e" font-size="9" opacity="0.65">memory_save·memory_forget·memory_list</text>
+  <line x1="640" y1="1004" x2="640" y2="1030" stroke="#94a3b8" stroke-width="1.8" marker-end="url(#arrow)"/>
 
-  <!-- 汇聚流 -->
-  <line x1="165" y1="447" x2="165" y2="462" stroke="#10b981" stroke-width="2"/>
-  <line x1="450" y1="447" x2="450" y2="462" stroke="#10b981" stroke-width="2"/>
-  <line x1="735" y1="447" x2="735" y2="462" stroke="#f59e0b" stroke-width="2"/>
-  <line x1="165" y1="457" x2="735" y2="457" stroke="#f59e0b" stroke-width="1.5"/>
-  <line x1="450" y1="457" x2="450" y2="462" stroke="#f59e0b" stroke-width="2"/>
+  <!-- External dependencies -->
+  <rect x="40" y="1030" width="1200" height="90" rx="10" fill="#111827" stroke="#475569" stroke-width="1.2"/>
+  <text x="60" y="1056" fill="#e2e8f0" font-size="14" font-weight="bold">外部依赖</text>
+  <text x="70" y="1085" fill="#cbd5e1" font-size="11">模型与媒体：OpenAI-compatible LLM/ASR/Vision/TTS · SiliconFlow · OpenRouter · ARK · NVIDIA</text>
+  <text x="70" y="1106" fill="#cbd5e1" font-size="11">平台与服务：Fly.io · Nginx edge gate · Redis · Logto OIDC · Lark OpenAPI/WS · WeChat bot API · 外部 MCP endpoints · /opt/xiaoli/skills</text>
 
-  <!-- 基础设施层 -->
-  <rect x="30" y="462" width="840" height="48" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="55" y="484" fill="#064e3b" font-size="13" font-weight="bold">基础设施层</text>
-  <text x="55" y="502" fill="#064e3b" font-size="10" opacity="0.85">Redis · 会话持久化 · Logto OIDC 认证 · 配置管理 · LLM 调用统计</text>
-
-  <line x1="450" y1="510" x2="450" y2="525" stroke="#10b981" stroke-width="2"/>
-
-  <!-- 记忆系统 -->
-  <rect x="30" y="525" width="840" height="45" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="55" y="545" fill="#064e3b" font-size="12" font-weight="bold">记忆系统</text>
-  <text x="55" y="562" fill="#064e3b" font-size="10" opacity="0.85">agent/runtime/memory — Redis 会话记忆·全局记忆·memory_save/forget/list 工具</text>
-
-  <line x1="450" y1="570" x2="450" y2="585" stroke="#10b981" stroke-width="2"/>
-
-  <!-- Workflow / Cron 引擎 -->
-  <rect x="30" y="585" width="840" height="50" rx="8" fill="url(#in-progress)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="55" y="607" fill="#1a1b2e" font-size="12" font-weight="bold">Workflow / Cron 引擎</text>
-  <text x="55" y="625" fill="#1a1b2e" font-size="10" opacity="0.85">agent/workflow — 30s 轮询·StudyMonitor·MorningGreeting·自定义 ReAct Workflow</text>
-
-  <line x1="450" y1="635" x2="450" y2="650" stroke="#f59e0b" stroke-width="2"/>
-
-  <!-- 设备协议层 + Stream Hub -->
-  <rect x="30" y="650" width="840" height="55" rx="8" fill="url(#done)" filter="url(#shadow)" opacity="0.95"/>
-  <text x="55" y="672" fill="#064e3b" font-size="13" font-weight="bold">设备协议层</text>
-  <text x="55" y="690" fill="#064e3b" font-size="10" opacity="0.85">agent/esp32 — DeviceHub·MCP 代理·Voice 处理·Ogg Opus·VAD</text>
-  <text x="55" y="702" fill="#064e3b" font-size="9" opacity="0.65">admin/stream — Stream Hub 摄像头帧 pub/sub · WebSocket 广播</text>
-
-  <line x1="450" y1="705" x2="450" y2="720" stroke="#10b981" stroke-width="2"/>
-
-  <!-- 外部依赖 -->
-  <rect x="100" y="720" width="700" height="45" rx="8" fill="#252640" opacity="0.9" stroke="#4b5563" stroke-width="1"/>
-  <text x="450" y="740" text-anchor="middle" fill="#9ca3af" font-size="11">外部依赖</text>
-  <text x="450" y="756" text-anchor="middle" fill="#6b7280" font-size="10">SiliconFlow · OpenRouter · ARK · Fly.io (nrt) · Redis · Logto · Lark · 微信</text>
-
-  <!-- 图例 -->
-  <rect x="300" y="780" width="300" height="32" rx="6" fill="#252640" opacity="0.9"/>
-  <rect x="315" y="790" width="14" height="14" rx="3" fill="url(#done)"/>
-  <text x="335" y="802" fill="#34d399" font-size="10">已实现</text>
-  <rect x="415" y="790" width="14" height="14" rx="3" fill="url(#in-progress)"/>
-  <text x="435" y="802" fill="#fbbf24" font-size="10">迭代中</text>
+  <!-- Data flow footnote -->
+  <rect x="120" y="1136" width="1040" height="28" rx="7" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+  <text x="640" y="1155" text-anchor="middle" fill="#94a3b8" font-size="10">主路径：入口消息 → AdminServer 路由/适配 → ConversationPipeline/Workflow → Eino Agent → 工具/MCP/Skill/设备/模型 → channel sender 或设备 TTS 返回</text>
 </svg>
