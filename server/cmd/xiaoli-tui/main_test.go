@@ -124,9 +124,12 @@ func TestPendingOptionByInput(t *testing.T) {
 }
 
 func TestRenderPendingOptionsMarksSelected(t *testing.T) {
-	got := renderPendingOptions([]string{"允许", "拒绝"}, 1, 80)
-	if !strings.Contains(got, "[2 拒绝]") {
-		t.Fatalf("renderPendingOptions() = %q, want selected marker", got)
+	got := renderPendingAskPanel("是否允许执行命令？", []string{"允许::执行该命令", "拒绝::不执行"}, 1, 80)
+	if !strings.Contains(got, "› 2. 拒绝") {
+		t.Fatalf("renderPendingAskPanel() = %q, want selected marker", got)
+	}
+	if !strings.Contains(got, "不执行") {
+		t.Fatalf("renderPendingAskPanel() = %q, want description", got)
 	}
 }
 

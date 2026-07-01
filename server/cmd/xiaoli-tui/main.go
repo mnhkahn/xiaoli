@@ -364,7 +364,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" && m.hasPendingOptions() {
-				text = m.pendingOptions[m.pendingChoice]
+				text = pendingOptionValue(m.pendingOptions[m.pendingChoice])
 			}
 			if text == "" || m.busy {
 				return m, nil
@@ -472,7 +472,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if len(m.pendingOptions) > 0 {
 				m.status = "waiting input"
 			}
-			m.items = append(m.items, transcriptItem{role: "system", text: formatAsk(ask)})
 		}
 		m.refreshContextUsage()
 		m.syncViewport(true)
@@ -515,9 +514,6 @@ func (m model) View() string {
 	if suggestions := m.slashSuggestions(8); len(suggestions) > 0 {
 		promptParts = append(promptParts, renderSlashSuggestions(suggestions, promptW-2))
 	}
-	if m.hasPendingOptions() {
-		promptParts = append(promptParts, renderPendingOptions(m.pendingOptions, m.pendingChoice, promptW-2))
-	}
 	promptParts = append(promptParts, m.input.View())
 	prompt := boxStyle.Width(promptW).Render(strings.Join(promptParts, "\n"))
 	return lipgloss.JoinVertical(lipgloss.Left, top, prompt)
@@ -552,10 +548,22 @@ func (m *model) syncViewport(gotoBottom bool) {
 	atBottom := m.viewport.AtBottom()
 	m.viewport.Width = mainW
 	m.viewport.Height = bodyH
-	m.viewport.SetContent(renderTranscriptContent(m.items, mainW))
+	m.viewport.SetContent(m.renderTranscriptContent(mainW))
 	if gotoBottom || atBottom {
 		m.viewport.GotoBottom()
 	}
+}
+
+func (m model) renderTranscriptContent(width int) string {
+	content := renderTranscriptContent(m.items, width)
+	if m.hasPendingOptions() || strings.TrimSpace(m.pendingQuestion) != "" {
+		panel := renderPendingAskPanel(m.pendingQuestion, m.pendingOptions, m.pendingChoice, width)
+		if strings.TrimSpace(content) == "" {
+			return panel
+		}
+		return content + "\n\n" + panel
+	}
+	return content
 }
 
 func renderTranscriptContent(items []transcriptItem, width int) string {
@@ -932,26 +940,59 @@ func renderSlashSuggestions(items []slashSuggestion, width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderPendingOptions(options []string, selected int, width int) string {
-	if len(options) == 0 {
+func renderPendingAskPanel(question string, options []string, selected int, width int) string {
+	question = strings.TrimSpace(question)
+	if question == "" && len(options) == 0 {
 		return ""
 	}
 	if selected < 0 || selected >= len(options) {
 		selected = 0
 	}
-	parts := make([]string, 0, len(options))
-	for i, opt := range options {
-		label := fmt.Sprintf("%d %s", i+1, opt)
-		if i == selected {
-			label = "[" + label + "]"
+	textWidth := max(20, width-4)
+	var lines []string
+	if question != "" {
+		for _, line := range strings.Split(wrapText(question, textWidth), "\n") {
+			lines = append(lines, titleStyle.Render(fitDisplay(line, width)))
 		}
-		parts = append(parts, label)
+		lines = append(lines, "")
 	}
-	line := "选择: " + strings.Join(parts, "  ")
-	if width > 0 && lipgloss.Width(line) > width {
-		line = truncateDisplay(line, width)
+	for i, opt := range options {
+		title, desc := splitPendingOption(opt)
+		prefix := "  "
+		if i == selected {
+			prefix = "› "
+		}
+		line := fmt.Sprintf("%s%d. %s", prefix, i+1, title)
+		style := hintStyle
+		if i == selected {
+			style = userStyle
+		}
+		lines = append(lines, style.Render(fitDisplay(line, width)))
+		if desc != "" {
+			descPrefix := strings.Repeat(" ", lipgloss.Width(prefix)+3)
+			for _, descLine := range strings.Split(wrapText(desc, max(8, width-lipgloss.Width(descPrefix))), "\n") {
+				lines = append(lines, hintStyle.Render(fitDisplay(descPrefix+descLine, width)))
+			}
+		}
 	}
-	return hintStyle.Render(line)
+	if len(options) == 0 && len(lines) > 0 && strings.TrimSpace(question) != "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func splitPendingOption(option string) (string, string) {
+	option = strings.TrimSpace(option)
+	for _, sep := range []string{"::", " - ", "："} {
+		if idx := strings.Index(option, sep); idx > 0 {
+			title := strings.TrimSpace(option[:idx])
+			desc := strings.TrimSpace(option[idx+len(sep):])
+			if title != "" && desc != "" {
+				return title, desc
+			}
+		}
+	}
+	return option, ""
 }
 
 func (m model) hasPendingOptions() bool {
@@ -967,14 +1008,20 @@ func (m model) pendingOptionByInput(text string) (string, bool) {
 		return "", false
 	}
 	if n, err := strconv.Atoi(text); err == nil && n >= 1 && n <= len(m.pendingOptions) {
-		return m.pendingOptions[n-1], true
+		return pendingOptionValue(m.pendingOptions[n-1]), true
 	}
 	for _, opt := range m.pendingOptions {
-		if strings.EqualFold(text, opt) {
-			return opt, true
+		title := pendingOptionValue(opt)
+		if strings.EqualFold(text, opt) || strings.EqualFold(text, title) {
+			return title, true
 		}
 	}
 	return "", false
+}
+
+func pendingOptionValue(option string) string {
+	title, _ := splitPendingOption(option)
+	return title
 }
 
 func (m *model) handleCopyCommand(text string) bool {
