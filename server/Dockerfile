@@ -95,6 +95,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates fontconfig fonts-arphic-gbsn00lp fonts-noto-cjk git libopus0 libopusfile0 libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
+RUN set -eux; \
+    mkdir -p /usr/local/share/fonts/chinese; \
+    cp /usr/share/fonts/truetype/arphic-gbsn00lp/gbsn00lp.ttf /usr/local/share/fonts/chinese/gbsn00lp.ttf; \
+    fc-cache -f
+
 COPY --from=onnxrt /opt/onnxruntime/lib/libonnxruntime.so* /usr/local/lib/
 RUN ldconfig
 
