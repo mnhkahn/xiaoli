@@ -476,6 +476,11 @@ func (a *Agent) SetChannelSenders(cfg ChannelSendersConfig) {
 	a.fileWriteRoots = append([]string(nil), cfg.AllowedRoots...)
 }
 
+// SetFileWriteRoots enables file_write without requiring a channel sender.
+func (a *Agent) SetFileWriteRoots(roots []string) {
+	a.fileWriteRoots = append([]string(nil), roots...)
+}
+
 func (a *Agent) Chat(ctx context.Context, deviceID string, userText string) (string, error) {
 	return a.ChatWithContext(ctx, deviceID, deviceID, userText)
 }
@@ -1795,11 +1800,11 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 		filter |= agentbuiltin.ToolInspectRecentImage
 	}
 
-	if a.cfg.BashConfig.Enabled && channelName == string(agentchannel.TypeLark) {
+	if a.cfg.BashConfig.Enabled && bashAllowedForChannel(channelName) {
 		filter |= agentbuiltin.ToolBash
 	}
 	opts := agentbuiltin.ToolOptions{}
-	if a.cfg.BashConfig.Enabled && channelName == string(agentchannel.TypeLark) {
+	if a.cfg.BashConfig.Enabled && bashAllowedForChannel(channelName) {
 		opts.ShellConfig = &agentbuiltin.ShellConfig{
 			Timeout:        a.cfg.BashConfig.Timeout,
 			MaxOutputBytes: a.cfg.BashConfig.MaxOutputBytes,
@@ -1846,6 +1851,10 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 		}
 	}
 	return einoTools
+}
+
+func bashAllowedForChannel(channelName string) bool {
+	return channelName == string(agentchannel.TypeLark) || channelName == "tui"
 }
 
 func (a *Agent) a2aPublicTools(ctx context.Context) []tool.BaseTool {

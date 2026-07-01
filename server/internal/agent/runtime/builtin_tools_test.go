@@ -3,11 +3,13 @@ package runtime
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
 	agentbuiltin "xiaoli/server/internal/agent/tool/builtin"
+	agentworkflow "xiaoli/server/internal/agent/workflow"
 )
 
 type testTool struct {
@@ -109,6 +111,58 @@ func TestToolsForChatIncludesChannelSendToolWhenConfigured(t *testing.T) {
 	}
 	if !foundFileWrite {
 		t.Fatal("toolsForChat should include file_write when channel senders are configured")
+	}
+}
+
+func TestToolsForChatIncludesFileWriteWithoutChannelSend(t *testing.T) {
+	agent := &Agent{cfg: Config{BuiltinWebFetchEnabled: true}}
+	agent.SetFileWriteRoots([]string{t.TempDir()})
+
+	names := toolNames(t, agent.toolsForChat(context.Background(), "", "", "tui"))
+	if !names["file_write"] {
+		t.Fatalf("toolsForChat missing file_write: %#v", names)
+	}
+	if names["channel_send"] {
+		t.Fatalf("toolsForChat should not include channel_send without configured sender: %#v", names)
+	}
+}
+
+func TestToolsForChatIncludesReminderToolsWhenConfigured(t *testing.T) {
+	agent := &Agent{cfg: Config{
+		BuiltinWebFetchEnabled: true,
+		Timezone:               "Asia/Shanghai",
+		ReminderStore:          agentworkflow.NewReminderStore(t.TempDir() + "/reminders.json"),
+	}}
+
+	names := toolNames(t, agent.toolsForChat(context.Background(), "", "", "tui"))
+	for _, want := range []string{"reminder_add", "reminder_list", "reminder_delete"} {
+		if !names[want] {
+			t.Fatalf("toolsForChat missing %q: %#v", want, names)
+		}
+	}
+}
+
+func TestToolsForChatIncludesBashForTUIWhenEnabled(t *testing.T) {
+	agent := &Agent{cfg: Config{BashConfig: BashConfig{
+		Enabled:        true,
+		Timeout:        time.Second,
+		MaxOutputBytes: 1024,
+	}}}
+	names := toolNames(t, agent.toolsForChat(context.Background(), "ses_test", "local", "tui"))
+	if !names["bash"] {
+		t.Fatalf("toolsForChat for tui missing bash: %#v", names)
+	}
+}
+
+func TestToolsForChatDoesNotIncludeBashForUnknownChannel(t *testing.T) {
+	agent := &Agent{cfg: Config{BashConfig: BashConfig{
+		Enabled:        true,
+		Timeout:        time.Second,
+		MaxOutputBytes: 1024,
+	}}}
+	names := toolNames(t, agent.toolsForChat(context.Background(), "ses_test", "local", ""))
+	if names["bash"] {
+		t.Fatalf("toolsForChat for empty channel includes bash: %#v", names)
 	}
 }
 

@@ -1094,7 +1094,7 @@ func (s *AdminServer) startLarkWSClient(ctx context.Context) {
 			}
 			callback.Event = eventBytes
 
-			handleCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+			handleCtx, cancel := context.WithTimeout(context.Background(), s.larkMessageTimeout())
 			defer cancel()
 			return s.handleLarkTextMessage(handleCtx, callback)
 		})
@@ -1119,6 +1119,14 @@ func (s *AdminServer) startLarkWSClient(ctx context.Context) {
 		case <-time.After(reconnectDelay):
 		}
 	}
+}
+
+func (s *AdminServer) larkMessageTimeout() time.Duration {
+	timeout := s.cfg.ChatReact.Timeout + 30*time.Second
+	if timeout < 120*time.Second {
+		return 120 * time.Second
+	}
+	return timeout
 }
 
 func safeString(s *string) string {

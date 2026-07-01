@@ -128,6 +128,11 @@ The TUI reuses the server slash command handler. Useful local commands include
 and `/log --errors`. When bash is enabled and a command needs approval, reply
 with `允许` or `拒绝` in the TUI.
 
+Model-visible built-in tools in local TUI include web search, optional web
+fetch, local memory, local run-log search, tasks, reminders stored at
+`~/.xiaoli/state/reminders.json`, and `file_write` under
+`tools.allowed_roots`. `bash` is available when `tools.bash` is true.
+
 Runtime logs are written to `~/.xiaoli/logs/tui.log` so they do not corrupt the
 terminal UI. The main transcript keeps only readable agent events and assistant
 output. Use the mouse wheel, Up/Down, PgUp/PgDn, Ctrl+U/Ctrl+D, Home, and End to

@@ -129,8 +129,8 @@
     }
   },
   "chat_react": {
-    "max_steps": 16,
-    "timeout": "180s"
+    "max_steps": 8,
+    "timeout": "120s"
   },
   "cron": {
     "study_monitor": {

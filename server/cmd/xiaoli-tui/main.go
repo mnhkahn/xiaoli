@@ -8,7 +8,10 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,6 +76,8 @@ type model struct {
 	lastError       string
 	pendingBashHash string
 	pendingQuestion string
+	pendingOptions  []string
+	pendingChoice   int
 	quitting        bool
 }
 
@@ -128,7 +133,7 @@ func main() {
 		return
 	}
 
-	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "xiaoli-tui: %v\n", err)
@@ -319,13 +324,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scroll = 0
 			m.syncViewport(true)
 			return m, nil
+		case "ctrl+y":
+			text := latestAssistantText(m.items)
+			if strings.TrimSpace(text) == "" {
+				m.items = append(m.items, transcriptItem{role: "event", text: "没有可复制的 assistant 回复。"})
+			} else if err := copyTextToClipboard(text); err != nil {
+				m.items = append(m.items, transcriptItem{role: "error", text: "复制失败：" + err.Error()})
+			} else {
+				m.items = append(m.items, transcriptItem{role: "event", text: "已复制最近一条 assistant 回复。"})
+			}
+			m.syncViewport(true)
+			return m, nil
 		case "home":
 			m.viewport.GotoTop()
 			return m, nil
 		case "end":
 			m.viewport.GotoBottom()
 			return m, nil
+		case "left", "shift+tab":
+			if m.hasPendingOptions() {
+				m.pendingChoice = (m.pendingChoice + len(m.pendingOptions) - 1) % len(m.pendingOptions)
+				return m, nil
+			}
+		case "right":
+			if m.hasPendingOptions() {
+				m.pendingChoice = (m.pendingChoice + 1) % len(m.pendingOptions)
+				return m, nil
+			}
 		case "tab":
+			if m.hasPendingOptions() {
+				m.pendingChoice = (m.pendingChoice + 1) % len(m.pendingOptions)
+				return m, nil
+			}
 			if suggestions := m.slashSuggestions(1); len(suggestions) > 0 {
 				m.input.SetValue("/" + suggestions[0].Name + " ")
 				m.input.CursorEnd()
@@ -333,12 +363,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
+			if text == "" && m.hasPendingOptions() {
+				text = m.pendingOptions[m.pendingChoice]
+			}
 			if text == "" || m.busy {
 				return m, nil
+			}
+			if selected, ok := m.pendingOptionByInput(text); ok {
+				text = selected
 			}
 			if strings.EqualFold(text, "/quit") || strings.EqualFold(text, "/exit") {
 				m.quitting = true
 				return m, tea.Quit
+			}
+			if m.handleCopyCommand(text) {
+				m.input.SetValue("")
+				m.syncViewport(true)
+				return m, nil
 			}
 			m.lastError = ""
 			m.items = append(m.items, transcriptItem{role: "user", text: text})
@@ -347,6 +388,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					agentbuiltin.ClearBashApproval(m.activeSessionID())
 					m.pendingBashHash = ""
 					m.pendingQuestion = ""
+					m.pendingOptions = nil
+					m.pendingChoice = 0
 					m.input.SetValue("")
 					m.items = append(m.items, transcriptItem{role: "system", text: "已拒绝执行命令。"})
 					return m, nil
@@ -356,6 +399,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.pendingBashHash = ""
 					m.pendingQuestion = ""
 				}
+			}
+			if m.hasPendingOptions() {
+				m.pendingQuestion = ""
+				m.pendingOptions = nil
+				m.pendingChoice = 0
 			}
 			if cmd := m.handleSlash(text); cmd.handled {
 				m.input.SetValue("")
@@ -416,9 +464,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamingIndex = -1
 		if ask := m.app.Agent.ConsumeAskData(channelUser); ask != nil {
 			m.pendingQuestion = ask.Question
+			m.pendingOptions = append([]string(nil), ask.Options...)
+			m.pendingChoice = 0
 			if ask.BashHash != "" {
 				m.pendingBashHash = ask.BashHash
 				m.status = "waiting approval"
+			} else if len(m.pendingOptions) > 0 {
+				m.status = "waiting input"
 			}
 			m.items = append(m.items, transcriptItem{role: "system", text: formatAsk(ask)})
 		}
@@ -462,6 +514,9 @@ func (m model) View() string {
 	promptParts := []string{}
 	if suggestions := m.slashSuggestions(8); len(suggestions) > 0 {
 		promptParts = append(promptParts, renderSlashSuggestions(suggestions, promptW-2))
+	}
+	if m.hasPendingOptions() {
+		promptParts = append(promptParts, renderPendingOptions(m.pendingOptions, m.pendingChoice, promptW-2))
 	}
 	promptParts = append(promptParts, m.input.View())
 	prompt := boxStyle.Width(promptW).Render(strings.Join(promptParts, "\n"))
@@ -666,7 +721,9 @@ func renderSidebar(m model, width, height int) string {
 	keys := []string{
 		"keys",
 		"enter send",
-		"wheel scroll",
+		"tab choice",
+		"keys scroll",
+		"ctrl+y copy reply",
 		"esc quit",
 	}
 	top := sidebarTopLines(m, bodyWidth)
@@ -743,7 +800,9 @@ func sidebarMiddleLines(m model, width int, budget int) []string {
 	if m.pendingQuestion != "" {
 		section := []string{"", "pending"}
 		section = append(section, limitLines(wrapText(m.pendingQuestion, width), 2)...)
-		section = append(section, "reply: 允许 / 拒绝")
+		if len(m.pendingOptions) > 0 {
+			section = append(section, limitLines(wrapText("choose: "+strings.Join(m.pendingOptions, " / "), width), 2)...)
+		}
 		sections = append(sections, section)
 	}
 	if m.lastError != "" {
@@ -871,6 +930,82 @@ func renderSlashSuggestions(items []slashSuggestion, width int) string {
 		lines = append(lines, hintStyle.Render("Tab complete"))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderPendingOptions(options []string, selected int, width int) string {
+	if len(options) == 0 {
+		return ""
+	}
+	if selected < 0 || selected >= len(options) {
+		selected = 0
+	}
+	parts := make([]string, 0, len(options))
+	for i, opt := range options {
+		label := fmt.Sprintf("%d %s", i+1, opt)
+		if i == selected {
+			label = "[" + label + "]"
+		}
+		parts = append(parts, label)
+	}
+	line := "选择: " + strings.Join(parts, "  ")
+	if width > 0 && lipgloss.Width(line) > width {
+		line = truncateDisplay(line, width)
+	}
+	return hintStyle.Render(line)
+}
+
+func (m model) hasPendingOptions() bool {
+	return len(m.pendingOptions) > 0
+}
+
+func (m model) pendingOptionByInput(text string) (string, bool) {
+	if !m.hasPendingOptions() {
+		return "", false
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", false
+	}
+	if n, err := strconv.Atoi(text); err == nil && n >= 1 && n <= len(m.pendingOptions) {
+		return m.pendingOptions[n-1], true
+	}
+	for _, opt := range m.pendingOptions {
+		if strings.EqualFold(text, opt) {
+			return opt, true
+		}
+	}
+	return "", false
+}
+
+func (m *model) handleCopyCommand(text string) bool {
+	args := strings.Fields(strings.TrimSpace(text))
+	if len(args) == 0 || args[0] != "/copy" {
+		return false
+	}
+	target := "reply"
+	if len(args) > 1 {
+		target = strings.ToLower(args[1])
+	}
+	var content string
+	var label string
+	switch target {
+	case "all", "transcript":
+		content = transcriptPlainText(m.items)
+		label = "全部 transcript"
+	default:
+		content = latestAssistantText(m.items)
+		label = "最近一条 assistant 回复"
+	}
+	if strings.TrimSpace(content) == "" {
+		m.items = append(m.items, transcriptItem{role: "event", text: "没有可复制的内容。"})
+		return true
+	}
+	if err := copyTextToClipboard(content); err != nil {
+		m.items = append(m.items, transcriptItem{role: "error", text: "复制失败：" + err.Error()})
+		return true
+	}
+	m.items = append(m.items, transcriptItem{role: "event", text: "已复制" + label + "。"})
+	return true
 }
 
 func (m model) handleSlash(text string) slashResult {
@@ -1119,4 +1254,51 @@ func formatAsk(ask *agentbuiltin.AskData) string {
 		b.WriteString(strings.Join(ask.Options, " / "))
 	}
 	return b.String()
+}
+
+func latestAssistantText(items []transcriptItem) string {
+	for i := len(items) - 1; i >= 0; i-- {
+		if items[i].role == "assistant" && strings.TrimSpace(items[i].text) != "" {
+			return items[i].text
+		}
+	}
+	return ""
+}
+
+func transcriptPlainText(items []transcriptItem) string {
+	var lines []string
+	for _, item := range items {
+		text := strings.TrimSpace(item.text)
+		if text == "" {
+			continue
+		}
+		role := item.role
+		if role == "" {
+			role = "system"
+		}
+		lines = append(lines, role+": "+text)
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func copyTextToClipboard(text string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("pbcopy")
+	case "windows":
+		cmd = exec.Command("clip")
+	default:
+		if path, err := exec.LookPath("wl-copy"); err == nil {
+			cmd = exec.Command(path)
+		} else if path, err := exec.LookPath("xclip"); err == nil {
+			cmd = exec.Command(path, "-selection", "clipboard")
+		} else if path, err := exec.LookPath("xsel"); err == nil {
+			cmd = exec.Command(path, "--clipboard", "--input")
+		} else {
+			return fmt.Errorf("未找到可用剪贴板程序（wl-copy/xclip/xsel）")
+		}
+	}
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
 }

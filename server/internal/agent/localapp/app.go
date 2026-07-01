@@ -2,10 +2,12 @@ package localapp
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"xiaoli/server/internal/agent/localconfig"
 	"xiaoli/server/internal/agent/runlog"
 	agentruntime "xiaoli/server/internal/agent/runtime"
+	agentworkflow "xiaoli/server/internal/agent/workflow"
 	agentevent "xiaoli/server/internal/event"
 )
 
@@ -37,6 +39,7 @@ func New(opts Options) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	rt.ReminderStore = agentworkflow.NewReminderStore(filepath.Join(cfg.DataDir, "state", "reminders.json"))
 	bus := agentevent.NewBus()
 	runDir := cfg.RunLogDir()
 	unsubscribe := runlog.Subscribe(bus, runDir)
@@ -45,6 +48,7 @@ func New(opts Options) (*App, error) {
 		unsubscribe()
 		return nil, fmt.Errorf("agent initialization failed; check model configuration and API key")
 	}
+	agent.SetFileWriteRoots(cfg.Tools.AllowedRoots)
 	return &App{
 		Config:      cfg,
 		Runtime:     rt,

@@ -1,6 +1,9 @@
 package admin
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestWorkflowDefinitionsUseConfiguredChatReactAgent(t *testing.T) {
 	cfg := testConfig()
@@ -16,6 +19,16 @@ func TestWorkflowDefinitionsUseConfiguredChatReactAgent(t *testing.T) {
 	}
 	if got := def.Agent.Timeout.String(); got != "3m0s" {
 		t.Fatalf("chat_react timeout = %s, want 3m0s", got)
+	}
+}
+
+func TestLarkMessageTimeoutFollowsChatReactWithMargin(t *testing.T) {
+	cfg := testConfig()
+	cfg.ChatReact = parseChatReact(settingsWorkflowAgent{MaxSteps: 8, Timeout: "120s"})
+	srv := NewServer(cfg)
+
+	if got := srv.larkMessageTimeout(); got != 150*time.Second {
+		t.Fatalf("lark message timeout = %s, want 150s", got)
 	}
 }
 

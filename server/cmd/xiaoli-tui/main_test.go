@@ -97,6 +97,50 @@ func TestTruncateDisplayTinyWidth(t *testing.T) {
 	}
 }
 
+func TestLatestAssistantText(t *testing.T) {
+	items := []transcriptItem{
+		{role: "assistant", text: "first"},
+		{role: "user", text: "copy?"},
+		{role: "event", text: "run completed"},
+		{role: "assistant", text: "second"},
+		{role: "system", text: "ignored"},
+	}
+	if got := latestAssistantText(items); got != "second" {
+		t.Fatalf("latestAssistantText() = %q, want second", got)
+	}
+}
+
+func TestPendingOptionByInput(t *testing.T) {
+	m := model{pendingOptions: []string{"允许", "拒绝"}}
+	if got, ok := m.pendingOptionByInput("1"); !ok || got != "允许" {
+		t.Fatalf("pendingOptionByInput(1) = %q, %v; want 允许, true", got, ok)
+	}
+	if got, ok := m.pendingOptionByInput("拒绝"); !ok || got != "拒绝" {
+		t.Fatalf("pendingOptionByInput(拒绝) = %q, %v; want 拒绝, true", got, ok)
+	}
+	if _, ok := m.pendingOptionByInput("3"); ok {
+		t.Fatalf("pendingOptionByInput(3) ok = true, want false")
+	}
+}
+
+func TestRenderPendingOptionsMarksSelected(t *testing.T) {
+	got := renderPendingOptions([]string{"允许", "拒绝"}, 1, 80)
+	if !strings.Contains(got, "[2 拒绝]") {
+		t.Fatalf("renderPendingOptions() = %q, want selected marker", got)
+	}
+}
+
+func TestTranscriptPlainText(t *testing.T) {
+	items := []transcriptItem{
+		{role: "user", text: "你好"},
+		{role: "assistant", text: "世界"},
+	}
+	got := transcriptPlainText(items)
+	if !strings.Contains(got, "user: 你好") || !strings.Contains(got, "assistant: 世界") {
+		t.Fatalf("transcriptPlainText() = %q", got)
+	}
+}
+
 func containsLine(lines []string, want string) bool {
 	for _, line := range lines {
 		if line == want {

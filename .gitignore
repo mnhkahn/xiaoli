@@ -41,6 +41,7 @@ server/.agents/
 server/skills-lock.json
 server/wechat-login
 server/xiaoli-admin
+server/xiaoli-tui
 xiaoli-mac/xiaoli-mac.json
 xiaozhi-esp32/build/
 xiaozhi-esp32/main/boards/bread-compact-wifi-s3cam/assets.bin
