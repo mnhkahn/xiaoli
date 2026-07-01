@@ -89,6 +89,13 @@ RUN set -eux; \
     cp -a "$larkbin" /skill-bin/lark-cli; \
     chmod +x /skill-bin/lark-cli
 
+RUN set -eux; \
+    mkdir -p /fonts; \
+    curl -fsSL \
+        "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf" \
+        -o /fonts/NotoSansSC.ttf; \
+    test -s /fonts/NotoSansSC.ttf
+
 FROM debian:bookworm-slim
 
 RUN apt-get update \
@@ -101,10 +108,17 @@ RUN ldconfig
 COPY --from=go-build /out/xiaoli-admin /usr/local/bin/xiaoli-admin
 COPY --from=skill-build /skill-bin/ /usr/local/bin/
 COPY --from=skill-build /skills /opt/xiaoli/skills
+COPY --from=skill-build /fonts/NotoSansSC.ttf /usr/local/share/fonts/NotoSansSC.ttf
 COPY --from=skill-build /usr/bin/node /usr/local/bin/node
 COPY --from=skill-build /usr/lib/node_modules /usr/local/lib/node_modules
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+RUN set -eux; \
+    fc-cache -f; \
+    printf '# 中文字体检查\n\n你好，Claude Code。\n' > /tmp/cyeam-font-check.md; \
+    cyeam pdf /tmp/cyeam-font-check.md -o /tmp/cyeam-font-check.pdf --pretty; \
+    test -s /tmp/cyeam-font-check.pdf; \
+    rm -f /tmp/cyeam-font-check.md /tmp/cyeam-font-check.pdf
 RUN mkdir -p /root/.config && if [ -f /opt/xiaoli/skills/skills-lock.json ]; then cp /opt/xiaoli/skills/skills-lock.json /root/.config/skills-lock.json; fi
 COPY AGENT.md /opt/xiaoli/AGENT.md
 COPY settings.json /opt/xiaoli/settings.json
