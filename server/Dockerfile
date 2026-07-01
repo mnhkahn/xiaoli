@@ -89,17 +89,10 @@ RUN set -eux; \
     cp -a "$larkbin" /skill-bin/lark-cli; \
     chmod +x /skill-bin/lark-cli
 
-RUN set -eux; \
-    mkdir -p /fonts; \
-    curl -fsSL \
-        "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanssc/NotoSansSC%5Bwght%5D.ttf" \
-        -o /fonts/NotoSansSC.ttf; \
-    test -s /fonts/NotoSansSC.ttf
-
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates fontconfig fonts-noto-cjk git libopus0 libopusfile0 libstdc++6 \
+    && apt-get install -y --no-install-recommends ca-certificates fontconfig fonts-arphic-gbsn00lp fonts-noto-cjk git libopus0 libopusfile0 libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=onnxrt /opt/onnxruntime/lib/libonnxruntime.so* /usr/local/lib/
@@ -108,7 +101,6 @@ RUN ldconfig
 COPY --from=go-build /out/xiaoli-admin /usr/local/bin/xiaoli-admin
 COPY --from=skill-build /skill-bin/ /usr/local/bin/
 COPY --from=skill-build /skills /opt/xiaoli/skills
-COPY --from=skill-build /fonts/NotoSansSC.ttf /usr/local/share/fonts/NotoSansSC.ttf
 COPY --from=skill-build /usr/bin/node /usr/local/bin/node
 COPY --from=skill-build /usr/lib/node_modules /usr/local/lib/node_modules
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
