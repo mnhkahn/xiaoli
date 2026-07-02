@@ -41,10 +41,10 @@ func (msg shellDoneMsg) transcriptItem() transcriptItem {
 	return transcriptItem{role: "shell", text: text}
 }
 
-func startShellCommand(cwd, command string) tea.Cmd {
+func startShellCommand(ctx context.Context, cwd, command string) tea.Cmd {
 	return func() tea.Msg {
 		nextCWD := cwd
-		output, err := runShellCommand(cwd, command)
+		output, err := runShellCommandContext(ctx, cwd, command)
 		if err == nil {
 			if changed, ok := parseShellCD(cwd, command); ok {
 				nextCWD = changed
@@ -55,6 +55,12 @@ func startShellCommand(cwd, command string) tea.Cmd {
 }
 
 func runShellCommand(cwd, command string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return runShellCommandContext(ctx, cwd, command)
+}
+
+func runShellCommandContext(ctx context.Context, cwd, command string) (string, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return "", nil
@@ -62,8 +68,6 @@ func runShellCommand(cwd, command string) (string, error) {
 	if changed, ok := parseShellCD(cwd, command); ok {
 		return changed, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
 	shell := os.Getenv("SHELL")
 	if strings.TrimSpace(shell) == "" {
 		shell = "/bin/sh"
@@ -76,6 +80,9 @@ func runShellCommand(cwd, command string) (string, error) {
 	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
 		return buf.String(), fmt.Errorf("command timed out after 2m")
+	}
+	if ctx.Err() == context.Canceled {
+		return buf.String(), context.Canceled
 	}
 	return buf.String(), err
 }

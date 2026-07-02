@@ -1,15 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func startApprovedBashCommand(cwd, command, sessionID string) tea.Cmd {
+func startApprovedBashCommand(ctx context.Context, cwd, command, sessionID string) tea.Cmd {
 	return func() tea.Msg {
-		output, err := runShellCommand(cwd, command)
+		output, err := runShellCommandContext(ctx, cwd, command)
 		return bashApprovalDoneMsg{command: command, output: output, err: err, sessionID: sessionID}
 	}
 }

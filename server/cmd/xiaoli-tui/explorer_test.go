@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func TestBuildTreeSortsDirectoriesBeforeFiles(t *testing.T) {
@@ -47,6 +48,22 @@ func TestTreeExplorerRendersPreview(t *testing.T) {
 		if w := lipgloss.Width(line); w > 100 {
 			t.Fatalf("line %d width = %d, want <= 100: %q", i, w, line)
 		}
+	}
+}
+
+func TestTreeExplorerHighlightsSelectedRow(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ex := newTreeExplorer(dir, 100, 30)
+	got := ex.renderLeft(40, 8)
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("renderLeft() = %q, want ANSI highlight", got)
+	}
+	if plain := stripTestANSI(got); !strings.Contains(plain, "›") || !strings.Contains(plain, "main.go") {
+		t.Fatalf("plain renderLeft() = %q, want selected marker and file", plain)
 	}
 }
 
@@ -120,6 +137,19 @@ func TestOpenExplorerCommand(t *testing.T) {
 	}
 	if got := m.openExplorerCommand("/sessions"); got != nil {
 		t.Fatalf("openExplorerCommand(/sessions) = %#v, want nil", got)
+	}
+}
+
+func TestDiffExplorerHandlesSpaceForStageToggle(t *testing.T) {
+	ex := &tuiExplorer{mode: explorerDiff, entries: []explorerEntry{{Path: "a.go", Status: " M", IsDir: true}}, selected: 0}
+	_, _, handled := ex.handleKey(tea.KeyMsg{Type: tea.KeySpace})
+	if !handled {
+		t.Fatalf("diff explorer space handled = false, want true")
+	}
+	tree := &tuiExplorer{mode: explorerTree, entries: []explorerEntry{{Path: "a.go", Label: "a.go"}}, selected: 0}
+	_, _, handled = tree.handleKey(tea.KeyMsg{Type: tea.KeySpace})
+	if handled {
+		t.Fatalf("tree explorer space handled = true, want false")
 	}
 }
 

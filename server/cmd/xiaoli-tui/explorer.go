@@ -152,6 +152,11 @@ func (e *tuiExplorer) handleKey(msg tea.KeyMsg) (*tuiExplorer, tea.Cmd, bool) {
 	case "enter":
 		e.activateSelected()
 		return e, nil, true
+	case " ", "space":
+		if e.mode == explorerDiff {
+			e.activateSelected()
+			return e, nil, true
+		}
 	case "y":
 		text := e.copyText()
 		if strings.TrimSpace(text) == "" {
@@ -231,9 +236,16 @@ func (e *tuiExplorer) View() string {
 
 	left := e.renderLeft(leftContentWidth, bodyHeight)
 	right := e.renderRight(rightContentWidth, bodyHeight)
+	leftBox := boxStyle
+	rightBox := boxStyle
+	if e.focusRight {
+		rightBox = boxStyle.BorderForeground(lipgloss.Color("75"))
+	} else {
+		leftBox = boxStyle.BorderForeground(lipgloss.Color("75"))
+	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		boxStyle.Width(leftContentWidth).Height(bodyHeight).Render(left),
-		boxStyle.Width(rightContentWidth).Height(bodyHeight).Render(right),
+		leftBox.Width(leftContentWidth).Height(bodyHeight).Render(left),
+		rightBox.Width(rightContentWidth).Height(bodyHeight).Render(right),
 	)
 	footer := ""
 	if e.err != "" {
@@ -257,7 +269,7 @@ func (e *tuiExplorer) renderLeft(width, height int) string {
 		style := eventStyle
 		if i == e.selected {
 			prefix = "› "
-			style = userStyle
+			style = explorerSelectedStyle()
 		}
 		line := prefix + e.entryLabel(entry)
 		lines = append(lines, style.Render(fitDisplay(line, width)))
@@ -269,6 +281,13 @@ func (e *tuiExplorer) renderLeft(width, height int) string {
 		lines = lines[:height]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func explorerSelectedStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("230")).
+		Background(lipgloss.Color("62")).
+		Bold(true)
 }
 
 func (e *tuiExplorer) renderRight(width, height int) string {

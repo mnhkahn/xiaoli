@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 func TestMiniEditorMovesAndInsertsText(t *testing.T) {
@@ -75,5 +77,17 @@ func TestMiniEditorRenderShowsModeAndCursor(t *testing.T) {
 	got = stripTestANSI(ed.render(40, 8))
 	if !strings.Contains(got, "INSERT") {
 		t.Fatalf("render insert = %q", got)
+	}
+}
+
+func TestMiniEditorRenderHighlightsCursor(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	ed := newMiniEditor("a.go", "one\n")
+	got := ed.render(40, 8)
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("render = %q, want ANSI cursor highlight", got)
+	}
+	if plain := stripTestANSI(got); !strings.Contains(plain, "one") {
+		t.Fatalf("plain render = %q, want content", plain)
 	}
 }

@@ -40,7 +40,10 @@ func (m *model) startGitCmsgSlash(text string) tea.Cmd {
 		return nil
 	}
 	m.pendingGitCmsg = gitCmsgPending{}
-	return startGitCmsgPrepare(m.app.Agent, m.cwd, cmd.Args)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	m.activeCancel = cancel
+	m.chatCanceled = false
+	return startGitCmsgPrepare(ctx, m.app.Agent, m.cwd, cmd.Args)
 }
 
 func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
@@ -57,7 +60,10 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		m.status = "git commit"
 		m.items = append(m.items, transcriptItem{role: "event", text: "git commit started"})
 		m.syncViewport(true)
-		return startGitCmsgCommit(m.cwd, msg)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		m.activeCancel = cancel
+		m.chatCanceled = false
+		return startGitCmsgCommit(ctx, m.cwd, msg)
 	case choice == "重新生成" || strings.EqualFold(choice, "regenerate"):
 		args := m.pendingGitCmsg.Args
 		m.pendingGitCmsg = gitCmsgPending{}
@@ -69,7 +75,10 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		m.status = "commit"
 		m.items = append(m.items, transcriptItem{role: "event", text: "commit message regenerating"})
 		m.syncViewport(true)
-		return startGitCmsgPrepare(m.app.Agent, m.cwd, args)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		m.activeCancel = cancel
+		m.chatCanceled = false
+		return startGitCmsgPrepare(ctx, m.app.Agent, m.cwd, args)
 	case choice == "取消操作" || isReject(choice):
 		m.pendingGitCmsg = gitCmsgPending{}
 		m.pendingQuestion = ""
@@ -86,13 +95,13 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 	}
 }
 
-func startGitCmsgPrepare(agent *agentruntime.Agent, cwd, args string) tea.Cmd {
+func startGitCmsgPrepare(ctx context.Context, agent *agentruntime.Agent, cwd, args string) tea.Cmd {
 	return func() tea.Msg {
-		stat, files, diff, err := prepareGitCmsgDiff(cwd, args)
+		stat, files, diff, err := prepareGitCmsgDiff(ctx, cwd, args)
 		if err != nil {
 			return gitCmsgPrepareMsg{args: args, err: err}
 		}
-		msg, err := generateGitCommitMessage(agent, stat, files, diff)
+		msg, err := generateGitCommitMessage(ctx, agent, stat, files, diff)
 		if err != nil {
 			return gitCmsgPrepareMsg{args: args, stat: stat, files: files, diff: diff, err: err}
 		}
@@ -100,26 +109,32 @@ func startGitCmsgPrepare(agent *agentruntime.Agent, cwd, args string) tea.Cmd {
 	}
 }
 
-func startGitCmsgCommit(cwd, message string) tea.Cmd {
+func startGitCmsgCommit(ctx context.Context, cwd, message string) tea.Cmd {
 	return func() tea.Msg {
-		out, err := runGitCombined(cwd, append([]string{"commit", "-m"}, splitCommitMessageArgs(message)...)...)
+		out, err := runGitCombinedContext(ctx, cwd, append([]string{"commit", "-m"}, splitCommitMessageArgs(message)...)...)
 		return gitCmsgCommitMsg{message: message, output: out, err: err}
 	}
 }
 
-func prepareGitCmsgDiff(cwd, args string) (string, string, string, error) {
-	addArgs := []string{"add"}
-	if fields := strings.Fields(args); len(fields) > 0 {
-		addArgs = append(addArgs, fields...)
-	} else {
-		addArgs = append(addArgs, ".")
-	}
-	if out, err := runGitCombined(cwd, addArgs...); err != nil {
-		return "", "", "", fmt.Errorf("git add 失败：%v\n%s", err, strings.TrimSpace(out))
-	}
-	files, err := runGitCombined(cwd, "diff", "--cached", "--name-only")
+func prepareGitCmsgDiff(ctx context.Context, cwd, args string) (string, string, string, error) {
+	files, err := runGitCombinedContext(ctx, cwd, "diff", "--cached", "--name-only")
 	if err != nil {
 		return "", "", "", fmt.Errorf("读取暂存文件失败：%v\n%s", err, strings.TrimSpace(files))
+	}
+	if strings.TrimSpace(files) == "" {
+		addArgs := []string{"add"}
+		if fields := strings.Fields(args); len(fields) > 0 {
+			addArgs = append(addArgs, fields...)
+		} else {
+			addArgs = append(addArgs, ".")
+		}
+		if out, err := runGitCombinedContext(ctx, cwd, addArgs...); err != nil {
+			return "", "", "", fmt.Errorf("git add 失败：%v\n%s", err, strings.TrimSpace(out))
+		}
+		files, err = runGitCombinedContext(ctx, cwd, "diff", "--cached", "--name-only")
+		if err != nil {
+			return "", "", "", fmt.Errorf("读取暂存文件失败：%v\n%s", err, strings.TrimSpace(files))
+		}
 	}
 	if strings.TrimSpace(files) == "" {
 		return "", "", "", fmt.Errorf("暂存区没有变更，无法生成提交信息")
@@ -127,18 +142,18 @@ func prepareGitCmsgDiff(cwd, args string) (string, string, string, error) {
 	if bad := suspiciousGitFiles(files); len(bad) > 0 {
 		return "", "", "", fmt.Errorf("暂存区包含疑似不应提交的文件，请先处理后再运行 /commit：\n%s", strings.Join(bad, "\n"))
 	}
-	stat, err := runGitCombined(cwd, "diff", "--cached", "--stat")
+	stat, err := runGitCombinedContext(ctx, cwd, "diff", "--cached", "--stat")
 	if err != nil {
 		return "", "", "", fmt.Errorf("读取暂存统计失败：%v\n%s", err, strings.TrimSpace(stat))
 	}
-	diff, err := runGitCombined(cwd, "diff", "--cached")
+	diff, err := runGitCombinedContext(ctx, cwd, "diff", "--cached")
 	if err != nil {
 		return "", "", "", fmt.Errorf("读取暂存 diff 失败：%v\n%s", err, strings.TrimSpace(diff))
 	}
 	return stat, files, diff, nil
 }
 
-func generateGitCommitMessage(agent *agentruntime.Agent, stat, files, diff string) (string, error) {
+func generateGitCommitMessage(ctx context.Context, agent *agentruntime.Agent, stat, files, diff string) (string, error) {
 	if agent == nil {
 		return "", fmt.Errorf("agent 未初始化")
 	}
@@ -148,8 +163,6 @@ func generateGitCommitMessage(agent *agentruntime.Agent, stat, files, diff strin
 	}
 	system := "你是 Git 提交信息助手。只输出一条中文 Conventional Commits 提交信息，不要解释，不要 Markdown。格式：type(scope): 简短中文描述。"
 	user := fmt.Sprintf("根据下面暂存区变更生成提交信息。\n\n文件：\n%s\n\n统计：\n%s\n\nDiff：\n%s", strings.TrimSpace(files), strings.TrimSpace(stat), diff)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
 	msg, err := agent.Generate(ctx, system, user)
 	if err != nil {
 		return "", fmt.Errorf("生成提交信息失败：%w", err)
@@ -218,6 +231,10 @@ func suspiciousGitFiles(files string) []string {
 func runGitCombined(cwd string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	return runGitCombinedContext(ctx, cwd, args...)
+}
+
+func runGitCombinedContext(ctx context.Context, cwd string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = cwd
 	var buf bytes.Buffer
@@ -226,6 +243,9 @@ func runGitCombined(cwd string, args ...string) (string, error) {
 	err := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
 		return buf.String(), fmt.Errorf("git %s timed out", strings.Join(args, " "))
+	}
+	if ctx.Err() == context.Canceled {
+		return buf.String(), context.Canceled
 	}
 	return buf.String(), err
 }

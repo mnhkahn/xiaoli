@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 type editorMode string
@@ -236,8 +237,11 @@ func (e *miniEditor) render(width, height int) string {
 		line := e.lines[y]
 		if y == e.cursorY {
 			line = renderEditorCursor(line, e.cursorX)
+			line = editorCursorLineStyle().Render(fitDisplay(line, width))
+		} else {
+			line = fitDisplay(line, width)
 		}
-		lines = append(lines, fitDisplay(line, width))
+		lines = append(lines, line)
 	}
 	for len(lines) < height-1 {
 		lines = append(lines, "")
@@ -263,10 +267,22 @@ func renderEditorCursor(line string, cursorX int) string {
 	runes := []rune(line)
 	cursorX = clamp(cursorX, 0, len(runes))
 	if len(runes) == 0 {
-		return userStyle.Render(" ")
+		return editorCursorStyle().Render(" ")
 	}
 	if cursorX == len(runes) {
-		return string(runes) + userStyle.Render(" ")
+		return string(runes) + editorCursorStyle().Render(" ")
 	}
-	return string(runes[:cursorX]) + userStyle.Render(string(runes[cursorX])) + string(runes[cursorX+1:])
+	return string(runes[:cursorX]) + editorCursorStyle().Render(string(runes[cursorX])) + string(runes[cursorX+1:])
+}
+
+func editorCursorStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("16")).
+		Background(lipgloss.Color("229")).
+		Bold(true)
+}
+
+func editorCursorLineStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color("236"))
 }
