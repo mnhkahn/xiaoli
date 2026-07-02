@@ -1,0 +1,9 @@
+*
+!go.mod
+!go.sum
+!internal/**
+!server/**
+server/.env
+server/xiaoli-tui
+.git
+.DS_Store

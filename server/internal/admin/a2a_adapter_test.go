@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	agentruntime "github.com/mnhkahn/xiaoli-esp32/internal/agent/runtime"
 	a2a "github.com/mnhkahn/xiaoli-esp32/server/internal/a2a"
-	agentruntime "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/runtime"
 )
 
 type fakeA2AAgent struct {

@@ -2,7 +2,7 @@ app = "xiaoli-server"
 primary_region = "nrt"
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = "server/Dockerfile"
 
 [env]
   TZ = "Asia/Shanghai"

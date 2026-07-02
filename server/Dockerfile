@@ -11,11 +11,14 @@ RUN apt-get update \
 
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
-COPY cmd/ cmd/
 COPY internal/ internal/
+COPY server/go.mod server/go.sum ./server/
+WORKDIR /src/server
+RUN GOWORK=off go mod download
+COPY server/cmd/ cmd/
+COPY server/internal/ internal/
 ENV CGO_ENABLED=1
-RUN go build -o /out/xiaoli-admin ./cmd/xiaoli-admin
+RUN GOWORK=off go build -o /out/xiaoli-admin ./cmd/xiaoli-admin
 
 FROM debian:bookworm-slim AS onnxrt
 
@@ -117,10 +120,10 @@ RUN set -eux; \
     test -s /tmp/cyeam-font-check.pdf; \
     rm -f /tmp/cyeam-font-check.md /tmp/cyeam-font-check.pdf
 RUN mkdir -p /root/.config && if [ -f /opt/xiaoli/skills/skills-lock.json ]; then cp /opt/xiaoli/skills/skills-lock.json /root/.config/skills-lock.json; fi
-COPY AGENT.md /opt/xiaoli/AGENT.md
-COPY settings.json /opt/xiaoli/settings.json
-COPY agents/ /opt/xiaoli/agents/
-COPY .cyeam/ /root/.cyeam/
+COPY server/AGENT.md /opt/xiaoli/AGENT.md
+COPY server/settings.json /opt/xiaoli/settings.json
+COPY server/agents/ /opt/xiaoli/agents/
+COPY server/.cyeam/ /root/.cyeam/
 
 WORKDIR /data
 

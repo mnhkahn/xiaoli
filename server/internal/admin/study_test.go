@@ -1,7 +1,7 @@
 package admin
 
 import (
-	agentworkflow "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/workflow"
+	agentworkflow "github.com/mnhkahn/xiaoli-esp32/internal/agent/workflow"
 	"testing"
 	"time"
 )

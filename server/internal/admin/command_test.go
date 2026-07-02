@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	agentwechat "github.com/mnhkahn/xiaoli-esp32/server/internal/agent/channel/wechat"
+	agentwechat "github.com/mnhkahn/xiaoli-esp32/internal/agent/channel/wechat"
 )
 
 func TestParseBuiltinCommandRequiresLeadingSlash(t *testing.T) {

@@ -26,11 +26,10 @@ fly auth login
 Create the app once:
 
 ```bash
-cd server
 fly apps create xiaoli-server
 ```
 
-If you change the app name, update `app` and `PUBLIC_BASE_URL` in `fly.toml`.
+If you change the app name, update `app` and `PUBLIC_BASE_URL` in `server/fly.toml`.
 
 Set required model secrets. For the current defaults, the minimum useful set is:
 
@@ -69,8 +68,11 @@ Rotate the Logto app secret if it is ever exposed.
 Deploy:
 
 ```bash
-fly deploy --build-arg XIAOLI_SKILLS_CACHE_BUST=$(date +%Y%m%d%H%M%S)
+fly deploy -c server/fly.toml --build-arg XIAOLI_SKILLS_CACHE_BUST=$(date +%Y%m%d%H%M%S)
 ```
+
+Run deploy commands from the repository root. The Docker build context needs
+the root `internal` package because both Server and TUI share it.
 
 `XIAOLI_SKILLS` defaults to floating installs such as `mnhkahn/cyeam-cli`.
 Pass a fresh `XIAOLI_SKILLS_CACHE_BUST` value when deploying so Docker does not
@@ -85,76 +87,7 @@ curl https://xiaoli-server.fly.dev/xiaozhi/ota/
 
 ## Local TUI
 
-Install the local Xiaoli TUI into the current Go environment:
-
-```bash
-go install github.com/mnhkahn/xiaoli-esp32/server/cmd/xiaoli-tui@latest
-```
-
-For local development from this repository:
-
-```bash
-cd server
-go install ./cmd/xiaoli-tui
-```
-
-Initialize local settings and secrets:
-
-```bash
-xiaoli-tui -init
-```
-
-Then edit `~/.xiaoli/settings.json` to set `models.default` and model
-endpoints, and put API keys in `~/.xiaoli/secrets.json` or environment
-variables. Run:
-
-```bash
-xiaoli-tui
-```
-
-After exit, the TUI prints the current session ID and a continue command. Resume
-that session later with:
-
-```bash
-xiaoli-tui -s <session-id>
-```
-
-The local TUI reads shared skills from `~/.agents/skills` and Xiaoli-specific
-skills from `~/.xiaoli/skills`. It loads prompts in this order when the files
-exist:
-
-1. `~/.agents/AGENT.md`
-2. `~/.xiaoli/AGENT.md`
-3. `~/.xiaoli/SOUL.md`
-
-The TUI reuses the server slash command handler. Useful local commands include
-`/skills`, `/model list`, `/model use <id>`, `/sessions`, `/resume <id>`,
-`/session <id>`, `/memory list`, `/mcp`, `/tasks`, `/log <keyword>`, and
-`/reminder list`. Local log search also supports `/log --all`, `/log --tools`,
-and `/log --errors`. When bash is enabled and a command needs approval, reply
-with `允许` or `拒绝` in the TUI.
-
-For coding workflows, `/tree` opens a full-screen project browser and `/diff`
-opens a full-screen Git changes browser. The TUI keeps mouse capture off by
-default so terminal text selection works everywhere. Use Up/Down, PgUp/PgDn,
-Home/End, Enter, `y`, `q`, and `Esc` in those browsers; press `Ctrl+O` (`⌃O`)
-to temporarily toggle mouse selection and wheel scrolling. Press `Ctrl+S`
-(`⌃S`) to run the right-sidebar Git sync action. File previews use syntax
-highlighting, diffs highlight metadata, hunks, additions, and deletions. In
-`/tree`, press `Tab` or `l` on a file to focus the right editor, use
-`h`/`j`/`k`/`l` to move, `i` to insert, `Esc` for normal mode, and `:w`,
-`:q`, or `:wq` for save and close operations.
-
-Model-visible built-in tools in local TUI include web search, optional web
-fetch, local memory, local run-log search, tasks, reminders stored at
-`~/.xiaoli/state/reminders.json`, and `file_write` under
-`tools.allowed_roots`. `bash` is available when `tools.bash` is true.
-
-Runtime logs are written to `~/.xiaoli/logs/tui.log` so they do not corrupt the
-terminal UI. The main transcript keeps only readable agent events and assistant
-output. Use the mouse wheel, Up/Down, PgUp/PgDn, Ctrl+U/Ctrl+D, Home, and End to
-scroll inside the TUI when mouse mode is enabled. The right sidebar keeps status, model, cwd, context
-usage, task/MCP summaries, and key hints visible with a fixed-priority layout.
+The local terminal UI has moved to `../tui`. See `../tui/README.md` for installation and usage.
 
 ## Firmware OTA URL
 
