@@ -14,6 +14,7 @@ import (
 	agentchannel "github.com/mnhkahn/xiaoli-esp32/internal/agent/channel"
 	"github.com/mnhkahn/xiaoli-esp32/internal/agent/localapp"
 	agentmodel "github.com/mnhkahn/xiaoli-esp32/internal/agent/model"
+	"github.com/mnhkahn/xiaoli-esp32/internal/agent/provider"
 	"github.com/mnhkahn/xiaoli-esp32/internal/agent/runlog"
 	agentruntime "github.com/mnhkahn/xiaoli-esp32/internal/agent/runtime"
 	agentsession "github.com/mnhkahn/xiaoli-esp32/internal/agent/session"
@@ -212,8 +213,18 @@ func (d *tuiSlashDeps) CompressSession(ctx context.Context) string {
 	return result
 }
 
-func (d *tuiSlashDeps) ProviderBalances(context.Context) map[string]string {
-	return nil
+func (d *tuiSlashDeps) ProviderBalances(ctx context.Context) map[string]string {
+	if d == nil || d.app == nil {
+		return nil
+	}
+	models := make([]provider.ModelConfig, 0, len(d.app.Runtime.LLMModelConfigs))
+	for id, model := range d.app.Runtime.LLMModelConfigs {
+		if model.ID == "" {
+			model.ID = id
+		}
+		models = append(models, provider.ModelConfig{ID: model.ID, BaseURL: model.BaseURL, APIKey: model.APIKey})
+	}
+	return provider.UsageFromModels(ctx, models)
 }
 
 func (d *tuiSlashDeps) MemoryList(ctx context.Context) string {

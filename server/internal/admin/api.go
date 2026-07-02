@@ -409,37 +409,14 @@ func (d adminSlashDeps) ProviderBalances(ctx context.Context) map[string]string 
 	if models == nil {
 		return nil
 	}
-	keys := map[string]string{}
-	for _, m := range models {
-		idx := strings.Index(m.ID, ":")
-		if idx <= 0 {
-			continue
+	items := make([]provider.ModelConfig, 0, len(models))
+	for id, m := range models {
+		if m.ID == "" {
+			m.ID = id
 		}
-		name := m.ID[:idx]
-		existing, ok := keys[name]
-		if !ok || (existing == "" && m.APIKey != "") {
-			keys[name] = m.APIKey
-		}
+		items = append(items, provider.ModelConfig{ID: m.ID, BaseURL: m.BaseURL, APIKey: m.APIKey})
 	}
-	balances := map[string]string{}
-	for name, apiKey := range keys {
-		if apiKey == "" {
-			balances[name] = "未配置 API Key"
-			continue
-		}
-		p := provider.Get(name)
-		if p == nil {
-			balances[name] = "N/A"
-			continue
-		}
-		bal, err := p.CheckBalance(ctx, apiKey)
-		if err != nil {
-			balances[name] = "查询失败"
-			continue
-		}
-		balances[name] = bal
-	}
-	return balances
+	return provider.UsageFromModels(ctx, items)
 }
 
 func (d adminSlashDeps) SessionContext(ctx context.Context, id string) string {

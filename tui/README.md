@@ -23,9 +23,14 @@ Initialize local settings and secrets:
 xiaoli-tui -init
 ```
 
-Then edit `~/.xiaoli/settings.json` to set `models.default` and model
-endpoints, and put API keys in `~/.xiaoli/secrets.json` or environment
-variables. Run:
+If no model is configured yet, init starts a short model wizard. Choose a
+provider, enter the API key, and Xiaoli writes the matching model endpoint into
+`~/.xiaoli/settings.json` while storing the key in `~/.xiaoli/secrets.json`.
+Common providers include OpenRouter, SiliconFlow, Ark / 火山方舟, OpenAI
+compatible, and custom OpenAI-compatible endpoints. You can edit both files
+later if you need more models.
+
+Run:
 
 ```bash
 xiaoli-tui
@@ -54,11 +59,11 @@ terminal UI.
 ## Commands
 
 The TUI reuses the shared slash command handler. Useful local commands include
-`/skills`, `/model list`, `/model use <id>`, `/sessions`, `/resume <id>`,
-`/session <id>`, `/memory list`, `/mcp`, `/tasks`, `/log <keyword>`, and
-`/reminder list`. Local log search also supports `/log --all`, `/log --tools`,
-and `/log --errors`. When bash is enabled and a command needs approval, reply
-with `允许` or `拒绝` in the TUI.
+`/skills`, `/model list`, `/model use <id>`, `/usage`, `/sessions`,
+`/resume <id>`, `/session <id>`, `/memory list`, `/mcp`, `/tasks`,
+`/log <keyword>`, and `/reminder list`. Local log search also supports
+`/log --all`, `/log --tools`, and `/log --errors`. When bash is enabled and a
+command needs approval, reply with `允许` or `拒绝` in the TUI.
 
 For coding workflows, `/tree` opens a full-screen project browser and `/diff`
 opens a full-screen Git changes browser. `/commit` generates a commit message

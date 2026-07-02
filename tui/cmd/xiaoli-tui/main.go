@@ -168,8 +168,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "xiaoli-tui init: %v\n", err)
 			os.Exit(1)
 		}
+		if localconfig.NeedsModelWizard(cfg) {
+			fmt.Println("No local model configured yet. Let's set one up.")
+			cfg, err = localconfig.RunModelWizard(*configPath, os.Stdin, os.Stdout)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "xiaoli-tui init model: %v\n", err)
+				os.Exit(1)
+			}
+		}
 		fmt.Printf("Created local Xiaoli config under %s\n", cfg.DataDir)
-		fmt.Println("Edit settings.json to set models.default, then put API keys in secrets.json or env.")
+		fmt.Println("You can edit settings.json and secrets.json later to adjust models.")
 		return
 	}
 
@@ -744,7 +752,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pendingGitCmsg = gitCmsgPending{Active: true, Args: msg.args, Message: msg.message}
 		m.pendingQuestion = formatGitCmsgQuestion(msg)
-		m.pendingOptions = []string{"确认提交", "重新生成", "取消操作"}
+		m.pendingOptions = []string{"提交并推送", "确认提交", "重新生成", "取消操作"}
 		m.pendingChoice = 0
 		m.items = append(m.items, transcriptItem{role: "assistant", text: m.pendingQuestion})
 		m.syncViewport(true)
@@ -771,7 +779,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastError = msg.err.Error()
 			m.items = append(m.items, transcriptItem{role: "error", text: msg.err.Error()})
 		} else {
-			m.items = append(m.items, transcriptItem{role: "system", text: "提交完成。\n" + strings.TrimSpace(msg.output)})
+			doneText := "提交完成。"
+			if msg.push {
+				doneText = "提交并推送完成。"
+			}
+			m.items = append(m.items, transcriptItem{role: "system", text: doneText + "\n" + strings.TrimSpace(msg.output)})
 		}
 		m.syncViewport(true)
 		return m, nil

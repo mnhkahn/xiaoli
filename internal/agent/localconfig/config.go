@@ -1,8 +1,10 @@
 package localconfig
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,10 +103,9 @@ func DefaultConfig() Config {
 
 func Load(path string) (Config, error) {
 	cfg := DefaultConfig()
-	if strings.TrimSpace(path) == "" {
-		path = filepath.Join(cfg.DataDir, "settings.json")
-	}
-	data, err := os.ReadFile(expandHome(path))
+	path = SettingsPath(path)
+	cfg.DataDir = filepath.Dir(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return cfg, nil
@@ -138,15 +139,23 @@ func LoadSecrets(path string) (map[string]string, error) {
 	return secrets, nil
 }
 
-func EnsureDefaults(path string) (Config, error) {
+func SettingsPath(path string) string {
 	cfg := DefaultConfig()
 	if strings.TrimSpace(path) == "" {
 		path = filepath.Join(cfg.DataDir, "settings.json")
 	}
-	path = expandHome(path)
+	return expandHome(path)
+}
+
+func EnsureDefaults(path string) (Config, error) {
+	cfg := DefaultConfig()
+	path = SettingsPath(path)
 	cfg.DataDir = filepath.Dir(path)
 	cfg.applyDefaults()
 	if _, err := os.Stat(path); err == nil {
+		if err := ensureSecretsFile(cfg.DataDir); err != nil {
+			return Config{}, err
+		}
 		return Load(path)
 	} else if !os.IsNotExist(err) {
 		return Config{}, err
@@ -161,15 +170,193 @@ func EnsureDefaults(path string) (Config, error) {
 	if err := os.WriteFile(path, append(body, '\n'), 0600); err != nil {
 		return Config{}, err
 	}
-	secretPath := filepath.Join(cfg.DataDir, "secrets.json")
-	if _, err := os.Stat(secretPath); os.IsNotExist(err) {
-		if err := os.WriteFile(secretPath, []byte("{\n}\n"), 0600); err != nil {
-			return Config{}, err
-		}
-	} else if err != nil {
+	if err := ensureSecretsFile(cfg.DataDir); err != nil {
 		return Config{}, err
 	}
 	return Load(path)
+}
+
+func ensureSecretsFile(dataDir string) error {
+	secretPath := filepath.Join(dataDir, "secrets.json")
+	if _, err := os.Stat(secretPath); os.IsNotExist(err) {
+		return os.WriteFile(secretPath, []byte("{\n}\n"), 0600)
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
+func Save(path string, cfg Config) error {
+	path = SettingsPath(path)
+	cfg.DataDir = filepath.Dir(path)
+	cfg.applyDefaults()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	body, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(body, '\n'), 0600)
+}
+
+func SaveSecrets(dataDir string, secrets map[string]string) error {
+	if secrets == nil {
+		secrets = map[string]string{}
+	}
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return err
+	}
+	body, err := json.MarshalIndent(secrets, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dataDir, "secrets.json"), append(body, '\n'), 0600)
+}
+
+func NeedsModelWizard(cfg Config) bool {
+	if strings.TrimSpace(cfg.Models.Default) == "" {
+		return true
+	}
+	if cfg.Models.Options == nil {
+		return true
+	}
+	option, ok := cfg.Models.Options[cfg.Models.Default]
+	return !ok || strings.TrimSpace(option.BaseURL) == "" || strings.TrimSpace(option.Model) == ""
+}
+
+type ModelProviderPreset struct {
+	ID            string
+	Label         string
+	BaseURL       string
+	Model         string
+	APIKeyEnv     string
+	MaxTokens     int
+	ContextLength int
+	CustomBaseURL bool
+	CustomModel   bool
+	CustomKeyEnv  bool
+}
+
+func ModelProviderPresets() []ModelProviderPreset {
+	return []ModelProviderPreset{
+		{ID: "openrouter", Label: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1", Model: "openrouter/free", APIKeyEnv: "OPENROUTER_API_KEY", MaxTokens: 4096, ContextLength: 128000},
+		{ID: "siliconflow", Label: "SiliconFlow", BaseURL: "https://api.siliconflow.cn/v1", Model: "Qwen/Qwen3-8B", APIKeyEnv: "SILICONFLOW_API_KEY", MaxTokens: 4096, ContextLength: 32768},
+		{ID: "ark", Label: "Ark / 火山方舟", BaseURL: "https://ark.cn-beijing.volces.com/api/v3", APIKeyEnv: "ARK_API_KEY", MaxTokens: 4096, ContextLength: 32768, CustomModel: true},
+		{ID: "openai", Label: "OpenAI Compatible", BaseURL: "https://api.openai.com/v1", Model: "gpt-4.1-mini", APIKeyEnv: "OPENAI_API_KEY", MaxTokens: 4096, ContextLength: 128000, CustomBaseURL: true, CustomModel: true},
+		{ID: "custom", Label: "Custom", APIKeyEnv: "XIAOLI_API_KEY", MaxTokens: 4096, ContextLength: 32768, CustomBaseURL: true, CustomModel: true, CustomKeyEnv: true},
+	}
+}
+
+func RunModelWizard(path string, in io.Reader, out io.Writer) (Config, error) {
+	path = SettingsPath(path)
+	cfg, err := Load(path)
+	if err != nil {
+		return Config{}, err
+	}
+	scanner := bufio.NewScanner(in)
+	presets := ModelProviderPresets()
+	fmt.Fprintln(out, "Choose model provider:")
+	for i, preset := range presets {
+		fmt.Fprintf(out, "%d. %s\n", i+1, preset.Label)
+	}
+	choice, err := promptRequired(scanner, out, "Provider", "1")
+	if err != nil {
+		return Config{}, err
+	}
+	preset, err := selectProviderPreset(presets, choice)
+	if err != nil {
+		return Config{}, err
+	}
+	baseURL := preset.BaseURL
+	if preset.CustomBaseURL || strings.TrimSpace(baseURL) == "" {
+		baseURL, err = promptRequired(scanner, out, "Base URL", baseURL)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	model := preset.Model
+	if preset.CustomModel || strings.TrimSpace(model) == "" {
+		model, err = promptRequired(scanner, out, "Model", model)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	keyEnv := preset.APIKeyEnv
+	if preset.CustomKeyEnv || strings.TrimSpace(keyEnv) == "" {
+		keyEnv, err = promptRequired(scanner, out, "API key name", keyEnv)
+		if err != nil {
+			return Config{}, err
+		}
+	}
+	apiKey, err := promptRequired(scanner, out, "API Key", "")
+	if err != nil {
+		return Config{}, err
+	}
+	if cfg.Models.Options == nil {
+		cfg.Models.Options = map[string]ModelEndpoint{}
+	}
+	cfg.Models.Default = preset.ID
+	cfg.Models.Options[preset.ID] = ModelEndpoint{
+		Name:          preset.Label,
+		BaseURL:       baseURL,
+		Model:         model,
+		APIKeyEnv:     keyEnv,
+		MaxTokens:     preset.MaxTokens,
+		ContextLength: preset.ContextLength,
+	}
+	if err := Save(path, cfg); err != nil {
+		return Config{}, err
+	}
+	secrets, err := LoadSecrets(filepath.Join(cfg.DataDir, "secrets.json"))
+	if os.IsNotExist(err) {
+		secrets = map[string]string{}
+	} else if err != nil {
+		return Config{}, err
+	}
+	secrets[keyEnv] = apiKey
+	if err := SaveSecrets(cfg.DataDir, secrets); err != nil {
+		return Config{}, err
+	}
+	fmt.Fprintf(out, "Saved model %q to %s\n", preset.ID, path)
+	return Load(path)
+}
+
+func selectProviderPreset(presets []ModelProviderPreset, choice string) (ModelProviderPreset, error) {
+	choice = strings.TrimSpace(strings.ToLower(choice))
+	if choice == "" {
+		choice = "1"
+	}
+	for i, preset := range presets {
+		if choice == fmt.Sprintf("%d", i+1) || choice == strings.ToLower(preset.ID) || choice == strings.ToLower(preset.Label) {
+			return preset, nil
+		}
+	}
+	return ModelProviderPreset{}, fmt.Errorf("unknown model provider %q", choice)
+}
+
+func promptRequired(scanner *bufio.Scanner, out io.Writer, label, def string) (string, error) {
+	for {
+		if strings.TrimSpace(def) != "" {
+			fmt.Fprintf(out, "%s [%s]: ", label, def)
+		} else {
+			fmt.Fprintf(out, "%s: ", label)
+		}
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("%s is required", label)
+		}
+		text := strings.TrimSpace(scanner.Text())
+		if text == "" {
+			text = strings.TrimSpace(def)
+		}
+		if text != "" {
+			return text, nil
+		}
+		fmt.Fprintf(out, "%s is required.\n", label)
+	}
 }
 
 func (c *Config) applyDefaults() {

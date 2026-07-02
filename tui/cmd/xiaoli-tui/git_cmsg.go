@@ -31,6 +31,7 @@ type gitCmsgPrepareMsg struct {
 type gitCmsgCommitMsg struct {
 	message string
 	output  string
+	push    bool
 	err     error
 }
 
@@ -49,6 +50,21 @@ func (m *model) startGitCmsgSlash(text string) tea.Cmd {
 func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 	choice := strings.TrimSpace(text)
 	switch {
+	case choice == "提交并推送" || strings.EqualFold(choice, "push") || strings.EqualFold(choice, "commit and push"):
+		msg := m.pendingGitCmsg.Message
+		m.pendingGitCmsg = gitCmsgPending{}
+		m.pendingQuestion = ""
+		m.pendingOptions = nil
+		m.pendingChoice = 0
+		m.input.SetValue("")
+		m.busy = true
+		m.status = "git commit && push"
+		m.items = append(m.items, transcriptItem{role: "event", text: "git commit and push started"})
+		m.syncViewport(true)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		m.activeCancel = cancel
+		m.chatCanceled = false
+		return startGitCmsgCommit(ctx, m.cwd, msg, true)
 	case choice == "确认提交" || strings.EqualFold(choice, "commit") || isApprove(choice):
 		msg := m.pendingGitCmsg.Message
 		m.pendingGitCmsg = gitCmsgPending{}
@@ -63,7 +79,7 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		m.activeCancel = cancel
 		m.chatCanceled = false
-		return startGitCmsgCommit(ctx, m.cwd, msg)
+		return startGitCmsgCommit(ctx, m.cwd, msg, false)
 	case choice == "重新生成" || strings.EqualFold(choice, "regenerate"):
 		args := m.pendingGitCmsg.Args
 		m.pendingGitCmsg = gitCmsgPending{}
@@ -89,7 +105,7 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		m.syncViewport(true)
 		return nil
 	default:
-		m.items = append(m.items, transcriptItem{role: "system", text: "请选择：确认提交 / 重新生成 / 取消操作。"})
+		m.items = append(m.items, transcriptItem{role: "system", text: "请选择：提交并推送 / 确认提交 / 重新生成 / 取消操作。"})
 		m.syncViewport(true)
 		return nil
 	}
@@ -109,10 +125,21 @@ func startGitCmsgPrepare(ctx context.Context, agent *agentruntime.Agent, cwd, ar
 	}
 }
 
-func startGitCmsgCommit(ctx context.Context, cwd, message string) tea.Cmd {
+func startGitCmsgCommit(ctx context.Context, cwd, message string, push bool) tea.Cmd {
 	return func() tea.Msg {
 		out, err := runGitCombinedContext(ctx, cwd, append([]string{"commit", "-m"}, splitCommitMessageArgs(message)...)...)
-		return gitCmsgCommitMsg{message: message, output: out, err: err}
+		if err != nil || !push {
+			return gitCmsgCommitMsg{message: message, output: out, push: push, err: err}
+		}
+		pushOut, pushErr := runGitCombinedContext(ctx, cwd, "push")
+		combined := strings.TrimRight(out, "\n")
+		if strings.TrimSpace(pushOut) != "" {
+			if combined != "" {
+				combined += "\n"
+			}
+			combined += strings.TrimRight(pushOut, "\n")
+		}
+		return gitCmsgCommitMsg{message: message, output: combined, push: push, err: pushErr}
 	}
 }
 

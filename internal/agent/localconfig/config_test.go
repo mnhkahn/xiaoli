@@ -1,6 +1,7 @@
 package localconfig
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,6 +117,75 @@ func TestEnsureDefaultsWritesSettingsAndSecrets(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(settingsPath), "secrets.json")); err != nil {
 		t.Fatalf("secrets not written next to settings: %v", err)
+	}
+}
+
+func TestEnsureDefaultsCreatesMissingSecretsWhenSettingsExists(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, ".xiaoli", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureDefaults(settingsPath); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(settingsPath), "secrets.json")); err != nil {
+		t.Fatalf("secrets not written next to existing settings: %v", err)
+	}
+}
+
+func TestRunModelWizardOpenRouter(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, ".xiaoli", "settings.json")
+	if _, err := EnsureDefaults(settingsPath); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+	var out bytes.Buffer
+	cfg, err := RunModelWizard(settingsPath, strings.NewReader("\ntest-key\n"), &out)
+	if err != nil {
+		t.Fatalf("RunModelWizard() error = %v\n%s", err, out.String())
+	}
+	if cfg.Models.Default != "openrouter" {
+		t.Fatalf("default model = %q, want openrouter", cfg.Models.Default)
+	}
+	option := cfg.Models.Options["openrouter"]
+	if option.BaseURL != "https://openrouter.ai/api/v1" || option.Model != "openrouter/free" || option.APIKeyEnv != "OPENROUTER_API_KEY" {
+		t.Fatalf("openrouter option = %#v", option)
+	}
+	secrets, err := LoadSecrets(filepath.Join(filepath.Dir(settingsPath), "secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secrets["OPENROUTER_API_KEY"] != "test-key" {
+		t.Fatalf("secret = %q, want test-key", secrets["OPENROUTER_API_KEY"])
+	}
+}
+
+func TestRunModelWizardCustom(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, ".xiaoli", "settings.json")
+	if _, err := EnsureDefaults(settingsPath); err != nil {
+		t.Fatalf("EnsureDefaults() error = %v", err)
+	}
+	input := "5\nhttps://llm.example/v1\ncustom-model\nCUSTOM_API_KEY\nsecret-value\n"
+	var out bytes.Buffer
+	cfg, err := RunModelWizard(settingsPath, strings.NewReader(input), &out)
+	if err != nil {
+		t.Fatalf("RunModelWizard() error = %v\n%s", err, out.String())
+	}
+	option := cfg.Models.Options["custom"]
+	if cfg.Models.Default != "custom" || option.BaseURL != "https://llm.example/v1" || option.Model != "custom-model" || option.APIKeyEnv != "CUSTOM_API_KEY" {
+		t.Fatalf("custom model config = default %q option %#v", cfg.Models.Default, option)
+	}
+	secrets, err := LoadSecrets(filepath.Join(filepath.Dir(settingsPath), "secrets.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secrets["CUSTOM_API_KEY"] != "secret-value" {
+		t.Fatalf("secret = %q, want secret-value", secrets["CUSTOM_API_KEY"])
 	}
 }
 

@@ -123,6 +123,8 @@ func (h Handler) Handle(ctx context.Context, source channel.Type, text string) (
 		return h.channels(ctx), true
 	case "status":
 		return h.status(ctx), true
+	case "usage":
+		return h.usage(ctx), true
 	case "new":
 		return h.deps.NewSession(ctx), true
 	case "sessions":
@@ -206,6 +208,7 @@ func builtinSuggestions() []Suggestion {
 		{Name: "help", Description: "显示帮助", Kind: "cmd"},
 		{Name: "skills", Description: "列出可用 skills", Kind: "cmd"},
 		{Name: "model", Description: "查看或切换模型", Kind: "cmd"},
+		{Name: "usage", Description: "查看模型供应商用量", Kind: "cmd"},
 		{Name: "status", Description: "查看状态和 LLM 统计", Kind: "cmd"},
 		{Name: "sessions", Description: "列出会话", Kind: "cmd"},
 		{Name: "resume", Description: "切换历史会话", Kind: "cmd"},
@@ -226,7 +229,7 @@ func builtinSuggestions() []Suggestion {
 
 func isBuiltinCommandName(name string) bool {
 	switch name {
-	case "skills", "model", "channel", "status", "new", "sessions", "resume", "session", "compact", "memory", "cron", "reminder", "mcp", "tasks", "task", "log", "logs", "help":
+	case "skills", "model", "channel", "status", "usage", "new", "sessions", "resume", "session", "compact", "memory", "cron", "reminder", "mcp", "tasks", "task", "log", "logs", "help":
 		return true
 	default:
 		return false
@@ -427,6 +430,24 @@ func (h Handler) status(ctx context.Context) string {
 	return b.String()
 }
 
+func (h Handler) usage(ctx context.Context) string {
+	balances := h.deps.ProviderBalances(ctx)
+	if len(balances) == 0 {
+		return "当前没有配置可查询的模型供应商用量。"
+	}
+	providers := make([]string, 0, len(balances))
+	for name := range balances {
+		providers = append(providers, name)
+	}
+	sort.Strings(providers)
+	var b strings.Builder
+	b.WriteString("当前模型用量：")
+	for _, name := range providers {
+		fmt.Fprintf(&b, "\n- %s: %s", name, balances[name])
+	}
+	return b.String()
+}
+
 func (h Handler) modelList(ctx context.Context) string {
 	options := h.deps.ListModels(model.RoleLLM)
 	current := h.deps.ModelInfo().LLM
@@ -534,6 +555,7 @@ func helpText() string {
 	/tasks      - 查看 Task 任务面板
 	/task       - 查看 Task 运行状态（/task status <id>）
 	/model      - 查看或切换 LLM 模型（/model list 查看可选模型，/model use <id> 切换）
+	/usage      - 查看当前配置模型供应商的用量/余额
 	/channel    - 查看可用消息渠道
 	/status     - 查看 LLM 调用统计
 	/sessions   - 列出所有会话

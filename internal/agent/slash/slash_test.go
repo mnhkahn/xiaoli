@@ -182,6 +182,15 @@ func TestLogsAlias(t *testing.T) {
 	}
 }
 
+func TestUsage(t *testing.T) {
+	handler := NewHandler(&fakeDeps{})
+
+	reply, handled := handler.Handle(context.Background(), channel.TypeLark, "/usage")
+	if !handled || !strings.Contains(reply, "当前模型用量") || !strings.Contains(reply, "test-provider") || !strings.Contains(reply, "¥10.00") {
+		t.Fatalf("/usage reply=%q handled=%v, want provider usage", reply, handled)
+	}
+}
+
 func TestUnknownCommandIsNotHandled(t *testing.T) {
 	handler := NewHandler(&fakeDeps{})
 
