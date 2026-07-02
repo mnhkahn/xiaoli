@@ -62,6 +62,17 @@ func StoreBashApproval(convID, hash string) {
 	bashApprovedMu.Unlock()
 }
 
+// PendingBashCommand returns the exact command currently waiting for approval.
+func PendingBashCommand(convID, hash string) (string, bool) {
+	bashPendingMu.Lock()
+	defer bashPendingMu.Unlock()
+	p, ok := bashPending[convID]
+	if !ok || time.Now().After(p.ExpiresAt) || p.Hash != hash {
+		return "", false
+	}
+	return p.Command, true
+}
+
 // ClearBashApproval removes any pending/approved state for a conversation
 func ClearBashApproval(convID string) {
 	bashPendingMu.Lock()

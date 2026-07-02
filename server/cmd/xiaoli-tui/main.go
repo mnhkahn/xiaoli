@@ -57,10 +57,19 @@ type eventMsg struct {
 	event agentevent.Event
 }
 
+type gitSyncTickMsg struct{}
+
 type gitSyncDoneMsg struct {
 	action string
 	output string
 	err    error
+}
+
+type bashApprovalDoneMsg struct {
+	command   string
+	output    string
+	err       error
+	sessionID string
 }
 
 type gitSyncState struct {
@@ -73,6 +82,13 @@ type gitSyncState struct {
 
 func (s gitSyncState) Actionable() bool {
 	return s.Valid && (s.Ahead > 0 || s.Behind > 0)
+}
+
+type gitSyncFeedback struct {
+	Loading bool
+	Action  string
+	Result  string
+	Frame   int
 }
 
 type model struct {
@@ -91,6 +107,7 @@ type model struct {
 	cwd             string
 	gitStatus       string
 	gitSync         gitSyncState
+	gitSyncFeedback gitSyncFeedback
 	logPath         string
 	contextUsage    *agentruntime.ContextUsage
 	scroll          int
@@ -106,7 +123,9 @@ type model struct {
 	pendingQuestion string
 	pendingOptions  []string
 	pendingChoice   int
+	pendingGitCmsg  gitCmsgPending
 	explorer        *tuiExplorer
+	mouseEnabled    bool
 	quitting        bool
 }
 
@@ -163,7 +182,7 @@ func main() {
 		return
 	}
 
-	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "xiaoli-tui: %v\n", err)
@@ -350,11 +369,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncViewport(false)
 		return m, nil
 	case tea.MouseMsg:
+		if !m.mouseEnabled {
+			return m, nil
+		}
 		if m.explorer != nil && m.explorer.handleMouse(msg) {
 			return m, nil
 		}
 		if m.handleGitSyncClick(msg) {
-			return m, startGitSync(m.cwd, m.gitSync)
+			return m, tea.Batch(startGitSync(m.cwd, m.gitSync), tickGitSyncSpinner())
 		}
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
@@ -383,6 +405,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.quitting = true
 			return m, tea.Quit
+		case "ctrl+o":
+			m.mouseEnabled = !m.mouseEnabled
+			if m.mouseEnabled {
+				return m, tea.EnableMouseCellMotion
+			}
+			return m, tea.DisableMouse
+		case "ctrl+k":
+			if m.busy || m.hasPendingOptions() {
+				return m, nil
+			}
+			m.input.SetValue("/commit ")
+			m.input.CursorEnd()
+			return m, nil
+		case "ctrl+s":
+			if m.startGitSyncFeedback() {
+				return m, tea.Batch(startGitSync(m.cwd, m.gitSync), tickGitSyncSpinner())
+			}
+			return m, nil
 		case "ctrl+l":
 			m.items = []transcriptItem{{role: "system", text: "Transcript cleared."}}
 			m.scroll = 0
@@ -472,7 +512,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if explorer := m.openExplorerCommand(text); explorer != nil {
 				m.explorer = explorer
 				m.input.SetValue("")
-				return m, tea.EnableMouseCellMotion
+				return m, nil
 			}
 			if m.handleCopyCommand(text) {
 				m.input.SetValue("")
@@ -493,15 +533,42 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				if isApprove(text) {
-					agentbuiltin.StoreBashApproval(m.activeSessionID(), m.pendingBashHash)
+					sessionID := m.activeSessionID()
+					command, ok := agentbuiltin.PendingBashCommand(sessionID, m.pendingBashHash)
+					agentbuiltin.ClearBashApproval(sessionID)
 					m.pendingBashHash = ""
 					m.pendingQuestion = ""
+					m.pendingOptions = nil
+					m.pendingChoice = 0
+					m.input.SetValue("")
+					if !ok {
+						m.items = append(m.items, transcriptItem{role: "error", text: "待审批命令已失效，请重新发起。"})
+						m.syncViewport(true)
+						return m, nil
+					}
+					m.busy = true
+					m.status = "bash running"
+					m.items = append(m.items, transcriptItem{role: "event", text: "approved bash: " + command})
+					m.syncViewport(true)
+					return m, startApprovedBashCommand(m.cwd, command, sessionID)
 				}
+			}
+			if m.pendingGitCmsg.Active {
+				cmd := m.handleGitCmsgChoice(text)
+				return m, cmd
 			}
 			if m.hasPendingOptions() {
 				m.pendingQuestion = ""
 				m.pendingOptions = nil
 				m.pendingChoice = 0
+			}
+			if cmd := m.startGitCmsgSlash(text); cmd != nil {
+				m.input.SetValue("")
+				m.busy = true
+				m.status = "commit"
+				m.items = append(m.items, transcriptItem{role: "event", text: "commit started"})
+				m.syncViewport(true)
+				return m, cmd
 			}
 			if cmd := m.handleSlash(text); cmd.handled {
 				m.input.SetValue("")
@@ -586,10 +653,58 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.items = append(m.items, msg.transcriptItem())
 		m.syncViewport(true)
 		return m, nil
+	case bashApprovalDoneMsg:
+		m.busy = true
+		m.status = "running"
+		m.items = append(m.items, bashApprovalTranscriptItem(msg))
+		m.syncViewport(true)
+		prompt := formatApprovedBashFollowup(msg.command, msg.output, msg.err)
+		return m, tea.Batch(startChat(m.app.Agent, m.chatMsgs, msg.sessionID, prompt), waitForChat(m.chatMsgs), waitForEvent(m.events))
+	case gitCmsgPrepareMsg:
+		m.busy = false
+		m.status = "idle"
+		m.refreshGitSync()
+		if msg.err != nil {
+			m.lastError = msg.err.Error()
+			m.items = append(m.items, transcriptItem{role: "error", text: msg.err.Error()})
+			m.syncViewport(true)
+			return m, nil
+		}
+		m.pendingGitCmsg = gitCmsgPending{Active: true, Args: msg.args, Message: msg.message}
+		m.pendingQuestion = formatGitCmsgQuestion(msg)
+		m.pendingOptions = []string{"确认提交", "重新生成", "取消操作"}
+		m.pendingChoice = 0
+		m.items = append(m.items, transcriptItem{role: "assistant", text: m.pendingQuestion})
+		m.syncViewport(true)
+		return m, nil
+	case gitCmsgCommitMsg:
+		m.busy = false
+		m.status = "idle"
+		m.refreshGitSync()
+		m.pendingGitCmsg = gitCmsgPending{}
+		m.pendingQuestion = ""
+		m.pendingOptions = nil
+		m.pendingChoice = 0
+		if msg.err != nil {
+			m.lastError = msg.err.Error()
+			m.items = append(m.items, transcriptItem{role: "error", text: msg.err.Error()})
+		} else {
+			m.items = append(m.items, transcriptItem{role: "system", text: "提交完成。\n" + strings.TrimSpace(msg.output)})
+		}
+		m.syncViewport(true)
+		return m, nil
 	case gitSyncDoneMsg:
 		m.busy = false
 		m.status = "idle"
 		m.refreshGitSync()
+		result := "pushed"
+		if strings.HasPrefix(msg.action, "pull") {
+			result = "pulled"
+		}
+		if msg.err != nil {
+			result = "failed"
+		}
+		m.gitSyncFeedback = gitSyncFeedback{Result: result}
 		text := "$ git " + msg.action
 		if strings.TrimSpace(msg.output) != "" {
 			text += "\n" + strings.TrimRight(msg.output, "\n")
@@ -601,6 +716,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.syncViewport(true)
 		return m, nil
+	case gitSyncTickMsg:
+		if !m.gitSyncFeedback.Loading {
+			return m, nil
+		}
+		m.gitSyncFeedback.Frame++
+		return m, tickGitSyncSpinner()
 	case eventMsg:
 		m.items = append(m.items, transcriptItem{role: "event", text: eventSummary(msg.event)})
 		m.refreshContextUsage()
@@ -937,13 +1058,45 @@ func sidebarFooterLines(m model, width int) []string {
 	if git == "" {
 		git = "-"
 	}
+	m.gitStatus = git
+	lines = append(lines, truncateDisplay(gitSyncButtonLabel(m), width))
+	lines = append(lines, "⌃S sync")
+	lines = append(lines, "⌃K commit")
+	mouseState := "off"
+	if m.mouseEnabled {
+		mouseState = "on"
+	}
+	lines = append(lines, "⌃O mouse "+mouseState)
+	lines = append(lines, "⌃Y copy")
+	lines = append(lines, "⌃C quit")
+	return lines
+}
+
+func gitSyncButtonLabel(m model) string {
+	git := strings.TrimSpace(m.gitStatus)
+	if git == "" {
+		git = "-"
+	}
+	if m.gitSyncFeedback.Loading {
+		return git + " [syncing " + gitSyncSpinnerFrame(m.gitSyncFeedback.Frame) + "]"
+	}
+	if strings.TrimSpace(m.gitSyncFeedback.Result) != "" {
+		return git + " [" + m.gitSyncFeedback.Result + "]"
+	}
 	if m.gitSync.Actionable() {
 		if action, _ := gitSyncAction(m.gitSync); action != "" {
-			git += " [" + action + "]"
+			return git + " [" + action + "]"
 		}
 	}
-	lines = append(lines, truncateDisplay(git, width))
-	return lines
+	return git
+}
+
+func gitSyncSpinnerFrame(frame int) string {
+	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	if frame < 0 {
+		frame = 0
+	}
+	return frames[frame%len(frames)]
 }
 
 func sidebarMiddleLines(m model, width int, budget int) []string {
@@ -1068,6 +1221,7 @@ func appendLocalSuggestions(value string, suggestions []slashSuggestion) []slash
 	local := []slashSuggestion{
 		{Name: "tree", Description: "打开项目目录树", Kind: "tui"},
 		{Name: "diff", Description: "查看当前 Git 变更", Kind: "tui"},
+		{Name: "commit", Description: "生成并提交当前变更", Kind: "tui"},
 	}
 	seen := map[string]bool{}
 	for _, item := range suggestions {
@@ -1597,15 +1751,27 @@ func (m *model) handleGitSyncClick(msg tea.MouseMsg) bool {
 	if msg.X < sideStart || msg.Y < max(0, bodyH-3) || msg.Y > bodyH+1 {
 		return false
 	}
+	return m.startGitSyncFeedback()
+}
+
+func (m *model) startGitSyncFeedback() bool {
+	if m == nil || m.busy || !m.gitSync.Actionable() {
+		return false
+	}
 	action, _ := gitSyncAction(m.gitSync)
 	if action == "" {
 		return false
 	}
 	m.busy = true
-	m.status = "git " + action
-	m.items = append(m.items, transcriptItem{role: "event", text: "git " + action + " started"})
+	m.gitSyncFeedback = gitSyncFeedback{Loading: true, Action: action}
 	m.syncViewport(true)
 	return true
+}
+
+func tickGitSyncSpinner() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+		return gitSyncTickMsg{}
+	})
 }
 
 func renderContextUsage(ctx *agentruntime.ContextUsage, width int) string {

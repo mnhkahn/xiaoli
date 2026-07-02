@@ -44,6 +44,8 @@ type tuiExplorer struct {
 	preview     string
 	previewRaw  string
 	previewCode bool
+	editor      *miniEditor
+	focusRight  bool
 	err         string
 }
 
@@ -87,9 +89,42 @@ func (e *tuiExplorer) handleKey(msg tea.KeyMsg) (*tuiExplorer, tea.Cmd, bool) {
 	if e == nil {
 		return e, nil, false
 	}
+	if e.mode == explorerTree && e.focusRight && e.editor != nil {
+		if msg.String() == "tab" {
+			e.focusRight = false
+			return e, nil, true
+		}
+		result := e.editor.handleKey(msg)
+		if result.Command != "" {
+			e.handleEditorCommand(result.Command)
+		}
+		return e, nil, true
+	}
 	switch msg.String() {
 	case "q", "esc":
-		return nil, tea.EnableMouseCellMotion, true
+		return nil, nil, true
+	case "tab":
+		if e.mode == explorerTree && e.editor != nil {
+			e.focusRight = true
+			return e, nil, true
+		}
+	case "l", "right":
+		if e.mode == explorerTree && e.selected >= 0 && e.selected < len(e.entries) {
+			entry := e.entries[e.selected]
+			if entry.IsDir {
+				e.expanded[entry.Path] = true
+				e.reloadTree()
+				e.ensureSelectionVisible()
+			} else if e.editor != nil {
+				e.focusRight = true
+			}
+			return e, nil, true
+		}
+	case "h", "left":
+		if e.mode == explorerTree {
+			e.focusRight = false
+			return e, nil, true
+		}
 	case "up", "k":
 		e.moveSelection(-1)
 		return e, nil, true
@@ -192,7 +227,7 @@ func (e *tuiExplorer) View() string {
 		title = "Xiaoli /tree"
 	}
 	header := titleStyle.Render(title) + "  " + hintStyle.Render("cwd: "+compactPath(e.cwd, max(12, width-28)))
-	help := hintStyle.Render("q close · click select · wheel scroll · y copy")
+	help := hintStyle.Render("tree: j/k move · l/tab edit · editor: i insert · :w save · q close")
 
 	left := e.renderLeft(leftContentWidth, bodyHeight)
 	right := e.renderRight(rightContentWidth, bodyHeight)
@@ -240,12 +275,20 @@ func (e *tuiExplorer) renderRight(width, height int) string {
 	title := "Preview"
 	if e.mode == explorerDiff {
 		title = "Diff"
+	} else if e.editor != nil {
+		title = "Editor"
+		if e.focusRight {
+			title = "Editor · focus"
+		}
 	} else if e.previewPath != "" {
 		if lang := languageForPath(e.previewPath); lang != "" {
 			title = "Preview · " + lang
 		}
 	}
 	lines := []string{titleStyle.Render(title), ""}
+	if e.mode == explorerTree && e.editor != nil {
+		return e.editor.render(width, height)
+	}
 	for _, line := range visibleLines(e.previewLines(), e.rightScroll, max(0, height-3)) {
 		if e.mode == explorerDiff {
 			lines = append(lines, styleDiffLine(line, width))
@@ -402,6 +445,7 @@ func (e *tuiExplorer) refreshPreview() {
 	e.previewRaw = ""
 	e.previewCode = false
 	e.previewPath = ""
+	e.editor = nil
 	if len(e.entries) == 0 || e.selected < 0 || e.selected >= len(e.entries) {
 		if e.mode == explorerDiff {
 			e.preview = "No changes."
@@ -423,6 +467,9 @@ func (e *tuiExplorer) refreshPreview() {
 		e.preview, err = filePreview(e.cwd, entry.Path)
 		e.previewRaw = e.preview
 		if err == nil {
+			if canEditPreview(e.previewRaw) {
+				e.editor = newMiniEditor(entry.Path, e.previewRaw)
+			}
 			e.preview = highlightCode(entry.Path, e.preview)
 			e.previewCode = true
 		}
@@ -430,6 +477,44 @@ func (e *tuiExplorer) refreshPreview() {
 	if err != nil {
 		e.preview = err.Error()
 		e.previewRaw = e.preview
+	}
+}
+
+func canEditPreview(text string) bool {
+	if strings.Contains(text, "binary file preview skipped") {
+		return false
+	}
+	if strings.Contains(text, "preview skipped") {
+		return false
+	}
+	return true
+}
+
+func (e *tuiExplorer) handleEditorCommand(cmd string) {
+	cmd = strings.TrimSpace(cmd)
+	switch cmd {
+	case "w":
+		if e.editor == nil {
+			return
+		}
+		if err := e.editor.save(e.cwd); err != nil {
+			e.err = err.Error()
+			return
+		}
+		e.err = "已保存 " + e.editor.path
+		e.previewRaw = e.editor.text()
+		e.preview = highlightCode(e.editor.path, e.previewRaw)
+	case "q":
+		if e.editor != nil && e.editor.dirty {
+			e.err = "文件已修改，使用 :w 保存或 Esc 返回"
+			return
+		}
+		e.focusRight = false
+	case "wq":
+		e.handleEditorCommand("w")
+		if e.err == "" || strings.HasPrefix(e.err, "已保存 ") {
+			e.focusRight = false
+		}
 	}
 }
 

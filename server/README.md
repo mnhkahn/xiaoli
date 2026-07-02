@@ -135,12 +135,15 @@ and `/log --errors`. When bash is enabled and a command needs approval, reply
 with `允许` or `拒绝` in the TUI.
 
 For coding workflows, `/tree` opens a full-screen project browser and `/diff`
-opens a full-screen Git changes browser. In those browsers, click files or
-directories with the mouse, use the mouse wheel to scroll the pane under the
-cursor, press `y` to copy the current file or diff, and press `q` or `Esc` to
-return to chat. File previews use syntax highlighting, diffs highlight metadata,
-hunks, additions, and deletions. The chat screen leaves normal terminal text
-selection available; mouse capture is enabled only inside `/tree` and `/diff`.
+opens a full-screen Git changes browser. The TUI keeps mouse capture off by
+default so terminal text selection works everywhere. Use Up/Down, PgUp/PgDn,
+Home/End, Enter, `y`, `q`, and `Esc` in those browsers; press `Ctrl+O` (`⌃O`)
+to temporarily toggle mouse selection and wheel scrolling. Press `Ctrl+S`
+(`⌃S`) to run the right-sidebar Git sync action. File previews use syntax
+highlighting, diffs highlight metadata, hunks, additions, and deletions. In
+`/tree`, press `Tab` or `l` on a file to focus the right editor, use
+`h`/`j`/`k`/`l` to move, `i` to insert, `Esc` for normal mode, and `:w`,
+`:q`, or `:wq` for save and close operations.
 
 Model-visible built-in tools in local TUI include web search, optional web
 fetch, local memory, local run-log search, tasks, reminders stored at
@@ -150,7 +153,7 @@ fetch, local memory, local run-log search, tasks, reminders stored at
 Runtime logs are written to `~/.xiaoli/logs/tui.log` so they do not corrupt the
 terminal UI. The main transcript keeps only readable agent events and assistant
 output. Use the mouse wheel, Up/Down, PgUp/PgDn, Ctrl+U/Ctrl+D, Home, and End to
-scroll inside the TUI. The right sidebar keeps status, model, cwd, context
+scroll inside the TUI when mouse mode is enabled. The right sidebar keeps status, model, cwd, context
 usage, task/MCP summaries, and key hints visible with a fixed-priority layout.
 
 ## Firmware OTA URL

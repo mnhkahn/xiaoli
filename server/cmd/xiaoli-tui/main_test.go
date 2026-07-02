@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -71,6 +72,101 @@ func TestGitSyncAction(t *testing.T) {
 	action, args = gitSyncAction(gitSyncState{Ahead: 1, Behind: 1})
 	if action != "pull" || strings.Join(args, " ") != "pull --rebase" {
 		t.Fatalf("gitSyncAction(diverged) = %q %#v", action, args)
+	}
+}
+
+func TestGitSyncButtonLabel(t *testing.T) {
+	m := model{
+		gitStatus: "main ↑1",
+		gitSync:   gitSyncState{Branch: "main", Ahead: 1, Valid: true},
+	}
+	if got := gitSyncButtonLabel(m); got != "main ↑1 [push]" {
+		t.Fatalf("gitSyncButtonLabel actionable = %q", got)
+	}
+	m.gitSyncFeedback = gitSyncFeedback{Loading: true, Action: "push", Frame: 2}
+	if got := gitSyncButtonLabel(m); !strings.Contains(got, "[syncing ") {
+		t.Fatalf("gitSyncButtonLabel loading = %q", got)
+	}
+	m.gitSyncFeedback = gitSyncFeedback{Result: "pushed"}
+	if got := gitSyncButtonLabel(m); got != "main ↑1 [pushed]" {
+		t.Fatalf("gitSyncButtonLabel pushed = %q", got)
+	}
+}
+
+func TestGitSyncClickOnlyUpdatesFooterFeedback(t *testing.T) {
+	m := model{
+		width:     120,
+		height:    30,
+		status:    "idle",
+		gitSync:   gitSyncState{Branch: "main", Ahead: 1, Valid: true},
+		gitStatus: "main ↑1",
+	}
+	mainW, _, bodyH, _ := layoutSizes(m.width, m.height)
+	click := tea.MouseMsg{
+		Type:   tea.MouseLeft,
+		Action: tea.MouseActionPress,
+		X:      mainW + boxStyle.GetHorizontalFrameSize() + 2,
+		Y:      bodyH,
+	}
+	if !m.handleGitSyncClick(click) {
+		t.Fatalf("handleGitSyncClick() = false, want true")
+	}
+	if m.status != "idle" {
+		t.Fatalf("status = %q, want idle", m.status)
+	}
+	if len(m.items) != 0 {
+		t.Fatalf("items len = %d, want 0", len(m.items))
+	}
+	if !m.gitSyncFeedback.Loading {
+		t.Fatalf("gitSyncFeedback.Loading = false, want true")
+	}
+}
+
+func TestStartGitSyncFeedbackOnlyUpdatesFooter(t *testing.T) {
+	m := model{
+		width:     120,
+		height:    30,
+		status:    "idle",
+		gitSync:   gitSyncState{Branch: "main", Ahead: 1, Valid: true},
+		gitStatus: "main ↑1",
+	}
+	if !m.startGitSyncFeedback() {
+		t.Fatalf("startGitSyncFeedback() = false, want true")
+	}
+	if m.status != "idle" {
+		t.Fatalf("status = %q, want idle", m.status)
+	}
+	if len(m.items) != 0 {
+		t.Fatalf("items len = %d, want 0", len(m.items))
+	}
+	if !m.gitSyncFeedback.Loading {
+		t.Fatalf("gitSyncFeedback.Loading = false, want true")
+	}
+}
+
+func TestSidebarFooterShowsKeyboardHintsAndMouseMode(t *testing.T) {
+	lines := sidebarFooterLines(model{cwd: "/tmp/repo", gitStatus: "main ✓"}, 40)
+	got := strings.Join(lines, "\n")
+	if !strings.Contains(got, "⌃S sync") || !strings.Contains(got, "⌃K commit") || !strings.Contains(got, "⌃O mouse off") {
+		t.Fatalf("sidebarFooterLines() = %#v, want keyboard hints", lines)
+	}
+	lines = sidebarFooterLines(model{cwd: "/tmp/repo", gitStatus: "main ✓", mouseEnabled: true}, 40)
+	got = strings.Join(lines, "\n")
+	if !strings.Contains(got, "⌃O mouse on") {
+		t.Fatalf("sidebarFooterLines(mouse) = %#v, want mouse on hint", lines)
+	}
+}
+
+func TestCtrlKPrefillsCommitCommand(t *testing.T) {
+	input := textinput.New()
+	m := model{input: input}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("Ctrl-K returned command, want nil")
+	}
+	if got.input.Value() != "/commit " {
+		t.Fatalf("Ctrl-K input = %q, want /commit ", got.input.Value())
 	}
 }
 
@@ -193,6 +289,16 @@ func TestPendingOptionByInput(t *testing.T) {
 	if _, ok := m.pendingOptionByInput("3"); ok {
 		t.Fatalf("pendingOptionByInput(3) ok = true, want false")
 	}
+}
+
+func TestAppendLocalSuggestionsIncludesCommit(t *testing.T) {
+	items := appendLocalSuggestions("/co", nil)
+	for _, item := range items {
+		if item.Name == "commit" {
+			return
+		}
+	}
+	t.Fatalf("appendLocalSuggestions(/co) = %#v, want commit", items)
 }
 
 func TestRenderPendingOptionsMarksSelected(t *testing.T) {

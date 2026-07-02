@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -66,6 +67,48 @@ func TestTreeExplorerCopiesRawContent(t *testing.T) {
 	}
 }
 
+func TestTreeExplorerOpensEditorAndSavesFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ex := newTreeExplorer(dir, 100, 30)
+	if ex.editor == nil {
+		t.Fatalf("editor is nil, want selected file loaded")
+	}
+	ex.focusRight = true
+	ex.editor.handleKey(keyRunes("i"))
+	ex.editor.handleKey(keyRunes("// "))
+	ex.handleEditorCommand("w")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "// package main") {
+		t.Fatalf("saved file = %q", string(data))
+	}
+}
+
+func TestTreeExplorerFocusesEditorWithL(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ex := newTreeExplorer(dir, 100, 30)
+	if ex.focusRight {
+		t.Fatalf("focusRight = true, want tree focus")
+	}
+	ex.handleKey(keyRunes("l"))
+	if !ex.focusRight {
+		t.Fatalf("focusRight = false, want editor focus")
+	}
+	ex.handleKey(tea.KeyMsg{Type: tea.KeyTab})
+	if ex.focusRight {
+		t.Fatalf("focusRight = true after tab, want tree focus")
+	}
+}
+
 func TestOpenExplorerCommand(t *testing.T) {
 	dir := t.TempDir()
 	m := model{cwd: dir, width: 100, height: 30}
@@ -78,6 +121,10 @@ func TestOpenExplorerCommand(t *testing.T) {
 	if got := m.openExplorerCommand("/sessions"); got != nil {
 		t.Fatalf("openExplorerCommand(/sessions) = %#v, want nil", got)
 	}
+}
+
+func keyRunes(s string) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
 func TestParseChangedFileStatusMarksStaged(t *testing.T) {

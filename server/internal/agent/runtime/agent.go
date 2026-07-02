@@ -836,8 +836,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		result = schema.AssistantMessage(streamed.String(), nil)
 	}
 	if result == nil || result.Content == "" {
-		_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": "agent returned empty response"})
-		return "", fmt.Errorf("agent returned empty response")
+		result = schema.AssistantMessage("命令或工具已执行完成，但模型没有生成后续回复。你可以继续输入下一步，或查看上面的工具结果。", nil)
 	}
 
 	updated := append(history,
