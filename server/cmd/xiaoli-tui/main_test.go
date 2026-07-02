@@ -80,7 +80,7 @@ func TestGitSyncButtonLabel(t *testing.T) {
 		gitStatus: "main ↑1",
 		gitSync:   gitSyncState{Branch: "main", Ahead: 1, Valid: true},
 	}
-	if got := gitSyncButtonLabel(m); got != "main ↑1 [push]" {
+	if got := stripTestANSI(gitSyncButtonLabel(m)); got != "main ↑1 [push]" {
 		t.Fatalf("gitSyncButtonLabel actionable = %q", got)
 	}
 	m.gitSyncFeedback = gitSyncFeedback{Loading: true, Action: "push", Frame: 2}
@@ -88,8 +88,19 @@ func TestGitSyncButtonLabel(t *testing.T) {
 		t.Fatalf("gitSyncButtonLabel loading = %q", got)
 	}
 	m.gitSyncFeedback = gitSyncFeedback{Result: "pushed"}
-	if got := gitSyncButtonLabel(m); got != "main ↑1 [pushed]" {
+	if got := stripTestANSI(gitSyncButtonLabel(m)); got != "main ↑1 [pushed]" {
 		t.Fatalf("gitSyncButtonLabel pushed = %q", got)
+	}
+}
+
+func TestGitSyncButtonLabelHighlightsChangingParts(t *testing.T) {
+	m := model{
+		gitStatus: "main ↑1",
+		gitSync:   gitSyncState{Branch: "main", Ahead: 1, Dirty: 2, Valid: true},
+	}
+	got := gitSyncButtonLabel(m)
+	if plain := stripTestANSI(got); plain != "main ↑1 *2 [push]" {
+		t.Fatalf("plain gitSyncButtonLabel() = %q", plain)
 	}
 }
 
@@ -147,7 +158,7 @@ func TestStartGitSyncFeedbackOnlyUpdatesFooter(t *testing.T) {
 func TestSidebarFooterShowsKeyboardHintsAndMouseMode(t *testing.T) {
 	lines := sidebarFooterLines(model{cwd: "/tmp/repo", gitStatus: "main ✓"}, 40)
 	got := strings.Join(lines, "\n")
-	if !strings.Contains(got, "⌃S sync") || !strings.Contains(got, "⌃K commit") || !strings.Contains(got, "⌃O mouse off") {
+	if !strings.Contains(got, "⌃S sync") || !strings.Contains(got, "⌃K diff") || !strings.Contains(got, "⌃O mouse off") {
 		t.Fatalf("sidebarFooterLines() = %#v, want keyboard hints", lines)
 	}
 	lines = sidebarFooterLines(model{cwd: "/tmp/repo", gitStatus: "main ✓", mouseEnabled: true}, 40)
@@ -157,16 +168,53 @@ func TestSidebarFooterShowsKeyboardHintsAndMouseMode(t *testing.T) {
 	}
 }
 
-func TestCtrlKPrefillsCommitCommand(t *testing.T) {
+func TestCtrlKOpensDiffExplorer(t *testing.T) {
 	input := textinput.New()
-	m := model{input: input}
+	m := model{input: input, cwd: t.TempDir(), width: 100, height: 30}
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
 	got := next.(model)
 	if cmd != nil {
 		t.Fatalf("Ctrl-K returned command, want nil")
 	}
-	if got.input.Value() != "/commit " {
-		t.Fatalf("Ctrl-K input = %q, want /commit ", got.input.Value())
+	if got.explorer == nil || got.explorer.mode != explorerDiff {
+		t.Fatalf("Ctrl-K explorer = %#v, want diff explorer", got.explorer)
+	}
+	if got.input.Value() != "" {
+		t.Fatalf("Ctrl-K input = %q, want empty", got.input.Value())
+	}
+}
+
+func TestEscClearsInputWithoutQuitting(t *testing.T) {
+	input := textinput.New()
+	input.SetValue("/commit ")
+	m := model{input: input}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("Esc returned command, want nil")
+	}
+	if got.quitting {
+		t.Fatalf("Esc set quitting=true, want false")
+	}
+	if got.input.Value() != "" {
+		t.Fatalf("Esc input = %q, want empty", got.input.Value())
+	}
+}
+
+func TestEscCancelsBusyWithoutQuitting(t *testing.T) {
+	input := textinput.New()
+	canceled := false
+	m := model{input: input, busy: true, status: "running", activeCancel: func() { canceled = true }}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("Esc returned command, want nil")
+	}
+	if !canceled {
+		t.Fatalf("Esc did not call active cancel")
+	}
+	if got.quitting || got.busy || got.status != "idle" {
+		t.Fatalf("Esc model = quitting:%v busy:%v status:%q", got.quitting, got.busy, got.status)
 	}
 }
 

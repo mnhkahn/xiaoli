@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -95,6 +96,8 @@ type model struct {
 	app             *localapp.App
 	events          chan agentevent.Event
 	chatMsgs        chan tea.Msg
+	activeCancel    context.CancelFunc
+	chatCanceled    bool
 	input           textinput.Model
 	inputHistory    []string
 	historyIndex    int
@@ -130,15 +133,23 @@ type model struct {
 }
 
 var (
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86"))
-	userStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75"))
-	agentStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("114"))
-	shellStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))
-	eventStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	hintStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	boxStyle   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
-	sideStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
+	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86"))
+	userStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75"))
+	agentStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("114"))
+	shellStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))
+	eventStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	errStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	hintStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	boxStyle        = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
+	sideStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
+	gitOKStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Bold(true)
+	gitPushStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
+	gitPullStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Bold(true)
+	gitDirtyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+	gitActionStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
+	gitLoadingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true)
+	gitResultStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Bold(true)
+	gitFailedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
 )
 
 func main() {
@@ -397,14 +408,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		case "esc":
-			if isShellInput(m.input.Value()) {
-				m.input.SetValue("")
-				m.shellHistIndex = 0
-				m.shellHistDraft = ""
+			if m.busy {
+				if m.activeCancel != nil {
+					m.activeCancel()
+					m.activeCancel = nil
+				}
+				m.chatCanceled = true
+				m.busy = false
+				m.status = "idle"
+				m.items = append(m.items, transcriptItem{role: "event", text: "已暂停当前执行。"})
+				m.syncViewport(true)
 				return m, nil
 			}
-			m.quitting = true
-			return m, tea.Quit
+			m.clearInputDraft()
+			return m, nil
 		case "ctrl+o":
 			m.mouseEnabled = !m.mouseEnabled
 			if m.mouseEnabled {
@@ -415,8 +432,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.busy || m.hasPendingOptions() {
 				return m, nil
 			}
-			m.input.SetValue("/commit ")
-			m.input.CursorEnd()
+			m.clearInputDraft()
+			m.explorer = newDiffExplorer(m.cwd, m.width, m.height)
 			return m, nil
 		case "ctrl+s":
 			if m.startGitSyncFeedback() {
@@ -499,7 +516,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "shell running"
 				m.items = append(m.items, transcriptItem{role: "event", text: "shell started: " + command})
 				m.syncViewport(true)
-				return m, startShellCommand(m.cwd, command)
+				runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				m.activeCancel = cancel
+				m.chatCanceled = false
+				return m, startShellCommand(runCtx, m.cwd, command)
 			}
 			m.recordInputHistory(text)
 			if selected, ok := m.pendingOptionByInput(text); ok {
@@ -550,7 +570,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = "bash running"
 					m.items = append(m.items, transcriptItem{role: "event", text: "approved bash: " + command})
 					m.syncViewport(true)
-					return m, startApprovedBashCommand(m.cwd, command, sessionID)
+					runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+					m.activeCancel = cancel
+					m.chatCanceled = false
+					return m, startApprovedBashCommand(runCtx, m.cwd, command, sessionID)
 				}
 			}
 			if m.pendingGitCmsg.Active {
@@ -593,9 +616,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamingIndex = -1
 			m.scroll = 0
 			m.syncViewport(true)
-			return m, tea.Batch(startChat(m.app.Agent, m.chatMsgs, m.sessionID, text), waitForChat(m.chatMsgs), waitForEvent(m.events))
+			chatCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			m.activeCancel = cancel
+			m.chatCanceled = false
+			return m, tea.Batch(startChat(chatCtx, m.app.Agent, m.chatMsgs, m.sessionID, text), waitForChat(m.chatMsgs), waitForEvent(m.events))
 		}
 	case chatDeltaMsg:
+		if m.chatCanceled {
+			return m, waitForChat(m.chatMsgs)
+		}
 		if msg.delta != "" {
 			if m.streamingIndex < 0 || m.streamingIndex >= len(m.items) {
 				m.items = append(m.items, transcriptItem{role: "assistant", text: ""})
@@ -610,6 +639,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case chatDoneMsg:
 		m.busy = false
 		m.status = "idle"
+		if m.activeCancel != nil {
+			m.activeCancel()
+			m.activeCancel = nil
+		}
+		if m.chatCanceled && errors.Is(msg.err, context.Canceled) {
+			m.chatCanceled = false
+			m.syncViewport(true)
+			return m, waitForEvent(m.events)
+		}
+		m.chatCanceled = false
 		m.refreshGitSync()
 		if m.sessionID == "" {
 			if sid := m.currentChannelSession(); sid != "" {
@@ -646,6 +685,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shellDoneMsg:
 		m.busy = false
 		m.status = "idle"
+		if m.activeCancel != nil {
+			m.activeCancel()
+			m.activeCancel = nil
+		}
+		if m.chatCanceled && errors.Is(msg.err, context.Canceled) {
+			m.chatCanceled = false
+			m.syncViewport(true)
+			return m, nil
+		}
+		m.chatCanceled = false
 		if strings.TrimSpace(msg.cwd) != "" {
 			m.cwd = msg.cwd
 		}
@@ -654,15 +703,38 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncViewport(true)
 		return m, nil
 	case bashApprovalDoneMsg:
+		if m.activeCancel != nil {
+			m.activeCancel()
+			m.activeCancel = nil
+		}
+		if m.chatCanceled && errors.Is(msg.err, context.Canceled) {
+			m.chatCanceled = false
+			m.syncViewport(true)
+			return m, nil
+		}
+		m.chatCanceled = false
 		m.busy = true
 		m.status = "running"
 		m.items = append(m.items, bashApprovalTranscriptItem(msg))
 		m.syncViewport(true)
 		prompt := formatApprovedBashFollowup(msg.command, msg.output, msg.err)
-		return m, tea.Batch(startChat(m.app.Agent, m.chatMsgs, msg.sessionID, prompt), waitForChat(m.chatMsgs), waitForEvent(m.events))
+		chatCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		m.activeCancel = cancel
+		m.chatCanceled = false
+		return m, tea.Batch(startChat(chatCtx, m.app.Agent, m.chatMsgs, msg.sessionID, prompt), waitForChat(m.chatMsgs), waitForEvent(m.events))
 	case gitCmsgPrepareMsg:
 		m.busy = false
 		m.status = "idle"
+		if m.activeCancel != nil {
+			m.activeCancel()
+			m.activeCancel = nil
+		}
+		if m.chatCanceled && errors.Is(msg.err, context.Canceled) {
+			m.chatCanceled = false
+			m.syncViewport(true)
+			return m, nil
+		}
+		m.chatCanceled = false
 		m.refreshGitSync()
 		if msg.err != nil {
 			m.lastError = msg.err.Error()
@@ -680,6 +752,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gitCmsgCommitMsg:
 		m.busy = false
 		m.status = "idle"
+		if m.activeCancel != nil {
+			m.activeCancel()
+			m.activeCancel = nil
+		}
+		if m.chatCanceled && errors.Is(msg.err, context.Canceled) {
+			m.chatCanceled = false
+			m.syncViewport(true)
+			return m, nil
+		}
+		m.chatCanceled = false
 		m.refreshGitSync()
 		m.pendingGitCmsg = gitCmsgPending{}
 		m.pendingQuestion = ""
@@ -1061,7 +1143,7 @@ func sidebarFooterLines(m model, width int) []string {
 	m.gitStatus = git
 	lines = append(lines, truncateDisplay(gitSyncButtonLabel(m), width))
 	lines = append(lines, "⌃S sync")
-	lines = append(lines, "⌃K commit")
+	lines = append(lines, "⌃K diff")
 	mouseState := "off"
 	if m.mouseEnabled {
 		mouseState = "on"
@@ -1077,18 +1159,47 @@ func gitSyncButtonLabel(m model) string {
 	if git == "" {
 		git = "-"
 	}
+	git = styledGitSyncStatus(m, git)
 	if m.gitSyncFeedback.Loading {
-		return git + " [syncing " + gitSyncSpinnerFrame(m.gitSyncFeedback.Frame) + "]"
+		return git + " " + gitLoadingStyle.Render("[syncing "+gitSyncSpinnerFrame(m.gitSyncFeedback.Frame)+"]")
 	}
 	if strings.TrimSpace(m.gitSyncFeedback.Result) != "" {
-		return git + " [" + m.gitSyncFeedback.Result + "]"
+		style := gitResultStyle
+		if strings.EqualFold(m.gitSyncFeedback.Result, "failed") {
+			style = gitFailedStyle
+		}
+		return git + " " + style.Render("["+m.gitSyncFeedback.Result+"]")
 	}
 	if m.gitSync.Actionable() {
 		if action, _ := gitSyncAction(m.gitSync); action != "" {
-			return git + " [" + action + "]"
+			return git + " " + gitActionStyle.Render("["+action+"]")
 		}
 	}
 	return git
+}
+
+func styledGitSyncStatus(m model, fallback string) string {
+	if !m.gitSync.Valid {
+		return fallback
+	}
+	branch := strings.TrimSpace(m.gitSync.Branch)
+	if branch == "" {
+		branch = "no git"
+	}
+	var parts []string
+	if m.gitSync.Ahead > 0 {
+		parts = append(parts, gitPushStyle.Render(fmt.Sprintf("↑%d", m.gitSync.Ahead)))
+	}
+	if m.gitSync.Behind > 0 {
+		parts = append(parts, gitPullStyle.Render(fmt.Sprintf("↓%d", m.gitSync.Behind)))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, gitOKStyle.Render("✓"))
+	}
+	if m.gitSync.Dirty > 0 {
+		parts = append(parts, " "+gitDirtyStyle.Render(fmt.Sprintf("*%d", m.gitSync.Dirty)))
+	}
+	return branch + " " + strings.Join(parts, "")
 }
 
 func gitSyncSpinnerFrame(frame int) string {
@@ -1363,6 +1474,14 @@ func (m *model) recordInputHistory(text string) {
 	m.historyDraft = ""
 }
 
+func (m *model) clearInputDraft() {
+	m.input.SetValue("")
+	m.historyIndex = 0
+	m.historyDraft = ""
+	m.shellHistIndex = 0
+	m.shellHistDraft = ""
+}
+
 func (m *model) navigateInputHistory(direction int) bool {
 	if isShellInput(m.input.Value()) {
 		return m.navigateShellHistory(direction)
@@ -1513,11 +1632,9 @@ func restoreTranscript(agent *agentruntime.Agent, sessionID string) []transcript
 	return items
 }
 
-func startChat(agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, text string) tea.Cmd {
+func startChat(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, text string) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
 			reply, err := agent.ChatWithContextOptions(ctx, channelUser, channelUser, text, agentruntime.ChatOptions{
 				Channel:   channelName,
 				SessionID: sessionID,
