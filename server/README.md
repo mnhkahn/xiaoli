@@ -1,7 +1,5 @@
 # Xiaoli Server on Fly.io
 
-![Architecture](../docs/architecture.svg)
-
 This directory deploys a Go-only Xiaoli device/admin backend to Fly.io.
 
 The container runs a single Go process on port `8080`:
