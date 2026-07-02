@@ -66,7 +66,7 @@ Rotate the Logto app secret if it is ever exposed.
 Deploy:
 
 ```bash
-fly deploy -c server/fly.toml --build-arg XIAOLI_SKILLS_CACHE_BUST=$(date +%Y%m%d%H%M%S)
+fly deploy . -c server/fly.toml --dockerfile server/Dockerfile --build-arg XIAOLI_SKILLS_CACHE_BUST=$(date +%Y%m%d%H%M%S)
 ```
 
 Run deploy commands from the repository root. The Docker build context needs

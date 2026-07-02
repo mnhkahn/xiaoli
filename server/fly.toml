@@ -1,9 +1,6 @@
 app = "xiaoli-server"
 primary_region = "nrt"
 
-[build]
-  dockerfile = "server/Dockerfile"
-
 [env]
   TZ = "Asia/Shanghai"
   PUBLIC_BASE_URL = "https://xiaoli-server.fly.dev"
