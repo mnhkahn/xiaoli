@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -15,11 +16,15 @@ type fakeA2AAgent struct {
 	subAgentCalls      int
 	lastProfile        agentruntime.PromptProfileRequest
 	lastSubAgent       string
+	profileReply       string
 }
 
 func (f *fakeA2AAgent) RunPromptProfile(ctx context.Context, req agentruntime.PromptProfileRequest) (string, error) {
 	f.profileCalls++
 	f.lastProfile = req
+	if f.profileReply != "" {
+		return f.profileReply, nil
+	}
 	return "profile reply", nil
 }
 
@@ -58,7 +63,7 @@ func TestA2APipelineRoutesProfileRequestToPromptProfile(t *testing.T) {
 }
 
 func TestA2APipelineRoutesGeekNewsProfileToPromptProfile(t *testing.T) {
-	agent := &fakeA2AAgent{}
+	agent := &fakeA2AAgent{profileReply: `{"create_time":1719532800,"summary":"今日科技新闻","news":[]}`}
 	pipeline := newA2APipeline(agent, nil)
 
 	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{
@@ -69,8 +74,8 @@ func TestA2APipelineRoutesGeekNewsProfileToPromptProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if reply.Text != "profile reply" {
-		t.Fatalf("reply = %q, want profile reply", reply.Text)
+	if !json.Valid([]byte(reply.Text)) {
+		t.Fatalf("reply = %q, want valid JSON", reply.Text)
 	}
 	if agent.profileCalls != 1 || agent.subAgentCalls != 0 {
 		t.Fatalf("calls profile=%d subagent=%d, want profile only", agent.profileCalls, agent.subAgentCalls)
@@ -83,6 +88,51 @@ func TestA2APipelineRoutesGeekNewsProfileToPromptProfile(t *testing.T) {
 	}
 	if agent.lastProfile.UserText != `{"date":"2026-06-28"}` {
 		t.Fatalf("UserText = %q, want compact date JSON", agent.lastProfile.UserText)
+	}
+}
+
+func TestA2APipelineNormalizesGeekNewsProfileJSON(t *testing.T) {
+	agent := &fakeA2AAgent{profileReply: `{
+		"create_time":1719532800,
+		"summary":"今日科技新闻",
+		"news":[{
+			"link":"https://example.com/news",
+			"title":"标题",
+			"description":"实现\"模型自由\"的实践",
+			"image":"https://example.com/cover.jpg",
+			"create_time":1719532800
+		}]
+	}`}
+	pipeline := newA2APipeline(agent, nil)
+
+	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{
+		Channel: "a2a",
+		Text:    `{"profile":"geek-news","input":{"date":"2026-06-28"}}`,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !json.Valid([]byte(reply.Text)) {
+		t.Fatalf("reply = %q, want valid JSON", reply.Text)
+	}
+	if strings.Contains(reply.Text, `实现"模型自由"`) {
+		t.Fatalf("reply = %q, want embedded quote escaped by json.Marshal", reply.Text)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(reply.Text), &got); err != nil {
+		t.Fatalf("Unmarshal(reply) error = %v", err)
+	}
+}
+
+func TestA2APipelineRejectsInvalidGeekNewsProfileJSON(t *testing.T) {
+	agent := &fakeA2AAgent{profileReply: `{"create_time":1719532800,"summary":"今日科技新闻","news":[{"link":"https://example.com/news","title":"标题","description":"实现"模型自由"","image":"","create_time":1719532800}]}`}
+	pipeline := newA2APipeline(agent, nil)
+
+	if _, err := pipeline.Run(context.Background(), a2a.ConversationTurn{
+		Channel: "a2a",
+		Text:    `{"profile":"geek-news","input":{"date":"2026-06-28"}}`,
+	}); err == nil {
+		t.Fatal("Run() error = nil, want invalid geek-news JSON error")
 	}
 }
 

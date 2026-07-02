@@ -77,6 +77,12 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 		if err != nil {
 			return a2a.ConversationReply{}, err
 		}
+		if profile.Name == "geek-news" {
+			reply, err = normalizeGeekNewsReply(reply)
+			if err != nil {
+				return a2a.ConversationReply{}, err
+			}
+		}
 		return a2a.ConversationReply{Text: reply}, nil
 	}
 	reply, err := p.agent.RunNamedSubAgent(ctx, "a2a_public_assistant", text, turn.ConversationID, turn.Channel)
@@ -148,6 +154,38 @@ type a2aPromptProfileSpec struct {
 	AllowTools   bool
 	MaxSteps     int
 	Model        string
+}
+
+type geekNewsReply struct {
+	CreateTime int64          `json:"create_time"`
+	Summary    string         `json:"summary"`
+	News       []geekNewsItem `json:"news"`
+}
+
+type geekNewsItem struct {
+	Link        string `json:"link"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Image       string `json:"image"`
+	CreateTime  int64  `json:"create_time"`
+}
+
+func normalizeGeekNewsReply(reply string) (string, error) {
+	var news geekNewsReply
+	if err := json.Unmarshal([]byte(strings.TrimSpace(reply)), &news); err != nil {
+		return "", err
+	}
+	if news.News == nil {
+		news.News = []geekNewsItem{}
+	}
+	body, err := json.Marshal(news)
+	if err != nil {
+		return "", err
+	}
+	if !json.Valid(body) {
+		return "", errors.New("generated geek news is invalid json")
+	}
+	return string(body), nil
 }
 
 type rawA2AProfileRequest struct {
@@ -239,6 +277,7 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 				"- description 使用 cyeam 返回的长描述，不要压缩成一句话；如果是英文必须翻译成中文\n" +
 				"- summary 使用 cyeam 返回的 summary；如果是英文必须翻译成中文；缺失时再用中文概括最重要的 3-5 个趋势\n" +
 				"- 所有标题、描述、总结内容都必须是中文\n" +
+				"- 所有字符串内容里的英文双引号必须转义为 \\\"，或改用中文引号 “ ”；最终结果必须能被标准 JSON parser 解析\n" +
 				"- 不访问个人数据、设备数据、邮箱、飞书、微信或私有会话",
 			AllowTools: true,
 		}, true
