@@ -178,6 +178,7 @@ type GetUploadURLRequest struct {
 
 type GetUploadURLResponse struct {
 	Ret           int    `json:"ret,omitempty"`
+	ErrCode       int    `json:"errcode,omitempty"`
 	ErrMsg        string `json:"errmsg,omitempty"`
 	UploadParam   string `json:"upload_param,omitempty"`
 	UploadFullURL string `json:"upload_full_url,omitempty"`
@@ -438,6 +439,9 @@ func (c *Client) getUploadURL(ctx context.Context, req *GetUploadURLRequest) (*G
 	}
 	if resp.Ret != 0 {
 		return nil, fmt.Errorf("wechat getuploadurl ret=%d err=%s", resp.Ret, resp.ErrMsg)
+	}
+	if resp.ErrCode != 0 {
+		return nil, fmt.Errorf("wechat getuploadurl errcode=%d err=%s", resp.ErrCode, resp.ErrMsg)
 	}
 	if strings.TrimSpace(resp.UploadFullURL) == "" && strings.TrimSpace(resp.UploadParam) == "" {
 		return nil, fmt.Errorf("wechat getuploadurl missing upload URL")

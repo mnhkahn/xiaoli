@@ -147,7 +147,7 @@ func NewServer(cfg Config) *AdminServer {
 		}
 		esp32Sender := agentesp32.NewSender(deviceHub, baseURL, storeArt)
 
-		wechatClient := agentwechat.NewClient(agentwechat.ClientConfig{})
+		wechatClient := agentwechat.NewClient(agentwechat.ClientConfig{Token: cfg.WeChatBotToken})
 		if cfg.WeChatBaseURL != "" {
 			wechatClient.BaseURL = cfg.WeChatBaseURL
 		}

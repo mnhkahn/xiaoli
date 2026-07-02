@@ -427,6 +427,39 @@ func TestSenderSendAttachmentSupportsImageAndFile(t *testing.T) {
 	}
 }
 
+func TestUploadMediaReturnsGetUploadURLErrCode(t *testing.T) {
+	dir := t.TempDir()
+	filePath := filepath.Join(dir, "report.pdf")
+	if err := os.WriteFile(filePath, []byte("%PDF-1.7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := NewClient(ClientConfig{
+		BaseURL: "https://wechat.test",
+		Token:   "token",
+		HTTPDo: func(req *http.Request) (*http.Response, error) {
+			if req.URL.Host+req.URL.Path != "wechat.test/ilink/bot/getuploadurl" {
+				t.Fatalf("unexpected request URL = %s", req.URL.String())
+			}
+			return jsonHTTPResponse(http.StatusOK, map[string]any{
+				"errcode": -14,
+				"errmsg": "session timeout",
+			}), nil
+		},
+	})
+
+	_, err := c.UploadMedia(context.Background(), filePath, "user-1", UploadMediaTypeFile)
+	if err == nil {
+		t.Fatal("UploadMedia() error = nil, want getuploadurl errcode")
+	}
+	if !strings.Contains(err.Error(), "errcode=-14") || !strings.Contains(err.Error(), "session timeout") {
+		t.Fatalf("UploadMedia() error = %v, want session timeout errcode", err)
+	}
+	if strings.Contains(err.Error(), "missing upload URL") {
+		t.Fatalf("UploadMedia() error = %v, should not mask errcode as missing upload URL", err)
+	}
+}
+
 type fakeResponse struct {
 	path   string
 	status int
