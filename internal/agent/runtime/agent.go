@@ -17,13 +17,13 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
 
-	agentchannel "github.com/mnhkahn/xiaoli-esp32/internal/agent/channel"
-	agentmodel "github.com/mnhkahn/xiaoli-esp32/internal/agent/model"
-	agentsession "github.com/mnhkahn/xiaoli-esp32/internal/agent/session"
-	agentbuiltin "github.com/mnhkahn/xiaoli-esp32/internal/agent/tool/builtin"
-	agentmcp "github.com/mnhkahn/xiaoli-esp32/internal/agent/tool/mcp"
-	agentskill "github.com/mnhkahn/xiaoli-esp32/internal/agent/tool/skill"
-	agentevent "github.com/mnhkahn/xiaoli-esp32/internal/event"
+	agentchannel "github.com/mnhkahn/xiaoli/internal/agent/channel"
+	agentmodel "github.com/mnhkahn/xiaoli/internal/agent/model"
+	agentsession "github.com/mnhkahn/xiaoli/internal/agent/session"
+	agentbuiltin "github.com/mnhkahn/xiaoli/internal/agent/tool/builtin"
+	agentmcp "github.com/mnhkahn/xiaoli/internal/agent/tool/mcp"
+	agentskill "github.com/mnhkahn/xiaoli/internal/agent/tool/skill"
+	agentevent "github.com/mnhkahn/xiaoli/internal/event"
 )
 
 type DeviceTools interface {
@@ -1807,6 +1807,7 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 		opts.ShellConfig = &agentbuiltin.ShellConfig{
 			Timeout:        a.cfg.BashConfig.Timeout,
 			MaxOutputBytes: a.cfg.BashConfig.MaxOutputBytes,
+			PolicyPath:     a.cfg.BashConfig.PolicyPath,
 		}
 	}
 	if a.memory != nil && channelName != "" && deviceID != "" {

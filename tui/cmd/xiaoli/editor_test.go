@@ -91,3 +91,18 @@ func TestMiniEditorRenderHighlightsCursor(t *testing.T) {
 		t.Fatalf("plain render = %q, want content", plain)
 	}
 }
+
+func TestMiniEditorScrollByMovesViewportAndCursor(t *testing.T) {
+	ed := newMiniEditor("a.go", "one\ntwo\nthree\nfour\nfive\nsix\n")
+	ed.scrollBy(3, 5)
+	if ed.scrollY != 3 {
+		t.Fatalf("scrollY = %d, want 3", ed.scrollY)
+	}
+	if ed.cursorY < ed.scrollY || ed.cursorY >= ed.scrollY+3 {
+		t.Fatalf("cursorY = %d, want visible in scroll window starting %d", ed.cursorY, ed.scrollY)
+	}
+	ed.render(40, 5)
+	if ed.scrollY != 3 {
+		t.Fatalf("render snapped scrollY to %d, want 3", ed.scrollY)
+	}
+}

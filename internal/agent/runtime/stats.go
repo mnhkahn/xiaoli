@@ -16,7 +16,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
 
-	agentevent "github.com/mnhkahn/xiaoli-esp32/internal/event"
+	agentevent "github.com/mnhkahn/xiaoli/internal/event"
 )
 
 type minuteBucket struct {

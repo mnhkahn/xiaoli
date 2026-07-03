@@ -10,7 +10,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
-	agentworkflow "github.com/mnhkahn/xiaoli-esp32/internal/agent/workflow"
+	agentworkflow "github.com/mnhkahn/xiaoli/internal/agent/workflow"
 )
 
 // reminderLocation 返回配置时区，无效或为空时回退到 Asia/Shanghai。

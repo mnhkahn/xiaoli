@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	agentchannel "github.com/mnhkahn/xiaoli-esp32/internal/agent/channel"
+	agentchannel "github.com/mnhkahn/xiaoli/internal/agent/channel"
 )
 
 // Sender implements Sender interface for Lark

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	agentruntime "github.com/mnhkahn/xiaoli-esp32/internal/agent/runtime"
+	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 )
 
 type Config struct {
@@ -451,6 +451,7 @@ func (c Config) RuntimeConfig(prompt string) (agentruntime.Config, error) {
 			Enabled:        c.Tools.Bash,
 			Timeout:        time.Duration(c.Tools.BashTimeoutSeconds) * time.Second,
 			MaxOutputBytes: int64(c.Tools.BashMaxOutputKB) * 1024,
+			PolicyPath:     filepath.Join(c.DataDir, "state", "bash_policy.json"),
 		},
 		LogDir:   filepath.Join(c.DataDir, "logs"),
 		Timezone: "Asia/Shanghai",

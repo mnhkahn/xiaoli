@@ -24,13 +24,13 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
 
-	agentchannel "github.com/mnhkahn/xiaoli-esp32/internal/agent/channel"
-	"github.com/mnhkahn/xiaoli-esp32/internal/agent/localapp"
-	"github.com/mnhkahn/xiaoli-esp32/internal/agent/localconfig"
-	agentruntime "github.com/mnhkahn/xiaoli-esp32/internal/agent/runtime"
-	"github.com/mnhkahn/xiaoli-esp32/internal/agent/slash"
-	agentbuiltin "github.com/mnhkahn/xiaoli-esp32/internal/agent/tool/builtin"
-	agentevent "github.com/mnhkahn/xiaoli-esp32/internal/event"
+	agentchannel "github.com/mnhkahn/xiaoli/internal/agent/channel"
+	"github.com/mnhkahn/xiaoli/internal/agent/localapp"
+	"github.com/mnhkahn/xiaoli/internal/agent/localconfig"
+	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
+	"github.com/mnhkahn/xiaoli/internal/agent/slash"
+	agentbuiltin "github.com/mnhkahn/xiaoli/internal/agent/tool/builtin"
+	agentevent "github.com/mnhkahn/xiaoli/internal/event"
 )
 
 const (
@@ -129,6 +129,7 @@ type model struct {
 	pendingGitCmsg  gitCmsgPending
 	explorer        *tuiExplorer
 	mouseEnabled    bool
+	copyMode        bool
 	quitting        bool
 }
 
@@ -165,14 +166,14 @@ func main() {
 	if *initConfig {
 		cfg, err := localconfig.EnsureDefaults(*configPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "xiaoli-tui init: %v\n", err)
+			fmt.Fprintf(os.Stderr, "xiaoli init: %v\n", err)
 			os.Exit(1)
 		}
 		if localconfig.NeedsModelWizard(cfg) {
 			fmt.Println("No local model configured yet. Let's set one up.")
 			cfg, err = localconfig.RunModelWizard(*configPath, os.Stdin, os.Stdout)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "xiaoli-tui init model: %v\n", err)
+				fmt.Fprintf(os.Stderr, "xiaoli init model: %v\n", err)
 				os.Exit(1)
 			}
 		}
@@ -184,7 +185,7 @@ func main() {
 	logPath := configureTUILogger(*configPath)
 	app, err := localapp.New(localapp.Options{ConfigPath: *configPath, Prompt: *prompt, Ensure: *initConfig})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "xiaoli-tui: %v\n\n", err)
+		fmt.Fprintf(os.Stderr, "xiaoli: %v\n\n", err)
 		fmt.Fprintln(os.Stderr, "Run with -init to create local settings, then configure models.default and API key.")
 		os.Exit(1)
 	}
@@ -201,10 +202,10 @@ func main() {
 		return
 	}
 
-	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	finalModel, err := p.Run()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "xiaoli-tui: %v\n", err)
+		fmt.Fprintf(os.Stderr, "xiaoli: %v\n", err)
 		os.Exit(1)
 	}
 	if m, ok := finalModel.(model); ok {
@@ -288,6 +289,7 @@ func newModel(app *localapp.App, resumeSessionID string, logPath string) model {
 		status:         "idle",
 		streamingIndex: -1,
 		items:          items,
+		mouseEnabled:   true,
 	}
 }
 
@@ -315,7 +317,7 @@ func printExitSummary(app *localapp.App, m model, configPath string) {
 		fmt.Printf("  ID        %s\n", sessionID)
 		fmt.Printf("  Continue  %s\n", continueCommand(sessionID, configPath))
 	} else {
-		fmt.Println("  Continue  xiaoli-tui")
+		fmt.Println("  Continue  xiaoli")
 	}
 }
 
@@ -354,7 +356,7 @@ func renderFigletLogo() string {
 }
 
 func continueCommand(sessionID string, configPath string) string {
-	parts := []string{"xiaoli-tui"}
+	parts := []string{"xiaoli"}
 	if strings.TrimSpace(configPath) != "" {
 		parts = append(parts, "-config", shellQuote(configPath))
 	}
@@ -388,19 +390,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncViewport(false)
 		return m, nil
 	case tea.MouseMsg:
-		if !m.mouseEnabled {
+		if !m.mouseEnabled || m.copyMode {
 			return m, nil
 		}
-		if m.explorer != nil && m.explorer.handleMouse(msg) {
+		if m.explorer != nil {
+			m.explorer.handleMouse(msg)
 			return m, nil
 		}
 		if m.handleGitSyncClick(msg) {
 			return m, tea.Batch(startGitSync(m.cwd, m.gitSync), tickGitSyncSpinner())
 		}
+		if !isMouseWheel(msg) || !m.mouseInMainViewport(msg) {
+			return m, nil
+		}
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		return m, vpCmd
 	case tea.KeyMsg:
+		if m.copyMode {
+			switch msg.String() {
+			case "ctrl+c":
+				m.quitting = true
+				return m, tea.Quit
+			case "esc", "ctrl+o":
+				m.copyMode = false
+				m.mouseEnabled = true
+				m.status = "idle"
+				return m, tea.EnableMouseCellMotion
+			default:
+				return m, nil
+			}
+		}
 		if m.explorer != nil {
 			next, cmd, handled := m.explorer.handleKey(msg)
 			if handled {
@@ -431,10 +451,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clearInputDraft()
 			return m, nil
 		case "ctrl+o":
-			m.mouseEnabled = !m.mouseEnabled
-			if m.mouseEnabled {
-				return m, tea.EnableMouseCellMotion
-			}
+			m.copyMode = true
+			m.mouseEnabled = false
+			m.status = "copy mode"
 			return m, tea.DisableMouse
 		case "ctrl+k":
 			if m.busy || m.hasPendingOptions() {
@@ -442,6 +461,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.clearInputDraft()
 			m.explorer = newDiffExplorer(m.cwd, m.width, m.height)
+			return m, nil
+		case "ctrl+t":
+			if m.busy || m.hasPendingOptions() {
+				return m, nil
+			}
+			m.clearInputDraft()
+			m.explorer = newTreeExplorer(m.cwd, m.width, m.height)
 			return m, nil
 		case "ctrl+s":
 			if m.startGitSyncFeedback() {
@@ -560,9 +586,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.items = append(m.items, transcriptItem{role: "system", text: "已拒绝执行命令。"})
 					return m, nil
 				}
-				if isApprove(text) {
+				if isApprove(text) || isBashApprovalChoice(text) {
 					sessionID := m.activeSessionID()
 					command, ok := agentbuiltin.PendingBashCommand(sessionID, m.pendingBashHash)
+					if ok {
+						if err := agentbuiltin.StoreBashApprovalChoice(sessionID, m.pendingBashHash, normalizeBashApprovalChoice(text)); err != nil {
+							agentbuiltin.ClearBashApproval(sessionID)
+							m.pendingBashHash = ""
+							m.pendingQuestion = ""
+							m.pendingOptions = nil
+							m.pendingChoice = 0
+							m.input.SetValue("")
+							m.items = append(m.items, transcriptItem{role: "error", text: "保存 Bash 权限失败：" + err.Error()})
+							m.syncViewport(true)
+							return m, nil
+						}
+					}
 					agentbuiltin.ClearBashApproval(sessionID)
 					m.pendingBashHash = ""
 					m.pendingQuestion = ""
@@ -1154,16 +1193,29 @@ func sidebarFooterLines(m model, width int) []string {
 	}
 	m.gitStatus = git
 	lines = append(lines, truncateDisplay(gitSyncButtonLabel(m), width))
-	lines = append(lines, "⌃S sync")
-	lines = append(lines, "⌃K diff")
-	mouseState := "off"
-	if m.mouseEnabled {
-		mouseState = "on"
+	if m.copyMode {
+		lines = append(lines, "copy mode")
+		lines = append(lines, "drag select")
+		lines = append(lines, "esc back")
+		lines = append(lines, "⌃C quit")
+		return lines
 	}
-	lines = append(lines, "⌃O mouse "+mouseState)
+	lines = append(lines, "⌃S sync")
+	lines = append(lines, "⌃T tree")
+	lines = append(lines, "⌃K diff")
+	lines = append(lines, "⌃O copy")
 	lines = append(lines, "⌃Y copy")
 	lines = append(lines, "⌃C quit")
 	return lines
+}
+
+func isMouseWheel(msg tea.MouseMsg) bool {
+	return msg.Type == tea.MouseWheelUp || msg.Type == tea.MouseWheelDown
+}
+
+func (m model) mouseInMainViewport(msg tea.MouseMsg) bool {
+	mainW, _, bodyH, _ := layoutSizes(m.width, m.height)
+	return msg.X >= 0 && msg.X < mainW && msg.Y >= 0 && msg.Y < bodyH
 }
 
 func gitSyncButtonLabel(m model) string {
@@ -1955,6 +2007,22 @@ func isApprove(text string) bool {
 	default:
 		return false
 	}
+}
+
+func isBashApprovalChoice(text string) bool {
+	switch strings.TrimSpace(text) {
+	case "允许一次", "本会话允许此命令", "始终允许此命令", "始终允许子命令", "始终允许主命令":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeBashApprovalChoice(text string) string {
+	if isApprove(text) {
+		return "允许一次"
+	}
+	return strings.TrimSpace(text)
 }
 
 func isReject(text string) bool {

@@ -8,8 +8,8 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
-	agentbuiltin "github.com/mnhkahn/xiaoli-esp32/internal/agent/tool/builtin"
-	agentworkflow "github.com/mnhkahn/xiaoli-esp32/internal/agent/workflow"
+	agentbuiltin "github.com/mnhkahn/xiaoli/internal/agent/tool/builtin"
+	agentworkflow "github.com/mnhkahn/xiaoli/internal/agent/workflow"
 )
 
 type testTool struct {

@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mnhkahn/xiaoli-esp32/internal/agent/channel"
-	"github.com/mnhkahn/xiaoli-esp32/internal/agent/model"
+	"github.com/mnhkahn/xiaoli/internal/agent/channel"
+	"github.com/mnhkahn/xiaoli/internal/agent/model"
 )
 
 type ctxKey string

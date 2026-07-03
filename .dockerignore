@@ -4,6 +4,7 @@
 !internal/**
 !server/**
 server/.env
+server/xiaoli
 server/xiaoli-tui
 .git
 .DS_Store

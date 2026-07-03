@@ -11,7 +11,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/mnhkahn/xiaoli-esp32/internal/event"
+	"github.com/mnhkahn/xiaoli/internal/event"
 )
 
 type SubAgentSpec struct {

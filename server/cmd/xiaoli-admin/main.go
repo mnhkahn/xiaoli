@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mnhkahn/xiaoli-esp32/server/internal/admin"
+	"github.com/mnhkahn/xiaoli/server/internal/admin"
 
 	"github.com/mnhkahn/gogogo/logger"
 	"gopkg.in/natefinch/lumberjack.v2"

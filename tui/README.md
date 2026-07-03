@@ -8,19 +8,19 @@ locally and stores local state under `~/.xiaoli`.
 Install the local Xiaoli TUI into the current Go environment:
 
 ```bash
-go install github.com/mnhkahn/xiaoli-esp32/tui/cmd/xiaoli-tui@latest
+go install github.com/mnhkahn/xiaoli/tui/cmd/xiaoli@latest
 ```
 
 For local development from this repository:
 
 ```bash
-go install ./tui/cmd/xiaoli-tui
+go install ./tui/cmd/xiaoli
 ```
 
 Initialize local settings and secrets:
 
 ```bash
-xiaoli-tui -init
+xiaoli -init
 ```
 
 If no model is configured yet, init starts a short model wizard. Choose a
@@ -33,14 +33,14 @@ later if you need more models.
 Run:
 
 ```bash
-xiaoli-tui
+xiaoli
 ```
 
 After exit, the TUI prints the current session ID and a continue command. Resume
 that session later with:
 
 ```bash
-xiaoli-tui -s <session-id>
+xiaoli -s <session-id>
 ```
 
 ## Local Files
@@ -70,10 +70,12 @@ opens a full-screen Git changes browser. `/commit` generates a commit message
 from the current staged diff; if nothing is staged, it stages the provided file
 arguments, or falls back to `git add .`.
 
-The TUI keeps mouse capture off by default so terminal text selection works
-everywhere. Press `Ctrl+O` (`⌃O`) to temporarily toggle mouse selection and
-wheel scrolling. Press `Ctrl+K` (`⌃K`) to open `/diff`. Press `Ctrl+S` (`⌃S`) to
-run the right-sidebar Git sync action.
+The TUI captures mouse input by default so wheel scrolling stays inside the
+active TUI pane instead of moving the terminal scrollback. Press `Ctrl+O` (`⌃O`)
+to enter copy mode, drag-select terminal text with the mouse, then press `Esc`
+or `Ctrl+O` to return to normal TUI interaction. Press `Ctrl+T` (`⌃T`) to open
+`/tree`, `Ctrl+K` (`⌃K`) to open `/diff`, and `Ctrl+S` (`⌃S`) to run the
+right-sidebar Git sync action.
 
 File previews use syntax highlighting, diffs highlight metadata, hunks,
 additions, and deletions. In `/tree`, press `Tab` or `l` on a file to focus the
@@ -87,6 +89,5 @@ fetch, local memory, local run-log search, tasks, reminders stored at
 `bash` is available when `tools.bash` is true.
 
 Use the mouse wheel, Up/Down, PgUp/PgDn, Ctrl+U/Ctrl+D, Home, and End to scroll
-inside the TUI when mouse mode is enabled. The right sidebar keeps status,
-model, cwd, context usage, task/MCP summaries, and key hints visible with a
-fixed-priority layout.
+inside the active TUI pane. The right sidebar keeps status, model, cwd, context
+usage, task/MCP summaries, and key hints visible with a fixed-priority layout.

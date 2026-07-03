@@ -61,7 +61,7 @@
   <text x="74" y="258" fill="#082f49" font-size="11" font-weight="bold">cmd/xiaoli-admin</text>
   <text x="74" y="274" fill="#082f49" font-size="9">LoadConfig · NewServer · ListenAndServe</text>
   <rect x="335" y="240" width="255" height="42" rx="7" fill="url(#entry)" filter="url(#shadow)"/>
-  <text x="349" y="258" fill="#082f49" font-size="11" font-weight="bold">cmd/xiaoli-tui</text>
+  <text x="349" y="258" fill="#082f49" font-size="11" font-weight="bold">cmd/xiaoli</text>
   <text x="349" y="274" fill="#082f49" font-size="9">Bubble Tea UI · /tree · /diff · local session</text>
   <rect x="610" y="240" width="255" height="42" rx="7" fill="url(#entry)" filter="url(#shadow)"/>
   <text x="624" y="258" fill="#082f49" font-size="11" font-weight="bold">cmd/tts-play · cmd/wechat-login</text>
@@ -171,7 +171,7 @@
   <text x="909" y="700" fill="#064e3b" font-size="9">~/.xiaoli 配置</text>
   <text x="909" y="715" fill="#064e3b" font-size="9">本地 Agent 组装</text>
   <rect x="1065" y="664" width="150" height="70" rx="7" fill="url(#core)" filter="url(#shadow)"/>
-  <text x="1079" y="684" fill="#064e3b" font-size="11" font-weight="bold">slash · xiaoli-tui</text>
+  <text x="1079" y="684" fill="#064e3b" font-size="11" font-weight="bold">slash · xiaoli</text>
   <text x="1079" y="700" fill="#064e3b" font-size="9">/skills · /model · /mcp</text>
   <text x="1079" y="715" fill="#064e3b" font-size="9">explorer · shell · highlight</text>
   <text x="895" y="760" fill="#86efac" font-size="10">后台：Lark WS、WeChat polling、A2A AgentCard、Cron 调度共同进入 ConversationPipeline</text>

@@ -1,4 +1,4 @@
-module github.com/mnhkahn/xiaoli-esp32/server
+module github.com/mnhkahn/xiaoli/server
 
 go 1.25.0
 
@@ -46,7 +46,7 @@ require (
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/meguminnnnnnnnn/go-openai v0.1.2 // indirect
-	github.com/mnhkahn/xiaoli-esp32 v0.0.0
+	github.com/mnhkahn/xiaoli v0.0.0
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/nikolalohinski/gonja v1.5.3 // indirect
@@ -64,4 +64,4 @@ require (
 	golang.org/x/sys v0.44.0 // indirect
 )
 
-replace github.com/mnhkahn/xiaoli-esp32 => ..
+replace github.com/mnhkahn/xiaoli => ..

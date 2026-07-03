@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	agentchannel "github.com/mnhkahn/xiaoli-esp32/internal/agent/channel"
+	agentchannel "github.com/mnhkahn/xiaoli/internal/agent/channel"
 )
 
 // DeviceHubAdapter is the interface needed to speak to ESP32 devices

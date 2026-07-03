@@ -22,17 +22,17 @@ import (
 	larkws "github.com/larksuite/oapi-sdk-go/v3/ws"
 	"github.com/mnhkahn/gogogo/logger"
 
-	agentchannel "github.com/mnhkahn/xiaoli-esp32/internal/agent/channel"
-	agentlark "github.com/mnhkahn/xiaoli-esp32/internal/agent/channel/lark"
-	agentwechat "github.com/mnhkahn/xiaoli-esp32/internal/agent/channel/wechat"
-	agentmedia "github.com/mnhkahn/xiaoli-esp32/internal/agent/media"
-	agentruntime "github.com/mnhkahn/xiaoli-esp32/internal/agent/runtime"
-	agentslash "github.com/mnhkahn/xiaoli-esp32/internal/agent/slash"
-	agentbuiltin "github.com/mnhkahn/xiaoli-esp32/internal/agent/tool/builtin"
-	agentworkflow "github.com/mnhkahn/xiaoli-esp32/internal/agent/workflow"
-	agentevent "github.com/mnhkahn/xiaoli-esp32/internal/event"
-	agentesp32 "github.com/mnhkahn/xiaoli-esp32/server/internal/esp32"
-	esp32audio "github.com/mnhkahn/xiaoli-esp32/server/internal/esp32/audio"
+	agentchannel "github.com/mnhkahn/xiaoli/internal/agent/channel"
+	agentlark "github.com/mnhkahn/xiaoli/internal/agent/channel/lark"
+	agentwechat "github.com/mnhkahn/xiaoli/internal/agent/channel/wechat"
+	agentmedia "github.com/mnhkahn/xiaoli/internal/agent/media"
+	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
+	agentslash "github.com/mnhkahn/xiaoli/internal/agent/slash"
+	agentbuiltin "github.com/mnhkahn/xiaoli/internal/agent/tool/builtin"
+	agentworkflow "github.com/mnhkahn/xiaoli/internal/agent/workflow"
+	agentevent "github.com/mnhkahn/xiaoli/internal/event"
+	agentesp32 "github.com/mnhkahn/xiaoli/server/internal/esp32"
+	esp32audio "github.com/mnhkahn/xiaoli/server/internal/esp32/audio"
 )
 
 type SpeechRecognizer = agentmedia.SpeechRecognizer
@@ -884,7 +884,9 @@ func (s *AdminServer) handleLarkCardAction(ctx context.Context, w http.ResponseW
 				if s.agent != nil && s.agent.SessionManager() != nil {
 					sid := s.agent.SessionManager().GetChannelSession(ctx, string(ChannelLarkText), senderID)
 					if sid != "" {
-						agentbuiltin.StoreBashApproval(sid, bashHash)
+						if err := agentbuiltin.StoreBashApprovalChoice(sid, bashHash, selected); err != nil {
+							logger.Infof("[lark] bash approval choice failed sid=%s err=%v", sid, err)
+						}
 					}
 				}
 			}

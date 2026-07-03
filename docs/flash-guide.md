@@ -3,8 +3,8 @@
 ## 烧录命令
 
 ```bash
-source /Users/mnhkahn/code/xiaoli-esp32/esp-idf/export.sh && \
-cd /Users/mnhkahn/code/xiaoli-esp32/xiaozhi-esp32 && \
+source /Users/mnhkahn/code/xiaoli/esp-idf/export.sh && \
+cd /Users/mnhkahn/code/xiaoli/xiaozhi-esp32 && \
 idf.py -p /dev/cu.usbserial-14310 flash
 ```
 

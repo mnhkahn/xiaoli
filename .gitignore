@@ -41,6 +41,7 @@ server/.agents/
 server/skills-lock.json
 server/wechat-login
 server/xiaoli-admin
+server/xiaoli
 server/xiaoli-tui
 xiaoli-mac/xiaoli-mac.json
 xiaozhi-esp32/build/

@@ -132,7 +132,7 @@ ENV XIAOLI_ADMIN_HOST=0.0.0.0
 ENV XIAOLI_ADMIN_PORT=8080
 ENV XIAOLI_DIRECT_DEVICE_SERVER=true
 ENV XIAOLI_ONNXRUNTIME_PATH=/usr/local/lib/libonnxruntime.so
-ENV XIAOLI_REPO_URL=github.com/mnhkahn/xiaoli-esp32
+ENV XIAOLI_REPO_URL=github.com/mnhkahn/xiaoli
 
 EXPOSE 8080
 

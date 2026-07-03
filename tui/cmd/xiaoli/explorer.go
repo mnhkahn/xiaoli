@@ -182,6 +182,8 @@ func (e *tuiExplorer) handleMouse(msg tea.MouseMsg) bool {
 	case tea.MouseWheelUp:
 		if left {
 			e.leftScroll = max(0, e.leftScroll-3)
+		} else if e.editor != nil && e.mode == explorerTree {
+			e.editor.scrollBy(-3, e.previewHeight())
 		} else {
 			e.rightScroll = max(0, e.rightScroll-3)
 		}
@@ -189,6 +191,8 @@ func (e *tuiExplorer) handleMouse(msg tea.MouseMsg) bool {
 	case tea.MouseWheelDown:
 		if left {
 			e.leftScroll = min(max(0, len(e.entries)-e.listHeight()), e.leftScroll+3)
+		} else if e.editor != nil && e.mode == explorerTree {
+			e.editor.scrollBy(3, e.previewHeight())
 		} else {
 			e.rightScroll = min(max(0, len(e.previewLines())-e.previewHeight()), e.rightScroll+3)
 		}

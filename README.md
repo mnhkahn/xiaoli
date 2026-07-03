@@ -1,4 +1,4 @@
-# Xiaoli ESP32
+# Xiaoli
 
 ![Architecture](docs/architecture.svg)
 

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	agentruntime "github.com/mnhkahn/xiaoli-esp32/internal/agent/runtime"
-	"github.com/mnhkahn/xiaoli-esp32/internal/agent/slash"
+	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
+	"github.com/mnhkahn/xiaoli/internal/agent/slash"
 )
 
 type gitCmsgPending struct {

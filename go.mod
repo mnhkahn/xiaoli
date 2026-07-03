@@ -1,4 +1,4 @@
-module github.com/mnhkahn/xiaoli-esp32
+module github.com/mnhkahn/xiaoli
 
 go 1.25.0
 

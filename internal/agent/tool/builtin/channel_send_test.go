@@ -9,7 +9,7 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 
-	agentchannel "github.com/mnhkahn/xiaoli-esp32/internal/agent/channel"
+	agentchannel "github.com/mnhkahn/xiaoli/internal/agent/channel"
 )
 
 type fakeChannelSender struct {

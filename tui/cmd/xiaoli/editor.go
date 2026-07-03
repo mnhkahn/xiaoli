@@ -263,6 +263,21 @@ func (e *miniEditor) ensureCursorVisible(height int) {
 	e.scrollY = clamp(e.scrollY, 0, max(0, len(e.lines)-height))
 }
 
+func (e *miniEditor) scrollBy(delta, height int) {
+	if e == nil || height <= 0 {
+		return
+	}
+	bodyHeight := max(1, height-2)
+	e.scrollY = clamp(e.scrollY+delta, 0, max(0, len(e.lines)-bodyHeight))
+	if e.cursorY < e.scrollY {
+		e.cursorY = e.scrollY
+	}
+	if e.cursorY >= e.scrollY+bodyHeight {
+		e.cursorY = min(len(e.lines)-1, e.scrollY+bodyHeight-1)
+	}
+	e.clampCursor()
+}
+
 func renderEditorCursor(line string, cursorX int) string {
 	runes := []rune(line)
 	cursorX = clamp(cursorX, 0, len(runes))

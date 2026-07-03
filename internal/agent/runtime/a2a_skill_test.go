@@ -13,7 +13,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/redis/go-redis/v9"
 
-	agentsession "github.com/mnhkahn/xiaoli-esp32/internal/agent/session"
+	agentsession "github.com/mnhkahn/xiaoli/internal/agent/session"
 )
 
 func TestNewAgentInitializesA2ASkillsIndependentlyFromDefaultSkills(t *testing.T) {

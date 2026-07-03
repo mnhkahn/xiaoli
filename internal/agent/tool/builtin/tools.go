@@ -3,7 +3,7 @@ package builtin
 import (
 	"context"
 
-	agentworkflow "github.com/mnhkahn/xiaoli-esp32/internal/agent/workflow"
+	agentworkflow "github.com/mnhkahn/xiaoli/internal/agent/workflow"
 )
 
 type ToolFilter uint64

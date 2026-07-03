@@ -3,13 +3,14 @@ package runtime
 import (
 	"time"
 
-	agentworkflow "github.com/mnhkahn/xiaoli-esp32/internal/agent/workflow"
+	agentworkflow "github.com/mnhkahn/xiaoli/internal/agent/workflow"
 )
 
 type BashConfig struct {
 	Enabled        bool
 	Timeout        time.Duration
 	MaxOutputBytes int64
+	PolicyPath     string
 }
 
 // MCP 认证方式

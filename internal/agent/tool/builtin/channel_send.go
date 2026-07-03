@@ -11,7 +11,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
-	agentchannel "github.com/mnhkahn/xiaoli-esp32/internal/agent/channel"
+	agentchannel "github.com/mnhkahn/xiaoli/internal/agent/channel"
 )
 
 type channelSendStatusKey struct{}

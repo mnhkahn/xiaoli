@@ -3,7 +3,7 @@ package wechat
 import (
 	"context"
 
-	agentchannel "github.com/mnhkahn/xiaoli-esp32/internal/agent/channel"
+	agentchannel "github.com/mnhkahn/xiaoli/internal/agent/channel"
 )
 
 type ProviderConfig struct {

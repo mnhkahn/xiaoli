@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	agentskill "github.com/mnhkahn/xiaoli-esp32/internal/agent/tool/skill"
+	agentskill "github.com/mnhkahn/xiaoli/internal/agent/tool/skill"
 	"github.com/stretchr/testify/assert"
 )
 

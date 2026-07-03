@@ -19,6 +19,7 @@ type ShellConfig struct {
 	Enabled        bool
 	Timeout        time.Duration
 	MaxOutputBytes int64
+	PolicyPath     string
 }
 
 type ShellTool struct {
@@ -36,9 +37,10 @@ var (
 )
 
 type pendingInfo struct {
-	Command   string
-	Hash      string
-	ExpiresAt time.Time
+	Command    string
+	Hash       string
+	PolicyPath string
+	ExpiresAt  time.Time
 }
 
 type approvedInfo struct {
@@ -51,15 +53,27 @@ type approvedInfo struct {
 // hash is the command hash to verify against the pending approval.
 // If caller doesn't know the hash (non-bash card), hash is "" and the call is silently ignored.
 func StoreBashApproval(convID, hash string) {
+	_ = StoreBashApprovalChoice(convID, hash, bashApprovalAllowOnce)
+}
+
+func StoreBashApprovalChoice(convID, hash, choice string) error {
+	choice = normalizeBashApprovalChoice(choice)
+	if choice == bashApprovalReject {
+		return nil
+	}
 	bashPendingMu.Lock()
 	p, ok := bashPending[convID]
 	bashPendingMu.Unlock()
 	if !ok || time.Now().After(p.ExpiresAt) || p.Hash != hash {
-		return
+		return nil
+	}
+	if err := applyBashApprovalChoice(convID, p.Command, choice, p.PolicyPath); err != nil {
+		return err
 	}
 	bashApprovedMu.Lock()
 	bashApproved[convID] = approvedInfo{Hash: p.Hash, ExpiresAt: time.Now().Add(5 * time.Minute)}
 	bashApprovedMu.Unlock()
+	return nil
 }
 
 // PendingBashCommand returns the exact command currently waiting for approval.
@@ -120,6 +134,9 @@ func (t *ShellTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 	}
 
 	convID, _ := ctx.Value(SubAgentParentKey).(string)
+	if convID != "" && bashCommandAllowed(convID, cmd, t.config.PolicyPath) {
+		return t.execute(ctx, cmd)
+	}
 
 	// 1. Check if user has explicitly approved this command
 	if convID != "" {
@@ -139,9 +156,10 @@ func (t *ShellTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 	if convID != "" {
 		bashPendingMu.Lock()
 		bashPending[convID] = pendingInfo{
-			Command:   cmd,
-			Hash:      cmdHash,
-			ExpiresAt: time.Now().Add(5 * time.Minute),
+			Command:    cmd,
+			Hash:       cmdHash,
+			PolicyPath: t.config.PolicyPath,
+			ExpiresAt:  time.Now().Add(5 * time.Minute),
 		}
 		bashPendingMu.Unlock()
 	}
@@ -150,7 +168,7 @@ func (t *ShellTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 	if holder, ok := ctx.Value(AskDataKey).(*AskDataHolder); ok {
 		holder.Set(&AskData{
 			Question: question,
-			Options:  []string{"允许", "拒绝"},
+			Options:  bashApprovalOptions(cmd, t.config.PolicyPath),
 			BashHash: cmdHash,
 		})
 	}

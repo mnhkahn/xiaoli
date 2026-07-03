@@ -158,13 +158,13 @@ func TestStartGitSyncFeedbackOnlyUpdatesFooter(t *testing.T) {
 func TestSidebarFooterShowsKeyboardHintsAndMouseMode(t *testing.T) {
 	lines := sidebarFooterLines(model{cwd: "/tmp/repo", gitStatus: "main ✓"}, 40)
 	got := strings.Join(lines, "\n")
-	if !strings.Contains(got, "⌃S sync") || !strings.Contains(got, "⌃K diff") || !strings.Contains(got, "⌃O mouse off") {
+	if !strings.Contains(got, "⌃S sync") || !strings.Contains(got, "⌃T tree") || !strings.Contains(got, "⌃K diff") || !strings.Contains(got, "⌃O copy") {
 		t.Fatalf("sidebarFooterLines() = %#v, want keyboard hints", lines)
 	}
-	lines = sidebarFooterLines(model{cwd: "/tmp/repo", gitStatus: "main ✓", mouseEnabled: true}, 40)
+	lines = sidebarFooterLines(model{cwd: "/tmp/repo", gitStatus: "main ✓", copyMode: true}, 40)
 	got = strings.Join(lines, "\n")
-	if !strings.Contains(got, "⌃O mouse on") {
-		t.Fatalf("sidebarFooterLines(mouse) = %#v, want mouse on hint", lines)
+	if !strings.Contains(got, "copy mode") || !strings.Contains(got, "drag select") || !strings.Contains(got, "esc back") {
+		t.Fatalf("sidebarFooterLines(copy mode) = %#v, want copy mode hints", lines)
 	}
 }
 
@@ -181,6 +181,40 @@ func TestCtrlKOpensDiffExplorer(t *testing.T) {
 	}
 	if got.input.Value() != "" {
 		t.Fatalf("Ctrl-K input = %q, want empty", got.input.Value())
+	}
+}
+
+func TestCtrlTOpensTreeExplorer(t *testing.T) {
+	input := textinput.New()
+	m := model{input: input, cwd: t.TempDir(), width: 100, height: 30}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("Ctrl-T returned command, want nil")
+	}
+	if got.explorer == nil || got.explorer.mode != explorerTree {
+		t.Fatalf("Ctrl-T explorer = %#v, want tree explorer", got.explorer)
+	}
+}
+
+func TestCtrlOTogglesCopyMode(t *testing.T) {
+	input := textinput.New()
+	m := model{input: input, mouseEnabled: true, status: "idle"}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
+	got := next.(model)
+	if cmd == nil {
+		t.Fatalf("Ctrl-O returned nil command, want DisableMouse command")
+	}
+	if !got.copyMode || got.mouseEnabled || got.status != "copy mode" {
+		t.Fatalf("copy enter = copyMode:%v mouse:%v status:%q", got.copyMode, got.mouseEnabled, got.status)
+	}
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got = next.(model)
+	if cmd == nil {
+		t.Fatalf("Esc returned nil command, want EnableMouseCellMotion command")
+	}
+	if got.copyMode || !got.mouseEnabled || got.status != "idle" {
+		t.Fatalf("copy exit = copyMode:%v mouse:%v status:%q", got.copyMode, got.mouseEnabled, got.status)
 	}
 }
 
