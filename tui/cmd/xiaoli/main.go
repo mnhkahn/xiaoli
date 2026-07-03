@@ -50,6 +50,8 @@ type chatDoneMsg struct {
 	err   error
 }
 
+const defaultChatTimeout = 10 * time.Minute
+
 type chatDeltaMsg struct {
 	delta string
 }
@@ -663,7 +665,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamingIndex = -1
 			m.scroll = 0
 			m.syncViewport(true)
-			chatCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
 			m.activeCancel = cancel
 			m.chatCanceled = false
 			return m, tea.Batch(startChat(chatCtx, m.app.Agent, m.chatMsgs, m.sessionID, text), waitForChat(m.chatMsgs), waitForEvent(m.events))
@@ -765,7 +767,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.items = append(m.items, bashApprovalTranscriptItem(msg))
 		m.syncViewport(true)
 		prompt := formatApprovedBashFollowup(msg.command, msg.output, msg.err)
-		chatCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
 		m.activeCancel = cancel
 		m.chatCanceled = false
 		return m, tea.Batch(startChat(chatCtx, m.app.Agent, m.chatMsgs, msg.sessionID, prompt), waitForChat(m.chatMsgs), waitForEvent(m.events))

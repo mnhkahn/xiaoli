@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadMissingUsesLocalSafeDefaults(t *testing.T) {
@@ -64,6 +65,39 @@ func TestRuntimeConfigResolvesModelAndSecrets(t *testing.T) {
 	}
 	if got := cfg.RunLogDir(); got != filepath.Join(dir, "runs") {
 		t.Fatalf("RunLogDir() = %q", got)
+	}
+}
+
+func TestRuntimeConfigUsesExtendedLLMTimeout(t *testing.T) {
+	t.Setenv("LOCAL_TEST_API_KEY", "secret-env")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	body := `{
+		"data_dir": "` + dir + `",
+		"models": {
+			"default": "test",
+			"options": {
+				"test": {
+					"base_url": "https://example.test/v1",
+					"model": "test-model",
+					"api_key_env": "LOCAL_TEST_API_KEY"
+				}
+			}
+		}
+	}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	rt, err := cfg.RuntimeConfig("prompt")
+	if err != nil {
+		t.Fatalf("RuntimeConfig() error = %v", err)
+	}
+	if rt.LLMTimeout != 240*time.Second {
+		t.Fatalf("LLMTimeout = %s, want 4m0s", rt.LLMTimeout)
 	}
 }
 

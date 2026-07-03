@@ -17,7 +17,12 @@ import (
 	"time"
 )
 
-const fallbackLLMPrompt = "你是一个叫小李的中文语音助手。回答要简短、自然、适合通过扬声器播放。"
+const (
+	fallbackLLMPrompt               = "你是一个叫小李的中文语音助手。回答要简短、自然、适合通过扬声器播放。"
+	defaultGoLLMTimeoutSeconds      = 240
+	defaultAgentRunTimeoutSeconds   = 600
+	defaultA2ARequestTimeoutSeconds = 600
+)
 
 type Config struct {
 	Host                    string
@@ -215,7 +220,7 @@ func LoadConfig() Config {
 		GoLLMModels:             goLLMModels,
 		GoLLMModelConfigs:       goLLMModelConfigs,
 		GoLLMPrompt:             goLLMPrompt,
-		GoLLMTimeout:            time.Duration(envInt("XIAOLI_GO_LLM_TIMEOUT_SECONDS", 120)) * time.Second,
+		GoLLMTimeout:            time.Duration(envInt("XIAOLI_GO_LLM_TIMEOUT_SECONDS", defaultGoLLMTimeoutSeconds)) * time.Second,
 		GoVLLMURL:               strings.TrimSpace(vision.BaseURL),
 		GoVLLMAPIKey:            settingsAPIKey(vision.APIKeyEnv),
 		GoVLLMModel:             strings.TrimSpace(vision.Model),
@@ -473,7 +478,7 @@ func parseWorkflows(raw map[string]settingsWorkflowDef) []agentworkflow.Definiti
 			wf.Enabled = false
 		}
 
-		agentTimeout := 120 * time.Second
+		agentTimeout := time.Duration(defaultAgentRunTimeoutSeconds) * time.Second
 		if wf.Agent.Timeout != "" {
 			if d, err := time.ParseDuration(wf.Agent.Timeout); err == nil {
 				agentTimeout = d
@@ -532,7 +537,7 @@ func parseChatReact(agent settingsWorkflowAgent) agentworkflow.AgentSpec {
 		Name:     strings.TrimSpace(agent.Name),
 		Mode:     strings.TrimSpace(agent.Mode),
 		MaxSteps: agent.MaxSteps,
-		Timeout:  120 * time.Second,
+		Timeout:  time.Duration(defaultAgentRunTimeoutSeconds) * time.Second,
 	}
 	if spec.Name == "" {
 		spec.Name = "dispatch_agent"
@@ -846,7 +851,7 @@ func (s settingsConfig) a2aMaxInputChars() int {
 
 func (s settingsConfig) a2aTimeoutSeconds() int {
 	if s.A2A.TimeoutSeconds == nil || *s.A2A.TimeoutSeconds <= 0 {
-		return 60 // default
+		return defaultA2ARequestTimeoutSeconds
 	}
 	return *s.A2A.TimeoutSeconds
 }

@@ -13,6 +13,8 @@ import (
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 )
 
+const defaultLLMTimeout = 240 * time.Second
+
 type Config struct {
 	DataDir string        `json:"data_dir"`
 	Models  ModelConfig   `json:"models"`
@@ -436,7 +438,7 @@ func (c Config) RuntimeConfig(prompt string) (agentruntime.Config, error) {
 		LLMModel:                c.Models.Default,
 		LLMModelConfigs:         models,
 		LLMPrompt:               prompt,
-		LLMTimeout:              120 * time.Second,
+		LLMTimeout:              defaultLLMTimeout,
 		StorageBackend:          c.Storage.Backend,
 		LocalDataDir:            c.DataDir,
 		LocalMemoryFile:         c.Storage.MemoryFile,

@@ -188,7 +188,7 @@ func generateGitCommitMessage(ctx context.Context, agent *agentruntime.Agent, st
 	if len(diff) > maxDiff {
 		diff = diff[:maxDiff] + "\n\n[diff truncated]\n"
 	}
-	system := "你是 Git 提交信息助手。只输出一条中文 Conventional Commits 提交信息，不要解释，不要 Markdown。格式：type(scope): 简短中文描述。"
+	system := "你是 Git 提交信息助手。只输出中文 Conventional Commits 提交信息，不要解释，不要 Markdown。第一行格式：type(scope): 简短中文描述。若变更涉及多个文件、模块或行为，必须在空行后输出正文，用编号列表逐条说明主要变更。"
 	user := fmt.Sprintf("根据下面暂存区变更生成提交信息。\n\n文件：\n%s\n\n统计：\n%s\n\nDiff：\n%s", strings.TrimSpace(files), strings.TrimSpace(stat), diff)
 	msg, err := agent.Generate(ctx, system, user)
 	if err != nil {
@@ -203,19 +203,32 @@ func generateGitCommitMessage(ctx context.Context, agent *agentruntime.Agent, st
 
 func sanitizeCommitMessage(msg string) string {
 	msg = strings.TrimSpace(msg)
-	msg = strings.Trim(msg, "`")
 	lines := strings.Split(msg, "\n")
+	cleaned := make([]string, 0, len(lines))
 	for _, line := range lines {
-		line = strings.TrimSpace(strings.Trim(line, "`"))
-		if line != "" && !strings.HasPrefix(line, "```") {
-			return line
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			continue
 		}
+		cleaned = append(cleaned, strings.TrimRight(line, " \t"))
 	}
-	return ""
+	return strings.TrimSpace(strings.Join(cleaned, "\n"))
 }
 
 func splitCommitMessageArgs(message string) []string {
-	return []string{message}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil
+	}
+	parts := strings.Split(message, "\n\n")
+	args := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			args = append(args, part)
+		}
+	}
+	return args
 }
 
 func formatGitCmsgQuestion(msg gitCmsgPrepareMsg) string {

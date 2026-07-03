@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	agentskill "github.com/mnhkahn/xiaoli/internal/agent/tool/skill"
 	"github.com/stretchr/testify/assert"
@@ -307,7 +308,19 @@ func TestLoadConfig_A2ADefaults(t *testing.T) {
 	assert.Equal(t, 120, cfg.A2A.RateLimitGlobal)
 	assert.Equal(t, 2, cfg.A2A.MaxConcurrentPerKey)
 	assert.Equal(t, 2000, cfg.A2A.MaxInputChars)
-	assert.Equal(t, 60, cfg.A2A.TimeoutSeconds)
+	assert.Equal(t, 600, cfg.A2A.TimeoutSeconds)
 	assert.Equal(t, 1800, cfg.A2A.TaskTTLSeconds)
 	assert.False(t, cfg.A2A.Trace.LogOutputs)
+}
+
+func TestLoadConfigTimeoutDefaultsAllowNestedLLMRuns(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	os.Clearenv()
+
+	cfg := LoadConfig()
+
+	assert.Equal(t, 240*time.Second, cfg.GoLLMTimeout)
+	assert.Equal(t, 600*time.Second, cfg.ChatReact.Timeout)
+	assert.Equal(t, 600, cfg.A2A.TimeoutSeconds)
 }

@@ -533,7 +533,7 @@ func DefinitionChatReact(agent agentworkflow.AgentSpec) agentworkflow.Definition
 		agent.MaxSteps = 8
 	}
 	if agent.Timeout <= 0 {
-		agent.Timeout = 120 * time.Second
+		agent.Timeout = time.Duration(defaultAgentRunTimeoutSeconds) * time.Second
 	}
 	return agentworkflow.Definition{
 		ID:          "chat_react",

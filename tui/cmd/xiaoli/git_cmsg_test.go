@@ -49,6 +49,32 @@ func TestPrepareGitCmsgDiffKeepsExistingStagedSet(t *testing.T) {
 	}
 }
 
+func TestSanitizeCommitMessagePreservesBody(t *testing.T) {
+	input := "```text\nfeat(agent): 放宽模型调用超时\n\n1. 将 LLM HTTP 超时调整为 240 秒\n2. 将 A2A 外层超时调整为 600 秒\n```\n"
+
+	got := sanitizeCommitMessage(input)
+
+	want := "feat(agent): 放宽模型调用超时\n\n1. 将 LLM HTTP 超时调整为 240 秒\n2. 将 A2A 外层超时调整为 600 秒"
+	if got != want {
+		t.Fatalf("sanitizeCommitMessage() = %q, want %q", got, want)
+	}
+}
+
+func TestSplitCommitMessageArgsSplitsSubjectAndBodyParagraphs(t *testing.T) {
+	message := "feat(agent): 放宽模型调用超时\n\n1. 将 LLM HTTP 超时调整为 240 秒\n2. 将 A2A 外层超时调整为 600 秒\n\nCo-authored-by: ark-code-latest (ByteDance ARK) <noreply@volcesengine.com>"
+
+	got := splitCommitMessageArgs(message)
+
+	want := []string{
+		"feat(agent): 放宽模型调用超时",
+		"1. 将 LLM HTTP 超时调整为 240 秒\n2. 将 A2A 外层超时调整为 600 秒",
+		"Co-authored-by: ark-code-latest (ByteDance ARK) <noreply@volcesengine.com>",
+	}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("splitCommitMessageArgs() = %#v, want %#v", got, want)
+	}
+}
+
 func mustRunGit(t *testing.T, cwd string, args ...string) {
 	t.Helper()
 	if out, err := runGitCombined(cwd, args...); err != nil {
