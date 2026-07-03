@@ -101,7 +101,7 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 				logTraceModelStart(ctx, run, mi.Messages, len(mi.Tools))
 			} else {
 				chars, nonSystem := traceMessagesStats(mi.Messages)
-				logger.Infof("[LLM] START messages=%d non_system_messages=%d prompt_chars=%d tools=%d", len(mi.Messages), nonSystem, chars, len(mi.Tools))
+				logger.Infof("[LLM] START messages=%d non_system_messages=%d prompt_chars=%d tools=%d top_messages=%s", len(mi.Messages), nonSystem, chars, len(mi.Tools), traceTopMessageStats(mi.Messages, 5))
 			}
 
 			if llmLogFullMessages() {

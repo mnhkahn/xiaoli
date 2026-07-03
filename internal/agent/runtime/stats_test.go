@@ -163,6 +163,21 @@ func TestWrapToolPerToolName(t *testing.T) {
 	}
 }
 
+func TestTraceTopMessageStatsShowsLargestMessages(t *testing.T) {
+	msgs := []*schema.Message{
+		{Role: schema.User, Content: strings.Repeat("u", 4)},
+		{Role: schema.Tool, Name: "news", ToolCallID: "call-news", Content: strings.Repeat("n", 10)},
+		{Role: schema.Assistant, Content: strings.Repeat("a", 7)},
+		{Role: schema.System, Content: strings.Repeat("s", 2)},
+	}
+
+	got := traceTopMessageStats(msgs, 3)
+	want := "[#2 role=tool name=news len=10,#3 role=assistant len=7,#1 role=user len=4]"
+	if got != want {
+		t.Fatalf("traceTopMessageStats() = %q, want %q", got, want)
+	}
+}
+
 func TestRecordCachedTokens(t *testing.T) {
 	rec := &Recorder{buckets: make(map[string]map[string]*minuteBucket)}
 

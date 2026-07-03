@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -231,13 +232,55 @@ func traceMessagesStats(msgs []*schema.Message) (chars int, nonSystem int) {
 	return chars, nonSystem
 }
 
+type traceMessageStat struct {
+	Index int
+	Role  string
+	Name  string
+	Len   int
+}
+
+func traceTopMessageStats(msgs []*schema.Message, limit int) string {
+	if limit <= 0 {
+		return "[]"
+	}
+	stats := make([]traceMessageStat, 0, len(msgs))
+	for i, msg := range msgs {
+		if msg == nil {
+			continue
+		}
+		name := strings.TrimSpace(msg.Name)
+		stats = append(stats, traceMessageStat{
+			Index: i + 1,
+			Role:  string(msg.Role),
+			Name:  name,
+			Len:   len(msg.Content),
+		})
+	}
+	sort.SliceStable(stats, func(i, j int) bool {
+		return stats[i].Len > stats[j].Len
+	})
+	if len(stats) > limit {
+		stats = stats[:limit]
+	}
+	parts := make([]string, 0, len(stats))
+	for _, st := range stats {
+		part := fmt.Sprintf("#%d role=%s", st.Index, st.Role)
+		if st.Name != "" {
+			part += fmt.Sprintf(" name=%s", st.Name)
+		}
+		part += fmt.Sprintf(" len=%d", st.Len)
+		parts = append(parts, part)
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
 func logTraceModelStart(ctx context.Context, run traceRun, msgs []*schema.Message, toolCount int) {
 	st := traceFromContext(ctx)
 	if st == nil {
 		return
 	}
 	chars, nonSystem := traceMessagesStats(msgs)
-	logger.Infof("%s model.start step=%d input_messages=%d non_system_messages=%d prompt_chars=%d tools=%d", tracePrefix(st), run.Step, len(msgs), nonSystem, chars, toolCount)
+	logger.Infof("%s model.start step=%d input_messages=%d non_system_messages=%d prompt_chars=%d tools=%d top_messages=%s", tracePrefix(st), run.Step, len(msgs), nonSystem, chars, toolCount, traceTopMessageStats(msgs, 5))
 	st.rememberAction(fmt.Sprintf("model#%d start messages=%d prompt_chars=%d tools=%d", run.Step, len(msgs), chars, toolCount))
 }
 
