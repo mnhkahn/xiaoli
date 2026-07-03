@@ -1,40 +1,43 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-func TestComposeSidebarKeepsKeys(t *testing.T) {
-	top := []string{"title", "status", "model", "cwd", "context", "log"}
-	middle := []string{"tasks", "- one", "MCP", "- up"}
-	keys := []string{"workspace", "repo", "main"}
-
-	got := composeSidebar(top, middle, keys, 8)
-	if len(got) != 8 {
-		t.Fatalf("len(composeSidebar) = %d, want 8", len(got))
+func TestLayoutUsesBottomStatusBar(t *testing.T) {
+	mainW, sideW, bodyH, promptW, statusH := layoutSizes(120, 30)
+	if sideW != 0 {
+		t.Fatalf("sideW = %d, want 0", sideW)
 	}
-	for _, want := range keys {
-		if !containsLine(got, want) {
-			t.Fatalf("composeSidebar() missing key line %q in %#v", want, got)
-		}
+	if mainW != 120-boxStyle.GetHorizontalFrameSize() {
+		t.Fatalf("mainW = %d, want full-width transcript", mainW)
 	}
-	if !containsLine(got, "...") {
-		t.Fatalf("composeSidebar() = %#v, want ellipsis when top is truncated", got)
+	if bodyH != 23 || promptW != 120-boxStyle.GetHorizontalFrameSize() || statusH != 2 {
+		t.Fatalf("layoutSizes() = main:%d side:%d body:%d prompt:%d status:%d", mainW, sideW, bodyH, promptW, statusH)
 	}
 }
 
-func TestSidebarFooterShowsCWDAndGit(t *testing.T) {
-	lines := sidebarFooterLines(model{cwd: "/tmp/work/repo", gitStatus: "main ↑2"}, 40)
-	if !containsLine(lines, "repo") {
-		t.Fatalf("sidebarFooterLines() = %#v, want cwd basename", lines)
+func TestStatusBarShowsTwoRowsWithStateAndActions(t *testing.T) {
+	got := stripTestANSI(renderStatusBar(model{cwd: "/tmp/work/repo", gitStatus: "main ↑2", status: "idle"}, 80))
+	lines := strings.Split(got, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("status lines = %d, want 2: %q", len(lines), got)
 	}
-	if !containsLine(lines, "main ↑2") {
-		t.Fatalf("sidebarFooterLines() = %#v, want git status", lines)
+	for _, want := range []string{"idle", "repo", "main ↑2", "⌃S sync", "⌃T tree", "⌃K diff"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("renderStatusBar() = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(lines[0], "⌃S sync") || !strings.Contains(lines[1], "⌃S sync") {
+		t.Fatalf("renderStatusBar() lines = %#v, want actions on second row", lines)
 	}
 }
 
@@ -104,7 +107,7 @@ func TestGitSyncButtonLabelHighlightsChangingParts(t *testing.T) {
 	}
 }
 
-func TestGitSyncClickOnlyUpdatesFooterFeedback(t *testing.T) {
+func TestGitSyncClickDisabledForCopyFriendlyMode(t *testing.T) {
 	m := model{
 		width:     120,
 		height:    30,
@@ -112,24 +115,15 @@ func TestGitSyncClickOnlyUpdatesFooterFeedback(t *testing.T) {
 		gitSync:   gitSyncState{Branch: "main", Ahead: 1, Valid: true},
 		gitStatus: "main ↑1",
 	}
-	mainW, _, bodyH, _ := layoutSizes(m.width, m.height)
+	mainW, _, bodyH, _, _ := layoutSizes(m.width, m.height)
 	click := tea.MouseMsg{
 		Type:   tea.MouseLeft,
 		Action: tea.MouseActionPress,
 		X:      mainW + boxStyle.GetHorizontalFrameSize() + 2,
 		Y:      bodyH,
 	}
-	if !m.handleGitSyncClick(click) {
-		t.Fatalf("handleGitSyncClick() = false, want true")
-	}
-	if m.status != "idle" {
-		t.Fatalf("status = %q, want idle", m.status)
-	}
-	if len(m.items) != 0 {
-		t.Fatalf("items len = %d, want 0", len(m.items))
-	}
-	if !m.gitSyncFeedback.Loading {
-		t.Fatalf("gitSyncFeedback.Loading = false, want true")
+	if m.handleGitSyncClick(click) {
+		t.Fatalf("handleGitSyncClick() = true, want false")
 	}
 }
 
@@ -155,16 +149,10 @@ func TestStartGitSyncFeedbackOnlyUpdatesFooter(t *testing.T) {
 	}
 }
 
-func TestSidebarFooterShowsKeyboardHintsAndMouseMode(t *testing.T) {
-	lines := sidebarFooterLines(model{cwd: "/tmp/repo", gitStatus: "main ✓"}, 40)
-	got := strings.Join(lines, "\n")
-	if !strings.Contains(got, "⌃S sync") || !strings.Contains(got, "⌃T tree") || !strings.Contains(got, "⌃K diff") || !strings.Contains(got, "⌃O copy") {
-		t.Fatalf("sidebarFooterLines() = %#v, want keyboard hints", lines)
-	}
-	lines = sidebarFooterLines(model{cwd: "/tmp/repo", gitStatus: "main ✓", copyMode: true}, 40)
-	got = strings.Join(lines, "\n")
-	if !strings.Contains(got, "copy mode") || !strings.Contains(got, "drag select") || !strings.Contains(got, "esc back") {
-		t.Fatalf("sidebarFooterLines(copy mode) = %#v, want copy mode hints", lines)
+func TestStatusBarShowsMouseFreeCopyHint(t *testing.T) {
+	got := stripTestANSI(renderStatusBar(model{cwd: "/tmp/repo", gitStatus: "main ✓", copyMode: true, status: "copy mode"}, 80))
+	if !strings.Contains(got, "copy mode") || !strings.Contains(got, "esc back") {
+		t.Fatalf("renderStatusBar(copy mode) = %q, want copy mode hints", got)
 	}
 }
 
@@ -199,22 +187,84 @@ func TestCtrlTOpensTreeExplorer(t *testing.T) {
 
 func TestCtrlOTogglesCopyMode(t *testing.T) {
 	input := textinput.New()
-	m := model{input: input, mouseEnabled: true, status: "idle"}
+	m := model{input: input, mouseEnabled: false, status: "idle"}
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
 	got := next.(model)
-	if cmd == nil {
-		t.Fatalf("Ctrl-O returned nil command, want DisableMouse command")
+	if cmd != nil {
+		t.Fatalf("Ctrl-O returned command, want nil when mouse is already terminal-owned")
 	}
 	if !got.copyMode || got.mouseEnabled || got.status != "copy mode" {
 		t.Fatalf("copy enter = copyMode:%v mouse:%v status:%q", got.copyMode, got.mouseEnabled, got.status)
 	}
 	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	got = next.(model)
-	if cmd == nil {
-		t.Fatalf("Esc returned nil command, want EnableMouseCellMotion command")
+	if cmd != nil {
+		t.Fatalf("Esc returned command, want nil when leaving copy mode")
 	}
-	if got.copyMode || !got.mouseEnabled || got.status != "idle" {
+	if got.copyMode || got.mouseEnabled || got.status != "idle" {
 		t.Fatalf("copy exit = copyMode:%v mouse:%v status:%q", got.copyMode, got.mouseEnabled, got.status)
+	}
+}
+
+func TestDoubleTabOpensWorkspacePicker(t *testing.T) {
+	input := textinput.New()
+	m := model{input: input, cwd: t.TempDir(), width: 100, height: 30, workspaceStatePath: filepath.Join(t.TempDir(), "workspaces.json")}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("first Tab returned command, want nil")
+	}
+	if got.workspacePicker != nil {
+		t.Fatalf("first Tab opened workspace picker")
+	}
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got = next.(model)
+	if cmd != nil {
+		t.Fatalf("second Tab returned command, want nil")
+	}
+	if got.workspacePicker == nil {
+		t.Fatalf("second Tab did not open workspace picker")
+	}
+}
+
+func TestWorkspaceStoreUpsertsRecentProjects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workspaces.json")
+	first := workspaceItem{CWD: "/tmp/one", SessionID: "s1", Title: "one", LastOpened: time.Now().Add(-time.Hour)}
+	second := workspaceItem{CWD: "/tmp/two", SessionID: "s2", Title: "two", LastOpened: time.Now()}
+	if err := upsertWorkspace(path, first); err != nil {
+		t.Fatalf("upsert first error = %v", err)
+	}
+	if err := upsertWorkspace(path, second); err != nil {
+		t.Fatalf("upsert second error = %v", err)
+	}
+	items := loadWorkspaces(path)
+	if len(items) != 2 {
+		t.Fatalf("len(loadWorkspaces) = %d, want 2", len(items))
+	}
+	if items[0].CWD != "/tmp/two" || items[1].CWD != "/tmp/one" {
+		t.Fatalf("workspace order = %#v, want newest first", items)
+	}
+	first.SessionID = "s3"
+	first.LastOpened = time.Now().Add(time.Hour)
+	if err := upsertWorkspace(path, first); err != nil {
+		t.Fatalf("upsert existing error = %v", err)
+	}
+	items = loadWorkspaces(path)
+	if len(items) != 2 || items[0].CWD != "/tmp/one" || items[0].SessionID != "s3" {
+		t.Fatalf("updated workspaces = %#v", items)
+	}
+}
+
+func TestSwitchWorkspaceRestoresSession(t *testing.T) {
+	dir := t.TempDir()
+	m := model{cwd: t.TempDir(), input: textinput.New(), workspaceStatePath: filepath.Join(t.TempDir(), "workspaces.json")}
+	item := workspaceItem{CWD: dir, SessionID: "session-1", Title: "Project"}
+	m.switchWorkspace(item)
+	if m.cwd != dir || m.sessionID != "session-1" {
+		t.Fatalf("switchWorkspace cwd/session = %q/%q", m.cwd, m.sessionID)
+	}
+	if len(m.items) == 0 || !strings.Contains(m.items[len(m.items)-1].text, "Switched to") {
+		t.Fatalf("items = %#v, want switch notice", m.items)
 	}
 }
 
@@ -383,6 +433,189 @@ func TestAppendLocalSuggestionsIncludesCommit(t *testing.T) {
 	t.Fatalf("appendLocalSuggestions(/co) = %#v, want commit", items)
 }
 
+func TestAppendLocalSuggestionsIncludesCDAndVersion(t *testing.T) {
+	items := appendLocalSuggestions("/v", nil)
+	if !hasSuggestion(items, "version") {
+		t.Fatalf("appendLocalSuggestions(/v) = %#v, want version", items)
+	}
+	items = appendLocalSuggestions("/c", nil)
+	if !hasSuggestion(items, "cd") || !hasSuggestion(items, "commit") {
+		t.Fatalf("appendLocalSuggestions(/c) = %#v, want cd and commit", items)
+	}
+}
+
+func TestHandleLocalCDChangesCWD(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := model{cwd: root, gitStatus: "old", input: textinput.New()}
+	if !m.handleLocalCommand("/cd child") {
+		t.Fatalf("handleLocalCommand(/cd child) = false, want true")
+	}
+	if m.cwd != child {
+		t.Fatalf("cwd = %q, want %q", m.cwd, child)
+	}
+	if len(m.items) == 0 || !strings.Contains(m.items[len(m.items)-1].text, child) {
+		t.Fatalf("items = %#v, want cd confirmation", m.items)
+	}
+}
+
+func TestHandleLocalCDRejectsFiles(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "file.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := model{cwd: root, input: textinput.New()}
+	if !m.handleLocalCommand("/cd file.txt") {
+		t.Fatalf("handleLocalCommand(/cd file.txt) = false, want true")
+	}
+	if m.cwd != root {
+		t.Fatalf("cwd = %q, want unchanged %q", m.cwd, root)
+	}
+	if len(m.items) == 0 || m.items[len(m.items)-1].role != "error" {
+		t.Fatalf("items = %#v, want error item", m.items)
+	}
+}
+
+func TestVersionInfoUsesBuildVersion(t *testing.T) {
+	old := version
+	version = "v1.2.3"
+	defer func() { version = old }()
+	got := versionInfo()
+	if !strings.Contains(got, "v1.2.3") {
+		t.Fatalf("versionInfo() = %q, want injected version", got)
+	}
+}
+
+func TestWelcomeBannerIncludesVersionCommandsAndFullWidthLogo(t *testing.T) {
+	old := version
+	version = "v1.2.3"
+	defer func() { version = old }()
+	got := stripTestANSI(renderWelcomeBanner(model{cwd: "/tmp/repo", gitStatus: "main ✓", sessionID: "abc"}, 100))
+	for _, want := range []string{"Xiaoli TUI", "v1.2.3", "Getting started", "/cd <path>", "Ctrl+S", "git sync"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("renderWelcomeBanner() = %q, want %q", got, want)
+		}
+	}
+	for _, notWant := range []string{"model   ", "cwd     ", "session ", "What's new", "bottom status bar", ".com"} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("renderWelcomeBanner() = %q, should not contain label %q", got, notWant)
+		}
+	}
+	if !strings.Contains(got, "│") {
+		t.Fatalf("renderWelcomeBanner() = %q, want compact split layout", got)
+	}
+}
+
+func TestWelcomeCommandsCanRenderInMultipleColumns(t *testing.T) {
+	got := stripTestANSI(renderWelcomeCommands(70))
+	lines := strings.Split(got, "\n")
+	if len(lines) < 4 {
+		t.Fatalf("renderWelcomeCommands() lines = %#v, want multiple command rows", lines)
+	}
+	if !strings.Contains(got, "/cd <path>") || !strings.Contains(got, "Ctrl+S") {
+		t.Fatalf("renderWelcomeCommands() = %q, want commands and shortcuts", got)
+	}
+	if !strings.Contains(lines[0], "/tree") {
+		t.Fatalf("renderWelcomeCommands() first row = %q, want multiple columns", lines[0])
+	}
+}
+
+func TestCompareVersions(t *testing.T) {
+	if compareVersions("v1.2.3", "v1.2.4") >= 0 {
+		t.Fatalf("compareVersions(v1.2.3, v1.2.4) >= 0")
+	}
+	if compareVersions("v1.10.0", "v1.2.9") <= 0 {
+		t.Fatalf("compareVersions(v1.10.0, v1.2.9) <= 0")
+	}
+	if compareVersions("1.2.3", "v1.2.3") != 0 {
+		t.Fatalf("compareVersions(1.2.3, v1.2.3) != 0")
+	}
+}
+
+func TestLatestReleaseFromJSONExtractsNotes(t *testing.T) {
+	got, err := latestReleaseFromJSON([]byte(`{
+		"tag_name":"v0.10.0",
+		"html_url":"https://github.com/mnhkahn/xiaoli/releases/tag/v0.10.0",
+		"body":"## What's Changed\n- Add dynamic welcome notes\n- Improve TUI layout\n\nFull changelog: https://example.test"
+	}`))
+	if err != nil {
+		t.Fatalf("latestReleaseFromJSON error = %v", err)
+	}
+	if got.Tag != "v0.10.0" || got.URL == "" {
+		t.Fatalf("latestReleaseFromJSON() = %#v, want tag and URL", got)
+	}
+	if len(got.Notes) != 2 || got.Notes[0] != "Add dynamic welcome notes" || got.Notes[1] != "Improve TUI layout" {
+		t.Fatalf("Notes = %#v, want extracted bullets", got.Notes)
+	}
+}
+
+func TestUpdateInfoAvailableAndCommand(t *testing.T) {
+	info := newUpdateInfo("v0.1.0", "v0.2.0", time.Now())
+	if !info.Available() {
+		t.Fatalf("Available() = false, want true")
+	}
+	if !strings.Contains(info.Command, "go install github.com/mnhkahn/xiaoli/tui/cmd/xiaoli@v0.2.0") {
+		t.Fatalf("Command = %q, want go install latest tag", info.Command)
+	}
+}
+
+func TestWelcomeBannerShowsUpdateHint(t *testing.T) {
+	old := version
+	version = "v0.1.0"
+	defer func() { version = old }()
+	m := model{
+		cwd:        "/tmp/repo",
+		updateInfo: newUpdateInfo("v0.1.0", "v0.2.0", time.Now()),
+	}
+	got := stripTestANSI(renderWelcomeBanner(m, 100))
+	if !strings.Contains(got, "update  v0.1.0 -> v0.2.0") || !strings.Contains(got, "/upgrade") {
+		t.Fatalf("renderWelcomeBanner(update) = %q, want update hint", got)
+	}
+}
+
+func TestWelcomeBannerShowsReleaseNotesWhenDynamic(t *testing.T) {
+	old := version
+	version = "v0.1.0"
+	defer func() { version = old }()
+	m := model{
+		cwd: "/tmp/repo",
+		updateInfo: updateInfo{
+			Current:   "v0.1.0",
+			Latest:    "v0.2.0",
+			Command:   upgradeCommand("v0.2.0"),
+			Notes:     []string{"Add dynamic welcome notes", "Improve TUI layout"},
+			CheckedAt: time.Now(),
+		},
+	}
+	got := stripTestANSI(renderWelcomeBanner(m, 100))
+	if !strings.Contains(got, "What's new") || !strings.Contains(got, "Add dynamic welcome notes") {
+		t.Fatalf("renderWelcomeBanner(notes) = %q, want dynamic release notes", got)
+	}
+}
+
+func TestHandleLocalUpgradeShowsCommand(t *testing.T) {
+	m := model{
+		input: textinput.New(),
+		updateInfo: updateInfo{
+			Current:    "v0.1.0",
+			Latest:     "v0.2.0",
+			Command:    upgradeCommand("v0.2.0"),
+			ReleaseURL: "https://github.com/mnhkahn/xiaoli/releases/tag/v0.2.0",
+			CheckedAt:  time.Now(),
+		},
+	}
+	if !m.handleLocalCommand("/upgrade") {
+		t.Fatalf("handleLocalCommand(/upgrade) = false, want true")
+	}
+	if len(m.items) == 0 || !strings.Contains(m.items[len(m.items)-1].text, "go install") || !strings.Contains(m.items[len(m.items)-1].text, "releases/tag/v0.2.0") {
+		t.Fatalf("items = %#v, want upgrade command and release URL", m.items)
+	}
+}
+
 func TestRenderPendingOptionsMarksSelected(t *testing.T) {
 	got := renderPendingAskPanel("是否允许执行命令？", []string{"允许::执行该命令", "拒绝::不执行"}, 1, 80)
 	if !strings.Contains(got, "› 2. 拒绝") {
@@ -418,6 +651,15 @@ func TestExitLogoUsesFigletStyle(t *testing.T) {
 func containsLine(lines []string, want string) bool {
 	for _, line := range lines {
 		if line == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSuggestion(items []slashSuggestion, name string) bool {
+	for _, item := range items {
+		if item.Name == name {
 			return true
 		}
 	}

@@ -59,9 +59,9 @@ terminal UI.
 ## Commands
 
 The TUI reuses the shared slash command handler. Useful local commands include
-`/skills`, `/model list`, `/model use <id>`, `/usage`, `/sessions`,
-`/resume <id>`, `/session <id>`, `/memory list`, `/mcp`, `/tasks`,
-`/log <keyword>`, and `/reminder list`. Local log search also supports
+`/cd <path>`, `/version`, `/upgrade`, `/skills`, `/model list`, `/model use <id>`,
+`/usage`, `/sessions`, `/resume <id>`, `/session <id>`, `/memory list`, `/mcp`,
+`/tasks`, `/log <keyword>`, and `/reminder list`. Local log search also supports
 `/log --all`, `/log --tools`, and `/log --errors`. When bash is enabled and a
 command needs approval, reply with `允许` or `拒绝` in the TUI.
 
@@ -70,12 +70,14 @@ opens a full-screen Git changes browser. `/commit` generates a commit message
 from the current staged diff; if nothing is staged, it stages the provided file
 arguments, or falls back to `git add .`.
 
-The TUI captures mouse input by default so wheel scrolling stays inside the
-active TUI pane instead of moving the terminal scrollback. Press `Ctrl+O` (`⌃O`)
-to enter copy mode, drag-select terminal text with the mouse, then press `Esc`
-or `Ctrl+O` to return to normal TUI interaction. Press `Ctrl+T` (`⌃T`) to open
-`/tree`, `Ctrl+K` (`⌃K`) to open `/diff`, and `Ctrl+S` (`⌃S`) to run the
-right-sidebar Git sync action.
+The TUI leaves mouse input with the terminal by default, so drag-select copying
+works normally and the mouse wheel scrolls terminal scrollback. Use keyboard
+scrolling inside the TUI transcript. Press `Ctrl+T` (`⌃T`) to open `/tree`,
+`Ctrl+K` (`⌃K`) to open `/diff`, and `Ctrl+S` (`⌃S`) to run Git sync.
+Press `Tab` twice quickly to open the recent-project switcher. The switcher
+stores recent TUI workspaces in `~/.xiaoli/state/tui_workspaces.json`; selecting
+a project switches cwd, restores that project's session history when available,
+and binds new chats back to that project.
 
 File previews use syntax highlighting, diffs highlight metadata, hunks,
 additions, and deletions. In `/tree`, press `Tab` or `l` on a file to focus the
@@ -88,6 +90,28 @@ fetch, local memory, local run-log search, tasks, reminders stored at
 `~/.xiaoli/state/reminders.json`, and `file_write` under `tools.allowed_roots`.
 `bash` is available when `tools.bash` is true.
 
-Use the mouse wheel, Up/Down, PgUp/PgDn, Ctrl+U/Ctrl+D, Home, and End to scroll
-inside the active TUI pane. The right sidebar keeps status, model, cwd, context
-usage, task/MCP summaries, and key hints visible with a fixed-priority layout.
+Use Up/Down, PgUp/PgDn, Ctrl+U/Ctrl+D, Home, and End to scroll inside the active
+TUI pane. The two-line status bar sits below the input box: the first line keeps
+status, model, cwd, Git state, context usage, and update hints visible; the
+second line keeps keyboard shortcuts and common commands visible without taking
+horizontal space from the transcript.
+
+Release builds can inject a version with:
+
+```bash
+go build -ldflags "-X main.version=vX.Y.Z" ./tui/cmd/xiaoli
+```
+
+For `go install` distribution, publish versions as Git tags:
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+The TUI checks the latest GitHub release in the background at startup and caches
+the result in `~/.xiaoli/state/version.json` for 24 hours. When a newer release
+is available, the banner and status bar show a quiet update hint; release notes
+from GitHub are shown in the welcome banner when present. `/upgrade` prints the
+matching `go install github.com/mnhkahn/xiaoli/tui/cmd/xiaoli@vX.Y.Z` command
+without running it automatically.

@@ -75,6 +75,30 @@ func TestSplitCommitMessageArgsSplitsSubjectAndBodyParagraphs(t *testing.T) {
 	}
 }
 
+func TestGitCommitMessageArgsAddsMForEachParagraph(t *testing.T) {
+	message := "feat(tui): 优化复制体验\n\n1. 调整状态栏\n2. 新增项目切换\n\nCo-authored-by: ark-code-latest (ByteDance ARK) <noreply@volcesengine.com>"
+
+	got := gitCommitMessageArgs(message)
+
+	want := []string{
+		"commit",
+		"-m", "feat(tui): 优化复制体验",
+		"-m", "1. 调整状态栏\n2. 新增项目切换",
+		"-m", "Co-authored-by: ark-code-latest (ByteDance ARK) <noreply@volcesengine.com>",
+	}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("gitCommitMessageArgs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestFormatGitCmsgCommitErrorIncludesGitOutput(t *testing.T) {
+	got := formatGitCmsgCommitError(context.Canceled, "error: pathspec 'body' did not match any file(s) known to git\n")
+
+	if !strings.Contains(got, "context canceled") || !strings.Contains(got, "pathspec") {
+		t.Fatalf("formatGitCmsgCommitError() = %q, want err and git output", got)
+	}
+}
+
 func mustRunGit(t *testing.T, cwd string, args ...string) {
 	t.Helper()
 	if out, err := runGitCombined(cwd, args...); err != nil {

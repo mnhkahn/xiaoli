@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,6 +38,13 @@ import (
 const (
 	channelName = "tui"
 	channelUser = "local"
+)
+
+var version = "dev"
+
+const (
+	latestReleaseURL    = "https://api.github.com/repos/mnhkahn/xiaoli/releases/latest"
+	updateCacheFileName = "version.json"
 )
 
 type transcriptItem struct {
@@ -68,6 +77,10 @@ type gitSyncDoneMsg struct {
 	err    error
 }
 
+type updateCheckDoneMsg struct {
+	info updateInfo
+}
+
 type bashApprovalDoneMsg struct {
 	command   string
 	output    string
@@ -94,45 +107,62 @@ type gitSyncFeedback struct {
 	Frame   int
 }
 
+type updateInfo struct {
+	Current    string    `json:"current"`
+	Latest     string    `json:"latest"`
+	Command    string    `json:"command"`
+	ReleaseURL string    `json:"release_url,omitempty"`
+	Notes      []string  `json:"notes,omitempty"`
+	CheckedAt  time.Time `json:"checked_at"`
+}
+
+func (i updateInfo) Available() bool {
+	return !isDevVersion(i.Current) && i.Latest != "" && compareVersions(i.Current, i.Latest) < 0
+}
+
 type model struct {
-	app             *localapp.App
-	events          chan agentevent.Event
-	chatMsgs        chan tea.Msg
-	activeCancel    context.CancelFunc
-	chatCanceled    bool
-	input           textinput.Model
-	inputHistory    []string
-	historyIndex    int
-	historyDraft    string
-	shellHistory    []string
-	shellHistIndex  int
-	shellHistDraft  string
-	items           []transcriptItem
-	sessionID       string
-	cwd             string
-	gitStatus       string
-	gitSync         gitSyncState
-	gitSyncFeedback gitSyncFeedback
-	logPath         string
-	contextUsage    *agentruntime.ContextUsage
-	scroll          int
-	viewport        viewport.Model
-	streamingIndex  int
-	hadChatInput    bool
-	width           int
-	height          int
-	busy            bool
-	status          string
-	lastError       string
-	pendingBashHash string
-	pendingQuestion string
-	pendingOptions  []string
-	pendingChoice   int
-	pendingGitCmsg  gitCmsgPending
-	explorer        *tuiExplorer
-	mouseEnabled    bool
-	copyMode        bool
-	quitting        bool
+	app                *localapp.App
+	events             chan agentevent.Event
+	chatMsgs           chan tea.Msg
+	activeCancel       context.CancelFunc
+	chatCanceled       bool
+	input              textinput.Model
+	inputHistory       []string
+	historyIndex       int
+	historyDraft       string
+	shellHistory       []string
+	shellHistIndex     int
+	shellHistDraft     string
+	items              []transcriptItem
+	sessionID          string
+	cwd                string
+	workspaceStatePath string
+	workspacePicker    *workspacePicker
+	lastTabAt          time.Time
+	gitStatus          string
+	gitSync            gitSyncState
+	gitSyncFeedback    gitSyncFeedback
+	logPath            string
+	updateInfo         updateInfo
+	contextUsage       *agentruntime.ContextUsage
+	scroll             int
+	viewport           viewport.Model
+	streamingIndex     int
+	hadChatInput       bool
+	width              int
+	height             int
+	busy               bool
+	status             string
+	lastError          string
+	pendingBashHash    string
+	pendingQuestion    string
+	pendingOptions     []string
+	pendingChoice      int
+	pendingGitCmsg     gitCmsgPending
+	explorer           *tuiExplorer
+	mouseEnabled       bool
+	copyMode           bool
+	quitting           bool
 }
 
 var (
@@ -160,10 +190,16 @@ func main() {
 	initConfig := flag.Bool("init", false, "create default local settings and secrets files")
 	prompt := flag.String("prompt", "", "extra system prompt appended after AGENT.md/SOUL.md")
 	resumeSession := flag.String("s", "", "session id to resume")
+	showVersion := flag.Bool("version", false, "print TUI version and exit")
 	renderSession := flag.String("render-session", "", "render a session frame and exit")
 	renderWidth := flag.Int("width", 160, "render-session terminal width")
 	renderHeight := flag.Int("height", 40, "render-session terminal height")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(versionInfo())
+		return
+	}
 
 	if *initConfig {
 		cfg, err := localconfig.EnsureDefaults(*configPath)
@@ -204,7 +240,7 @@ func main() {
 		return
 	}
 
-	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "xiaoli: %v\n", err)
@@ -267,36 +303,57 @@ func newModel(app *localapp.App, resumeSessionID string, logPath string) model {
 		return nil
 	})
 
-	items := []transcriptItem{{
-		role: "system",
-		text: "Xiaoli TUI ready. Press Ctrl+C to quit.",
-	}}
-	if strings.TrimSpace(resumeSessionID) != "" {
-		items = restoreTranscript(app.Agent, resumeSessionID)
-		items = append(items, transcriptItem{role: "system", text: "Resumed session " + resumeSessionID})
+	sessionID := strings.TrimSpace(resumeSessionID)
+	workspacePath := ""
+	if app != nil && strings.TrimSpace(app.Config.DataDir) != "" {
+		workspacePath = workspaceStatePath(app.Config.DataDir)
+	}
+	if sessionID == "" && workspacePath != "" {
+		if item, ok := findWorkspace(workspacePath, cwd); ok && item.SessionID != "" {
+			sessionID = item.SessionID
+		}
+	}
+	items := []transcriptItem{{role: "banner"}}
+	if sessionID != "" {
+		items = restoreTranscript(app.Agent, sessionID)
+		items = append(items, transcriptItem{role: "system", text: "Resumed session " + sessionID})
 	}
 	gitSync := gitSyncStateForCWD(cwd)
+	if workspacePath != "" {
+		_ = upsertWorkspace(workspacePath, workspaceItem{
+			CWD:        cwd,
+			SessionID:  sessionID,
+			Title:      workspaceTitle(app, sessionID, cwd),
+			Model:      currentModelName(app),
+			LastOpened: time.Now(),
+		})
+	}
 
 	return model{
-		app:            app,
-		events:         events,
-		chatMsgs:       chatMsgs,
-		input:          input,
-		sessionID:      strings.TrimSpace(resumeSessionID),
-		cwd:            cwd,
-		gitStatus:      gitSync.Format(),
-		gitSync:        gitSync,
-		logPath:        logPath,
-		viewport:       vp,
-		status:         "idle",
-		streamingIndex: -1,
-		items:          items,
-		mouseEnabled:   true,
+		app:                app,
+		events:             events,
+		chatMsgs:           chatMsgs,
+		input:              input,
+		sessionID:          sessionID,
+		cwd:                cwd,
+		workspaceStatePath: workspacePath,
+		gitStatus:          gitSync.Format(),
+		gitSync:            gitSync,
+		logPath:            logPath,
+		viewport:           vp,
+		status:             "idle",
+		streamingIndex:     -1,
+		items:              items,
+		mouseEnabled:       false,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, waitForEvent(m.events))
+	cmds := []tea.Cmd{textinput.Blink, waitForEvent(m.events)}
+	if m.app != nil && strings.TrimSpace(m.app.Config.DataDir) != "" {
+		cmds = append(cmds, checkForUpdateCmd(m.app.Config.DataDir, buildVersion()))
+	}
+	return tea.Batch(cmds...)
 }
 
 func printExitSummary(app *localapp.App, m model, configPath string) {
@@ -328,13 +385,7 @@ func exitLogo() string {
 }
 
 func renderFigletLogo() string {
-	lines := []string{
-		"  ___ _   _  ___  __ _ _ __ ___      ___ ___  _ __ ___",
-		" / __| | | |/ _ \\/ _` | '_ ` _ \\    / __/ _ \\| '_ ` _ \\",
-		"| (__| |_| |  __/ (_| | | | | | |  | (_| (_) | | | | | |",
-		" \\___|\\__, |\\___|\\__,_|_| |_| |_| (_)___\\___/|_| |_| |_|",
-		"      |___/",
-	}
+	lines := figletLogoLines()
 	mainColors := []lipgloss.Color{"81", "45", "51", "49", "86"}
 	shadow := lipgloss.NewStyle().Foreground(lipgloss.Color("238")).Faint(true)
 	fill := lipgloss.NewStyle().Foreground(lipgloss.Color("30")).Faint(true)
@@ -355,6 +406,16 @@ func renderFigletLogo() string {
 	}
 	out = append(out, "")
 	return strings.Join(out, "\n")
+}
+
+func figletLogoLines() []string {
+	return []string{
+		"  ___ _   _  ___  __ _ _ __ ___      ___ ___  _ __ ___",
+		" / __| | | |/ _ \\/ _` | '_ ` _ \\    / __/ _ \\| '_ ` _ \\",
+		"| (__| |_| |  __/ (_| | | | | | |  | (_| (_) | | | | | |",
+		" \\___|\\__, |\\___|\\__,_|_| |_| |_| (_)___\\___/|_| |_| |_|",
+		"      |___/",
+	}
 }
 
 func continueCommand(sessionID string, configPath string) string {
@@ -386,7 +447,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.explorer != nil {
 			m.explorer.resize(m.width, m.height)
 		}
-		mainW, _, _, _ := layoutSizes(m.width, m.height)
+		mainW, _, _, _, _ := layoutSizes(m.width, m.height)
 		m.input.Width = max(20, mainW-2)
 		m.refreshContextUsage()
 		m.syncViewport(false)
@@ -416,12 +477,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "esc", "ctrl+o":
 				m.copyMode = false
-				m.mouseEnabled = true
+				m.mouseEnabled = false
 				m.status = "idle"
-				return m, tea.EnableMouseCellMotion
+				return m, nil
 			default:
 				return m, nil
 			}
+		}
+		if m.workspacePicker != nil {
+			item, selected, closePicker := m.workspacePicker.handleKey(msg)
+			if selected {
+				m.switchWorkspace(item)
+			}
+			if closePicker {
+				m.workspacePicker = nil
+			}
+			return m, nil
 		}
 		if m.explorer != nil {
 			next, cmd, handled := m.explorer.handleKey(msg)
@@ -456,7 +527,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.copyMode = true
 			m.mouseEnabled = false
 			m.status = "copy mode"
-			return m, tea.DisableMouse
+			return m, nil
 		case "ctrl+k":
 			if m.busy || m.hasPendingOptions() {
 				return m, nil
@@ -521,6 +592,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingChoice = (m.pendingChoice + 1) % len(m.pendingOptions)
 				return m, nil
 			}
+			if m.consumeDoubleTab() {
+				m.openWorkspacePicker()
+				return m, nil
+			}
+			m.markTab()
 			if isShellInput(m.input.Value()) {
 				if suggestions := m.shellSuggestions(1); len(suggestions) > 0 {
 					m.input.SetValue(applyShellCompletion(m.input.Value(), suggestions[0].Name))
@@ -572,6 +648,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.handleCopyCommand(text) {
 				m.input.SetValue("")
+				m.syncViewport(true)
+				return m, nil
+			}
+			if m.handleLocalCommand(text) {
+				m.input.SetValue("")
+				m.status = "idle"
+				m.refreshContextUsage()
 				m.syncViewport(true)
 				return m, nil
 			}
@@ -648,6 +731,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.sessionID = cmd.sessionID
 					m.items = restoreTranscript(m.app.Agent, m.sessionID)
 					m.items = append(m.items, transcriptItem{role: "system", text: cmd.reply})
+					m.recordCurrentWorkspace()
 				} else {
 					m.items = append(m.items, transcriptItem{role: "system", text: cmd.reply})
 				}
@@ -660,6 +744,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.input.SetValue("")
 			m.hadChatInput = true
+			if m.sessionID == "" {
+				m.sessionID = m.createProjectSession()
+			}
+			m.recordCurrentWorkspace()
 			m.busy = true
 			m.status = "running"
 			m.streamingIndex = -1
@@ -704,6 +792,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sessionID = sid
 			}
 		}
+		m.recordCurrentWorkspace()
 		if msg.err != nil {
 			m.lastError = msg.err.Error()
 			m.items = append(m.items, transcriptItem{role: "error", text: msg.err.Error()})
@@ -748,6 +837,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cwd = msg.cwd
 		}
 		m.refreshGitSync()
+		m.recordCurrentWorkspace()
 		m.items = append(m.items, msg.transcriptItem())
 		m.syncViewport(true)
 		return m, nil
@@ -818,7 +908,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingChoice = 0
 		if msg.err != nil {
 			m.lastError = msg.err.Error()
-			m.items = append(m.items, transcriptItem{role: "error", text: msg.err.Error()})
+			m.items = append(m.items, transcriptItem{role: "error", text: formatGitCmsgCommitError(msg.err, msg.output)})
 		} else {
 			doneText := "提交完成。"
 			if msg.push {
@@ -857,6 +947,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.gitSyncFeedback.Frame++
 		return m, tickGitSyncSpinner()
+	case updateCheckDoneMsg:
+		m.updateInfo = msg.info
+		m.syncViewport(false)
+		return m, nil
 	case eventMsg:
 		m.items = append(m.items, transcriptItem{role: "event", text: eventSummary(msg.event)})
 		m.refreshContextUsage()
@@ -878,22 +972,20 @@ func (m model) View() string {
 	if m.width == 0 {
 		return "Loading..."
 	}
+	if m.workspacePicker != nil {
+		m.workspacePicker.resize(m.width, m.height)
+		return m.workspacePicker.View()
+	}
 	if m.explorer != nil {
 		m.explorer.resize(m.width, m.height)
 		return m.explorer.View()
 	}
-	mainW, sideW, bodyH, promptW := layoutSizes(m.width, m.height)
+	mainW, _, bodyH, promptW, statusH := layoutSizes(m.width, m.height)
 
 	m.syncViewport(false)
 	transcript := m.viewport.View()
-	topParts := []string{
-		boxStyle.Width(mainW).Height(bodyH).Render(transcript),
-	}
-	if sideW > 0 {
-		sidebar := renderSidebar(m, sideW, bodyH)
-		topParts = append(topParts, sideStyle.Width(sideW).Height(bodyH).Render(sidebar))
-	}
-	top := lipgloss.JoinHorizontal(lipgloss.Top, topParts...)
+	top := boxStyle.Width(mainW).Height(bodyH).Render(transcript)
+	status := renderStatusBar(m, max(20, promptW+boxStyle.GetHorizontalFrameSize()))
 
 	promptParts := []string{}
 	if suggestions := m.shellSuggestions(8); len(suggestions) > 0 {
@@ -903,24 +995,24 @@ func (m model) View() string {
 	}
 	promptParts = append(promptParts, m.input.View())
 	prompt := boxStyle.Width(promptW).Render(strings.Join(promptParts, "\n"))
-	return lipgloss.JoinVertical(lipgloss.Left, top, prompt)
+	parts := []string{top, prompt}
+	if statusH > 0 {
+		parts = append(parts, status)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
-func layoutSizes(width, height int) (mainW, sideW, bodyH, promptW int) {
-	sideW = 30
-	bodyH = max(8, height-5)
+func layoutSizes(width, height int) (mainW, sideW, bodyH, promptW, statusH int) {
+	sideW = 0
+	statusH = 2
 	promptW = max(20, width-boxStyle.GetHorizontalFrameSize())
-	topGap := 1
-	mainW = width - sideW - boxStyle.GetHorizontalFrameSize() - sideStyle.GetHorizontalFrameSize() - topGap
-	if mainW < 40 {
-		mainW = max(20, width-sideStyle.GetHorizontalFrameSize()-topGap)
-		sideW = 0
-	}
-	return mainW, sideW, bodyH, promptW
+	mainW = promptW
+	bodyH = max(8, height-5-statusH)
+	return mainW, sideW, bodyH, promptW, statusH
 }
 
 func layoutMainWidth(width, height int) int {
-	mainW, _, _, _ := layoutSizes(width, height)
+	mainW, _, _, _, _ := layoutSizes(width, height)
 	return mainW
 }
 
@@ -928,7 +1020,7 @@ func (m *model) syncViewport(gotoBottom bool) {
 	if m == nil || m.width <= 0 || m.height <= 0 {
 		return
 	}
-	mainW, _, bodyH, _ := layoutSizes(m.width, m.height)
+	mainW, _, bodyH, _, _ := layoutSizes(m.width, m.height)
 	if mainW <= 0 || bodyH <= 0 {
 		return
 	}
@@ -942,7 +1034,7 @@ func (m *model) syncViewport(gotoBottom bool) {
 }
 
 func (m model) renderTranscriptContent(width int) string {
-	content := renderTranscriptContent(m.items, width)
+	content := m.renderTranscriptItems(width)
 	if m.hasPendingOptions() || strings.TrimSpace(m.pendingQuestion) != "" {
 		panel := renderPendingAskPanel(m.pendingQuestion, m.pendingOptions, m.pendingChoice, width)
 		if strings.TrimSpace(content) == "" {
@@ -951,6 +1043,13 @@ func (m model) renderTranscriptContent(width int) string {
 		return content + "\n\n" + panel
 	}
 	return content
+}
+
+func (m model) renderTranscriptItems(width int) string {
+	if len(m.items) == 1 && m.items[0].role == "banner" {
+		return renderWelcomeBanner(m, width)
+	}
+	return renderTranscriptContent(m.items, width)
 }
 
 func renderTranscriptContent(items []transcriptItem, width int) string {
@@ -1125,6 +1224,513 @@ func renderSidebar(m model, width, height int) string {
 	return strings.Join(lines, "\n")
 }
 
+func renderStatusBar(m model, width int) string {
+	bodyWidth := max(8, width-2)
+	cwd := compactPath(m.cwd, max(20, bodyWidth/3))
+	if cwd == "" {
+		cwd = "-"
+	}
+	git := strings.TrimSpace(gitSyncButtonLabel(m))
+	if git == "" {
+		git = "-"
+	}
+	status := strings.TrimSpace(m.status)
+	if status == "" {
+		status = "idle"
+	}
+	stateParts := []string{
+		status,
+	}
+	if m.app != nil && m.app.Agent != nil {
+		if modelName := strings.TrimSpace(m.app.Agent.CurrentLLMModel()); modelName != "" {
+			stateParts = append(stateParts, modelName)
+		}
+	}
+	stateParts = append(stateParts, cwd, git)
+	if ctxUsage := m.contextUsage; ctxUsage != nil && ctxUsage.ContextLength > 0 {
+		stateParts = append(stateParts, fmt.Sprintf("ctx %d%%", min(100, ctxUsage.EstimatedInput*100/ctxUsage.ContextLength)))
+	}
+	if m.updateInfo.Available() {
+		stateParts = append(stateParts, "update "+m.updateInfo.Latest)
+	}
+	actionParts := []string{}
+	if m.copyMode {
+		actionParts = append(actionParts, "copy mode", "esc back", "⌃C quit")
+	} else {
+		actionParts = append(actionParts, "Tab Tab projects", "⌃S sync", "⌃T tree", "⌃K diff", "⌃Y copy", "/cd", "/upgrade", "⌃C quit")
+	}
+	lines := []string{
+		hintStyle.Render(fitDisplay(strings.Join(stateParts, " · "), bodyWidth)),
+		hintStyle.Render(fitDisplay(strings.Join(actionParts, " · "), bodyWidth)),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderWelcomeBanner(m model, width int) string {
+	bodyWidth := max(20, width-2)
+	modelName := "-"
+	if m.app != nil && m.app.Agent != nil {
+		modelName = m.app.Agent.CurrentLLMModel()
+	}
+	leftW, rightW := welcomeColumnWidths(bodyWidth)
+	cwd := compactPath(m.cwd, max(20, leftW))
+	if cwd == "" {
+		cwd = "-"
+	}
+	session := "new session"
+	if strings.TrimSpace(m.sessionID) != "" {
+		session = "resumed " + shortID(m.sessionID)
+	}
+	header := []string{
+		titleStyle.Render("Xiaoli TUI " + buildVersion()),
+		"",
+	}
+	header = append(header, compactLogoLines(bodyWidth)...)
+	header = append(header, "")
+	left := []string{
+		"",
+		truncateDisplay(modelName, leftW),
+		truncateDisplay(cwd, leftW),
+		truncateDisplay(session, leftW),
+	}
+	if m.updateInfo.Available() {
+		left = append(left, "update  "+m.updateInfo.Current+" -> "+m.updateInfo.Latest)
+	}
+	right := []string{
+		titleStyle.Render("Getting started"),
+	}
+	right = append(right, strings.Split(renderWelcomeCommands(rightW), "\n")...)
+	if notes := welcomeReleaseNotes(m.updateInfo, rightW); len(notes) > 0 {
+		right = append(right, "")
+		right = append(right, titleStyle.Render("What's new"))
+		right = append(right, notes...)
+	}
+	if bodyWidth < 86 {
+		var lines []string
+		lines = append(lines, header...)
+		lines = append(lines, left...)
+		lines = append(lines, "")
+		lines = append(lines, right...)
+		return fitLines(lines, width)
+	}
+	right = compactWelcomeRight(right)
+	height := max(len(left), len(right))
+	lines := make([]string, 0, height)
+	for i := 0; i < height; i++ {
+		l, r := "", ""
+		if i < len(left) {
+			l = left[i]
+		}
+		if i < len(right) {
+			r = right[i]
+		}
+		lines = append(lines, fitDisplay(l, leftW)+" │ "+fitDisplay(r, rightW))
+	}
+	lines = append(header, lines...)
+	return fitLines(lines, width)
+}
+
+func welcomeColumnWidths(bodyWidth int) (leftW, rightW int) {
+	leftW = max(24, bodyWidth*30/100)
+	rightW = max(20, bodyWidth-leftW-3)
+	return leftW, rightW
+}
+
+func compactLogoLines(width int) []string {
+	source := figletLogoLines()
+	lines := make([]string, 0, len(source))
+	colors := []lipgloss.Color{"81", "45", "51", "49", "86"}
+	for i, line := range source {
+		if lipgloss.Width(line) > width {
+			line = compactLogoLine(line, width)
+		}
+		style := lipgloss.NewStyle().Bold(true).Foreground(colors[i%len(colors)])
+		lines = append(lines, style.Render(fitDisplay(line, width)))
+	}
+	return lines
+}
+
+func compactLogoLine(line string, width int) string {
+	if width <= 0 || lipgloss.Width(line) <= width {
+		return truncateDisplay(line, width)
+	}
+	left := strings.TrimRight(line, " ")
+	if lipgloss.Width(left) <= width {
+		return left
+	}
+	return truncateDisplay(left, width)
+}
+
+func renderWelcomeCommands(width int) string {
+	type welcomeCommand struct {
+		Key  string
+		Text string
+	}
+	commands := []welcomeCommand{
+		{Key: "/cd <path>", Text: "switch workspace"},
+		{Key: "/tree", Text: "browse project"},
+		{Key: "/diff", Text: "review changes"},
+		{Key: "/commit", Text: "generate commit"},
+		{Key: "/upgrade", Text: "show upgrade command"},
+		{Key: "Ctrl+S", Text: "git sync"},
+		{Key: "Ctrl+T", Text: "open tree"},
+		{Key: "Ctrl+K", Text: "open diff"},
+	}
+	if width <= 0 {
+		width = 40
+	}
+	cols := 1
+	switch {
+	case width >= 78:
+		cols = 3
+	case width >= 48:
+		cols = 2
+	}
+	gap := 2
+	cellW := max(16, (width-(cols-1)*gap)/cols)
+	rows := (len(commands) + cols - 1) / cols
+	lines := make([]string, 0, rows)
+	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("81")).Bold(true)
+	for row := 0; row < rows; row++ {
+		cells := make([]string, 0, cols)
+		for col := 0; col < cols; col++ {
+			idx := row*cols + col
+			if idx >= len(commands) {
+				break
+			}
+			item := commands[idx]
+			cell := keyStyle.Render(item.Key) + "  " + item.Text
+			cells = append(cells, fitDisplay(cell, cellW))
+		}
+		lines = append(lines, strings.Join(cells, strings.Repeat(" ", gap)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func welcomeReleaseNotes(info updateInfo, width int) []string {
+	limit := 4
+	notes := make([]string, 0, min(limit, len(info.Notes)))
+	for _, note := range info.Notes {
+		note = strings.TrimSpace(note)
+		if note == "" {
+			continue
+		}
+		notes = append(notes, fitDisplay("- "+note, width))
+		if len(notes) >= limit {
+			break
+		}
+	}
+	return notes
+}
+
+func compactWelcomeRight(lines []string) []string {
+	var out []string
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "Ctrl+S        git sync" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+func fitLines(lines []string, width int) string {
+	for i := range lines {
+		lines[i] = fitDisplay(lines[i], width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func versionInfo() string {
+	return "Xiaoli TUI " + buildVersion()
+}
+
+func newUpdateInfo(current, latest string, checkedAt time.Time) updateInfo {
+	info := updateInfo{
+		Current:   strings.TrimSpace(current),
+		Latest:    strings.TrimSpace(latest),
+		CheckedAt: checkedAt,
+	}
+	if info.Current == "" {
+		info.Current = "dev"
+	}
+	if info.Available() {
+		info.Command = upgradeCommand(info.Latest)
+	}
+	return info
+}
+
+func upgradeMessage(info updateInfo) string {
+	if info.Available() {
+		lines := []string{fmt.Sprintf("Update available: %s -> %s", info.Current, info.Latest)}
+		if strings.TrimSpace(info.ReleaseURL) != "" {
+			lines = append(lines, "Release notes: "+strings.TrimSpace(info.ReleaseURL))
+		}
+		lines = append(lines, "Run: "+info.Command)
+		return strings.Join(lines, "\n")
+	}
+	current := strings.TrimSpace(info.Current)
+	if current == "" {
+		current = buildVersion()
+	}
+	if isDevVersion(current) {
+		return "Development build.\nRun: " + upgradeCommand("latest")
+	}
+	if strings.TrimSpace(info.Latest) != "" {
+		return fmt.Sprintf("Xiaoli TUI %s is up to date.", current)
+	}
+	return "No update information yet.\nRun: " + upgradeCommand("latest")
+}
+
+func upgradeCommand(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		target = "latest"
+	}
+	return "go install github.com/mnhkahn/xiaoli/tui/cmd/xiaoli@" + target
+}
+
+func buildVersion() string {
+	if v := strings.TrimSpace(version); v != "" && v != "dev" {
+		return v
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := strings.TrimSpace(info.Main.Version); v != "" && v != "(devel)" {
+			return v
+		}
+	}
+	if strings.TrimSpace(version) == "" {
+		return "dev"
+	}
+	return version
+}
+
+func checkForUpdateCmd(dataDir, current string) tea.Cmd {
+	return func() tea.Msg {
+		info := checkForUpdate(dataDir, current, time.Now(), &http.Client{Timeout: 3 * time.Second}, latestReleaseURL)
+		return updateCheckDoneMsg{info: info}
+	}
+}
+
+func checkForUpdate(dataDir, current string, now time.Time, client *http.Client, url string) updateInfo {
+	current = strings.TrimSpace(current)
+	if current == "" {
+		current = "dev"
+	}
+	if isDevVersion(current) {
+		return newUpdateInfo(current, "", now)
+	}
+	cachePath := updateCachePath(dataDir)
+	if cached, ok := readUpdateCache(cachePath, current, now); ok {
+		return cached
+	}
+	release, err := fetchLatestRelease(context.Background(), client, url)
+	if err != nil {
+		return newUpdateInfo(current, "", now)
+	}
+	info := newUpdateInfo(current, release.Tag, now)
+	info.ReleaseURL = release.URL
+	info.Notes = release.Notes
+	writeUpdateCache(cachePath, info)
+	return info
+}
+
+func updateCachePath(dataDir string) string {
+	if strings.TrimSpace(dataDir) == "" {
+		dataDir = localconfig.DefaultDataDir()
+	}
+	return filepath.Join(dataDir, "state", updateCacheFileName)
+}
+
+func readUpdateCache(path, current string, now time.Time) (updateInfo, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return updateInfo{}, false
+	}
+	var info updateInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return updateInfo{}, false
+	}
+	if info.Current != current || info.CheckedAt.IsZero() || now.Sub(info.CheckedAt) > 24*time.Hour {
+		return updateInfo{}, false
+	}
+	if info.Command == "" && info.Available() {
+		info.Command = upgradeCommand(info.Latest)
+	}
+	return info, true
+}
+
+func writeUpdateCache(path string, info updateInfo) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return
+	}
+	data, err := json.MarshalIndent(info, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+type releaseInfo struct {
+	Tag   string
+	URL   string
+	Notes []string
+}
+
+func fetchLatestRelease(ctx context.Context, client *http.Client, url string) (releaseInfo, error) {
+	if client == nil {
+		client = &http.Client{Timeout: 3 * time.Second}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return releaseInfo{}, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "xiaoli-tui")
+	resp, err := client.Do(req)
+	if err != nil {
+		return releaseInfo{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return releaseInfo{}, fmt.Errorf("version check failed: status %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	if err != nil {
+		return releaseInfo{}, err
+	}
+	return latestReleaseFromJSON(data)
+}
+
+func latestReleaseFromJSON(data []byte) (releaseInfo, error) {
+	var release struct {
+		TagName string `json:"tag_name"`
+		URL     string `json:"html_url"`
+		Body    string `json:"body"`
+	}
+	if err := json.Unmarshal(data, &release); err != nil {
+		return releaseInfo{}, err
+	}
+	tag := strings.TrimSpace(release.TagName)
+	if !isSemver(tag) {
+		return releaseInfo{}, fmt.Errorf("release tag is not semver: %q", release.TagName)
+	}
+	return releaseInfo{
+		Tag:   tag,
+		URL:   strings.TrimSpace(release.URL),
+		Notes: extractReleaseNotes(release.Body, 5),
+	}, nil
+}
+
+func extractReleaseNotes(body string, limit int) []string {
+	if limit <= 0 {
+		limit = 5
+	}
+	var notes []string
+	for _, line := range strings.Split(body, "\n") {
+		note := cleanReleaseNoteLine(line)
+		if note == "" {
+			continue
+		}
+		notes = append(notes, note)
+		if len(notes) >= limit {
+			break
+		}
+	}
+	return notes
+}
+
+func cleanReleaseNoteLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "full changelog") {
+		return ""
+	}
+	for _, prefix := range []string{"- ", "* ", "+ "} {
+		if strings.HasPrefix(line, prefix) {
+			return cleanMarkdownInline(strings.TrimSpace(strings.TrimPrefix(line, prefix)))
+		}
+	}
+	dot := strings.Index(line, ". ")
+	if dot > 0 {
+		allDigits := true
+		for _, r := range line[:dot] {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return cleanMarkdownInline(strings.TrimSpace(line[dot+2:]))
+		}
+	}
+	return ""
+}
+
+func cleanMarkdownInline(text string) string {
+	text = strings.TrimSpace(text)
+	text = strings.Trim(text, "`")
+	text = strings.ReplaceAll(text, "**", "")
+	text = strings.ReplaceAll(text, "__", "")
+	return strings.TrimSpace(text)
+}
+
+func isDevVersion(v string) bool {
+	v = strings.TrimSpace(v)
+	return v == "" || v == "dev" || v == "(devel)"
+}
+
+func isSemver(v string) bool {
+	_, ok := parseSemver(v)
+	return ok
+}
+
+func compareVersions(a, b string) int {
+	av, aok := parseSemver(a)
+	bv, bok := parseSemver(b)
+	if aok && bok {
+		for i := 0; i < len(av); i++ {
+			if av[i] < bv[i] {
+				return -1
+			}
+			if av[i] > bv[i] {
+				return 1
+			}
+		}
+		return 0
+	}
+	return strings.Compare(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+func parseSemver(v string) ([3]int, bool) {
+	var out [3]int
+	v = strings.TrimSpace(strings.TrimPrefix(v, "v"))
+	if idx := strings.IndexAny(v, "+-"); idx >= 0 {
+		v = v[:idx]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, part := range parts {
+		if part == "" {
+			return out, false
+		}
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
 func composeSidebar(top, middle, keys []string, height int) []string {
 	if height <= 0 {
 		return nil
@@ -1216,7 +1822,7 @@ func isMouseWheel(msg tea.MouseMsg) bool {
 }
 
 func (m model) mouseInMainViewport(msg tea.MouseMsg) bool {
-	mainW, _, bodyH, _ := layoutSizes(m.width, m.height)
+	mainW, _, bodyH, _, _ := layoutSizes(m.width, m.height)
 	return msg.X >= 0 && msg.X < mainW && msg.Y >= 0 && msg.Y < bodyH
 }
 
@@ -1396,9 +2002,12 @@ func (m model) slashSuggestions(limit int) []slashSuggestion {
 func appendLocalSuggestions(value string, suggestions []slashSuggestion) []slashSuggestion {
 	prefix := strings.TrimPrefix(strings.TrimSpace(value), "/")
 	local := []slashSuggestion{
+		{Name: "cd", Description: "切换当前工作目录", Kind: "tui"},
 		{Name: "tree", Description: "打开项目目录树", Kind: "tui"},
 		{Name: "diff", Description: "查看当前 Git 变更", Kind: "tui"},
 		{Name: "commit", Description: "生成并提交当前变更", Kind: "tui"},
+		{Name: "version", Description: "查看 TUI 版本", Kind: "tui"},
+		{Name: "upgrade", Description: "查看升级命令", Kind: "tui"},
 	}
 	seen := map[string]bool{}
 	for _, item := range suggestions {
@@ -1623,6 +2232,179 @@ func (m *model) handleCopyCommand(text string) bool {
 	}
 	m.items = append(m.items, transcriptItem{role: "event", text: "已复制" + label + "。"})
 	return true
+}
+
+func (m *model) handleLocalCommand(text string) bool {
+	args := strings.Fields(strings.TrimSpace(text))
+	if len(args) == 0 {
+		return false
+	}
+	switch strings.ToLower(args[0]) {
+	case "/version":
+		m.items = append(m.items, transcriptItem{role: "system", text: versionInfo()})
+		return true
+	case "/upgrade":
+		m.items = append(m.items, transcriptItem{role: "system", text: upgradeMessage(m.updateInfo)})
+		return true
+	case "/cd":
+		if len(args) < 2 {
+			m.items = append(m.items, transcriptItem{role: "error", text: "用法：/cd <path>"})
+			return true
+		}
+		target, err := resolveCDPath(m.cwd, strings.Join(args[1:], " "))
+		if err != nil {
+			m.items = append(m.items, transcriptItem{role: "error", text: err.Error()})
+			return true
+		}
+		m.cwd = target
+		m.gitSync = gitSyncStateForCWD(m.cwd)
+		m.gitStatus = m.gitSync.Format()
+		m.gitSyncFeedback = gitSyncFeedback{}
+		m.recordCurrentWorkspace()
+		m.items = append(m.items, transcriptItem{role: "system", text: "cwd: " + target})
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveCDPath(cwd, raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("用法：/cd <path>")
+	}
+	if strings.HasPrefix(raw, "~") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("读取 home 目录失败：%w", err)
+		}
+		switch {
+		case raw == "~":
+			raw = home
+		case strings.HasPrefix(raw, "~/"):
+			raw = filepath.Join(home, strings.TrimPrefix(raw, "~/"))
+		}
+	}
+	if !filepath.IsAbs(raw) {
+		raw = filepath.Join(cwd, raw)
+	}
+	target, err := filepath.Abs(raw)
+	if err != nil {
+		return "", fmt.Errorf("解析目录失败：%w", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return "", fmt.Errorf("目录不可用：%s", target)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("不是目录：%s", target)
+	}
+	return target, nil
+}
+
+func (m *model) markTab() {
+	m.lastTabAt = time.Now()
+}
+
+func (m *model) consumeDoubleTab() bool {
+	if m.lastTabAt.IsZero() || time.Since(m.lastTabAt) > 500*time.Millisecond {
+		return false
+	}
+	m.lastTabAt = time.Time{}
+	return true
+}
+
+func (m *model) openWorkspacePicker() {
+	m.recordCurrentWorkspace()
+	items := loadWorkspaces(m.workspaceStatePath)
+	if len(items) == 0 && strings.TrimSpace(m.cwd) != "" {
+		items = []workspaceItem{m.currentWorkspaceItem()}
+	}
+	m.workspacePicker = newWorkspacePicker(items, m.cwd, m.width, m.height)
+}
+
+func (m *model) switchWorkspace(item workspaceItem) {
+	target := strings.TrimSpace(item.CWD)
+	if target == "" {
+		return
+	}
+	info, err := os.Stat(target)
+	if err != nil || !info.IsDir() {
+		if m.workspacePicker != nil {
+			m.workspacePicker.err = "Project unavailable: " + target
+		}
+		return
+	}
+	m.cwd = target
+	m.sessionID = strings.TrimSpace(item.SessionID)
+	m.gitSync = gitSyncStateForCWD(m.cwd)
+	m.gitStatus = m.gitSync.Format()
+	m.gitSyncFeedback = gitSyncFeedback{}
+	m.lastError = ""
+	m.pendingQuestion = ""
+	m.pendingOptions = nil
+	m.pendingChoice = 0
+	if m.sessionID != "" {
+		var agent *agentruntime.Agent
+		if m.app != nil {
+			agent = m.app.Agent
+		}
+		m.items = restoreTranscript(agent, m.sessionID)
+	} else {
+		m.items = nil
+	}
+	m.items = append(m.items, transcriptItem{role: "system", text: "Switched to " + target})
+	m.recordCurrentWorkspace()
+	m.refreshContextUsage()
+	m.syncViewport(true)
+}
+
+func (m *model) currentWorkspaceItem() workspaceItem {
+	return workspaceItem{
+		CWD:        m.cwd,
+		SessionID:  m.sessionID,
+		Title:      workspaceTitle(m.app, m.sessionID, m.cwd),
+		Model:      currentModelName(m.app),
+		LastOpened: time.Now(),
+	}
+}
+
+func (m *model) recordCurrentWorkspace() {
+	if m == nil || strings.TrimSpace(m.workspaceStatePath) == "" || strings.TrimSpace(m.cwd) == "" {
+		return
+	}
+	_ = upsertWorkspace(m.workspaceStatePath, m.currentWorkspaceItem())
+}
+
+func (m *model) createProjectSession() string {
+	if m == nil || m.app == nil || m.app.Agent == nil {
+		return ""
+	}
+	sessionID, err := m.app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		return ""
+	}
+	return sessionID
+}
+
+func currentModelName(app *localapp.App) string {
+	if app == nil || app.Agent == nil {
+		return ""
+	}
+	return app.Agent.CurrentLLMModel()
+}
+
+func workspaceTitle(app *localapp.App, sessionID, cwd string) string {
+	if app != nil && app.Agent != nil && app.Agent.SessionManager() != nil && strings.TrimSpace(sessionID) != "" {
+		if info, err := app.Agent.SessionManager().Get(context.Background(), sessionID); err == nil && strings.TrimSpace(info.Title) != "" {
+			return info.Title
+		}
+	}
+	base := cwdDisplayName(cwd)
+	if base == "" {
+		return strings.TrimSpace(sessionID)
+	}
+	return base
 }
 
 func (m model) handleSlash(text string) slashResult {
@@ -1923,18 +2705,7 @@ func startGitSync(cwd string, state gitSyncState) tea.Cmd {
 }
 
 func (m *model) handleGitSyncClick(msg tea.MouseMsg) bool {
-	if msg.Type != tea.MouseLeft || msg.Action != tea.MouseActionPress || m.busy || !m.gitSync.Actionable() {
-		return false
-	}
-	mainW, sideW, bodyH, _ := layoutSizes(m.width, m.height)
-	if sideW <= 0 {
-		return false
-	}
-	sideStart := mainW + boxStyle.GetHorizontalFrameSize() + 1
-	if msg.X < sideStart || msg.Y < max(0, bodyH-3) || msg.Y > bodyH+1 {
-		return false
-	}
-	return m.startGitSyncFeedback()
+	return false
 }
 
 func (m *model) startGitSyncFeedback() bool {

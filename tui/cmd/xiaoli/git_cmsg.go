@@ -127,7 +127,7 @@ func startGitCmsgPrepare(ctx context.Context, agent *agentruntime.Agent, cwd, ar
 
 func startGitCmsgCommit(ctx context.Context, cwd, message string, push bool) tea.Cmd {
 	return func() tea.Msg {
-		out, err := runGitCombinedContext(ctx, cwd, append([]string{"commit", "-m"}, splitCommitMessageArgs(message)...)...)
+		out, err := runGitCombinedContext(ctx, cwd, gitCommitMessageArgs(message)...)
 		if err != nil || !push {
 			return gitCmsgCommitMsg{message: message, output: out, push: push, err: err}
 		}
@@ -229,6 +229,26 @@ func splitCommitMessageArgs(message string) []string {
 		}
 	}
 	return args
+}
+
+func gitCommitMessageArgs(message string) []string {
+	args := []string{"commit"}
+	for _, part := range splitCommitMessageArgs(message) {
+		args = append(args, "-m", part)
+	}
+	return args
+}
+
+func formatGitCmsgCommitError(err error, output string) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	output = strings.TrimSpace(output)
+	if output != "" {
+		msg += "\n" + output
+	}
+	return msg
 }
 
 func formatGitCmsgQuestion(msg gitCmsgPrepareMsg) string {
