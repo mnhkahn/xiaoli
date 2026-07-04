@@ -14,16 +14,25 @@ import (
 )
 
 const workspaceStateFileName = "tui_workspaces.json"
+const maxWorkspaceSessionsPerProject = 3
 
 type workspaceState struct {
 	Items []workspaceItem `json:"items"`
 }
 
 type workspaceItem struct {
-	CWD        string    `json:"cwd"`
+	CWD        string             `json:"cwd"`
+	SessionID  string             `json:"session_id,omitempty"`
+	Title      string             `json:"title"`
+	Model      string             `json:"model"`
+	LastOpened time.Time          `json:"last_opened"`
+	Sessions   []workspaceSession `json:"sessions,omitempty"`
+}
+
+type workspaceSession struct {
 	SessionID  string    `json:"session_id"`
-	Title      string    `json:"title"`
-	Model      string    `json:"model"`
+	Title      string    `json:"title,omitempty"`
+	Model      string    `json:"model,omitempty"`
 	LastOpened time.Time `json:"last_opened"`
 }
 
@@ -51,16 +60,47 @@ func loadWorkspaces(path string) []workspaceItem {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil
 	}
-	items := state.Items
+	items := normalizeWorkspaceItems(state.Items)
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].LastOpened.After(items[j].LastOpened)
 	})
 	return items
 }
 
-func upsertWorkspace(path string, item workspaceItem) error {
+func loadWorkspaceSessions(path string) []workspaceItem {
+	items := loadWorkspaces(path)
+	out := make([]workspaceItem, 0)
+	for _, item := range items {
+		sessions := item.Sessions
+		sort.SliceStable(sessions, func(i, j int) bool {
+			return sessions[i].LastOpened.After(sessions[j].LastOpened)
+		})
+		for i, session := range sessions {
+			if i >= maxWorkspaceSessionsPerProject {
+				break
+			}
+			if strings.TrimSpace(session.SessionID) == "" {
+				continue
+			}
+			out = append(out, workspaceItem{
+				CWD:        item.CWD,
+				SessionID:  session.SessionID,
+				Title:      firstNonEmpty(session.Title, item.Title),
+				Model:      firstNonEmpty(session.Model, item.Model),
+				LastOpened: session.LastOpened,
+			})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].LastOpened.After(out[j].LastOpened)
+	})
+	return out
+}
+
+func recordWorkspaceSession(path string, item workspaceItem) error {
 	item.CWD = strings.TrimSpace(item.CWD)
-	if item.CWD == "" {
+	item.SessionID = strings.TrimSpace(item.SessionID)
+	if item.CWD == "" || item.SessionID == "" {
 		return nil
 	}
 	if abs, err := filepath.Abs(item.CWD); err == nil {
@@ -73,14 +113,17 @@ func upsertWorkspace(path string, item workspaceItem) error {
 	updated := false
 	for i := range state.Items {
 		if samePath(state.Items[i].CWD, item.CWD) {
-			state.Items[i] = mergeWorkspaceItem(state.Items[i], item)
+			state.Items[i] = mergeWorkspaceSession(state.Items[i], item)
 			updated = true
 			break
 		}
 	}
 	if !updated {
+		item.Sessions = []workspaceSession{workspaceSessionFromItem(item)}
 		state.Items = append(state.Items, item)
 	}
+	state.Items = normalizeWorkspaceItems(state.Items)
+	state.Items = enforceUniqueWorkspaceSessions(state.Items)
 	sort.SliceStable(state.Items, func(i, j int) bool {
 		return state.Items[i].LastOpened.After(state.Items[j].LastOpened)
 	})
@@ -101,20 +144,127 @@ func upsertWorkspace(path string, item workspaceItem) error {
 	return os.Rename(tmp, path)
 }
 
-func mergeWorkspaceItem(old, next workspaceItem) workspaceItem {
-	if next.SessionID == "" {
-		next.SessionID = old.SessionID
+func mergeWorkspaceSession(old, next workspaceItem) workspaceItem {
+	old.CWD = firstNonEmpty(next.CWD, old.CWD)
+	old.Title = firstNonEmpty(next.Title, old.Title)
+	old.Model = firstNonEmpty(next.Model, old.Model)
+	old.LastOpened = next.LastOpened
+	nextSession := workspaceSessionFromItem(next)
+	replaced := false
+	for i := range old.Sessions {
+		if old.Sessions[i].SessionID == nextSession.SessionID {
+			old.Sessions[i] = nextSession
+			replaced = true
+			break
+		}
 	}
-	if next.Title == "" {
-		next.Title = old.Title
+	if !replaced {
+		old.Sessions = append([]workspaceSession{nextSession}, old.Sessions...)
 	}
-	if next.Model == "" {
-		next.Model = old.Model
+	old.Sessions = trimWorkspaceSessions(old.Sessions)
+	old.SessionID = old.Sessions[0].SessionID
+	return old
+}
+
+func normalizeWorkspaceItems(items []workspaceItem) []workspaceItem {
+	for i := range items {
+		if abs, err := filepath.Abs(strings.TrimSpace(items[i].CWD)); err == nil {
+			items[i].CWD = abs
+		}
+		if strings.TrimSpace(items[i].SessionID) != "" && len(items[i].Sessions) == 0 {
+			items[i].Sessions = []workspaceSession{workspaceSessionFromItem(items[i])}
+		}
+		items[i].Sessions = trimWorkspaceSessions(items[i].Sessions)
+		if len(items[i].Sessions) > 0 {
+			items[i].SessionID = items[i].Sessions[0].SessionID
+			items[i].LastOpened = items[i].Sessions[0].LastOpened
+			if items[i].Title == "" {
+				items[i].Title = items[i].Sessions[0].Title
+			}
+			if items[i].Model == "" {
+				items[i].Model = items[i].Sessions[0].Model
+			}
+		} else {
+			items[i].SessionID = ""
+		}
 	}
-	if next.LastOpened.IsZero() {
-		next.LastOpened = old.LastOpened
+	return enforceUniqueWorkspaceSessions(items)
+}
+
+func enforceUniqueWorkspaceSessions(items []workspaceItem) []workspaceItem {
+	owner := map[string]int{}
+	ownerTime := map[string]time.Time{}
+	for i := range items {
+		for _, session := range items[i].Sessions {
+			sessionID := strings.TrimSpace(session.SessionID)
+			if sessionID == "" {
+				continue
+			}
+			if prev, ok := owner[sessionID]; !ok || session.LastOpened.After(ownerTime[sessionID]) {
+				owner[sessionID] = i
+				ownerTime[sessionID] = session.LastOpened
+			} else if ok && prev == i && session.LastOpened.After(ownerTime[sessionID]) {
+				ownerTime[sessionID] = session.LastOpened
+			}
+		}
 	}
-	return next
+	for i := range items {
+		filtered := items[i].Sessions[:0]
+		for _, session := range items[i].Sessions {
+			if owner[strings.TrimSpace(session.SessionID)] == i {
+				filtered = append(filtered, session)
+			}
+		}
+		items[i].Sessions = trimWorkspaceSessions(filtered)
+		if len(items[i].Sessions) > 0 {
+			items[i].SessionID = items[i].Sessions[0].SessionID
+			items[i].LastOpened = items[i].Sessions[0].LastOpened
+		} else {
+			items[i].SessionID = ""
+		}
+	}
+	return items
+}
+
+func trimWorkspaceSessions(sessions []workspaceSession) []workspaceSession {
+	seen := map[string]bool{}
+	clean := make([]workspaceSession, 0, len(sessions))
+	for _, session := range sessions {
+		session.SessionID = strings.TrimSpace(session.SessionID)
+		if session.SessionID == "" || seen[session.SessionID] {
+			continue
+		}
+		if session.LastOpened.IsZero() {
+			session.LastOpened = time.Now()
+		}
+		seen[session.SessionID] = true
+		clean = append(clean, session)
+	}
+	sort.SliceStable(clean, func(i, j int) bool {
+		return clean[i].LastOpened.After(clean[j].LastOpened)
+	})
+	if len(clean) > maxWorkspaceSessionsPerProject {
+		clean = clean[:maxWorkspaceSessionsPerProject]
+	}
+	return clean
+}
+
+func workspaceSessionFromItem(item workspaceItem) workspaceSession {
+	return workspaceSession{
+		SessionID:  strings.TrimSpace(item.SessionID),
+		Title:      item.Title,
+		Model:      item.Model,
+		LastOpened: item.LastOpened,
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func findWorkspace(path, cwd string) (workspaceItem, bool) {
@@ -134,6 +284,12 @@ func samePath(a, b string) bool {
 	}
 	if errB == nil {
 		b = bb
+	}
+	if realA, err := filepath.EvalSymlinks(a); err == nil {
+		a = realA
+	}
+	if realB, err := filepath.EvalSymlinks(b); err == nil {
+		b = realB
 	}
 	return filepath.Clean(a) == filepath.Clean(b)
 }
@@ -171,8 +327,20 @@ func (p *workspacePicker) handleKey(msg tea.KeyMsg) (workspaceItem, bool, bool) 
 	case "up", "k":
 		p.move(-1)
 		return workspaceItem{}, false, false
-	case "down", "j", "tab":
+	case "down", "j":
 		p.move(1)
+		return workspaceItem{}, false, false
+	case "tab":
+		p.move(1)
+		if p.selected >= 0 && p.selected < len(p.items) {
+			return p.items[p.selected], true, true
+		}
+		return workspaceItem{}, false, false
+	case "shift+tab":
+		p.move(-1)
+		if p.selected >= 0 && p.selected < len(p.items) {
+			return p.items[p.selected], true, true
+		}
 		return workspaceItem{}, false, false
 	case "enter":
 		if p.selected >= 0 && p.selected < len(p.items) {
@@ -223,7 +391,7 @@ func (p *workspacePicker) View() string {
 		lines = append(lines, "")
 	}
 	body := boxStyle.Width(bodyW).Height(bodyH).Render(strings.Join(lines, "\n"))
-	help := hintStyle.Render(fitDisplay("Enter switch · Esc close · ↑/↓ move · Tab next", width))
+	help := hintStyle.Render(fitDisplay("Enter switch · Tab next · Shift+Tab prev · Esc close · ↑/↓ move", width))
 	return lipgloss.JoinVertical(lipgloss.Left, body, help)
 }
 

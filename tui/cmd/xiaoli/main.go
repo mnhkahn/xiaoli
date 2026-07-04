@@ -88,6 +88,28 @@ type selectionCopyDoneMsg struct {
 	err  error
 }
 
+type clipboardImageDoneMsg struct {
+	path      string
+	mediaType string
+	err       error
+}
+
+const (
+	pasteTextCharThreshold = 800
+	pasteTextLineThreshold = 2
+	pastedContentText      = "text"
+	pastedContentImage     = "image"
+)
+
+type pastedContent struct {
+	ID        int
+	Type      string
+	Content   string
+	Path      string
+	MediaType string
+	Lines     int
+}
+
 type selectionPoint struct {
 	x int
 	y int
@@ -154,6 +176,8 @@ type model struct {
 	inputHistory       []string
 	historyIndex       int
 	historyDraft       string
+	pastedContents     map[int]pastedContent
+	nextPasteID        int
 	shellHistory       []string
 	shellHistIndex     int
 	shellHistDraft     string
@@ -341,26 +365,12 @@ func newModel(app *localapp.App, resumeSessionID string, logPath string) model {
 	if app != nil && strings.TrimSpace(app.Config.DataDir) != "" {
 		workspacePath = workspaceStatePath(app.Config.DataDir)
 	}
-	if sessionID == "" && workspacePath != "" {
-		if item, ok := findWorkspace(workspacePath, cwd); ok && item.SessionID != "" {
-			sessionID = item.SessionID
-		}
-	}
 	items := []transcriptItem{{role: "banner"}}
 	if sessionID != "" {
 		items = restoreTranscript(app.Agent, sessionID)
 		items = append(items, transcriptItem{role: "system", text: "Resumed session " + sessionID})
 	}
 	gitSync := gitSyncStateForCWD(cwd)
-	if workspacePath != "" {
-		_ = upsertWorkspace(workspacePath, workspaceItem{
-			CWD:        cwd,
-			SessionID:  sessionID,
-			Title:      workspaceTitle(app, sessionID, cwd),
-			Model:      currentModelName(app),
-			LastOpened: time.Now(),
-		})
-	}
 
 	return model{
 		app:                app,
@@ -526,6 +536,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		}
+		if handled, cmd := m.handlePasteKey(msg); handled {
+			return m, cmd
+		}
 		switch msg.String() {
 		case "ctrl+c":
 			m.quitting = true
@@ -637,15 +650,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "enter":
-			text := strings.TrimSpace(m.input.Value())
+			text := strings.TrimSpace(m.expandInputAttachments(m.input.Value()))
 			if text == "" && m.hasPendingOptions() {
 				text = pendingOptionValue(m.pendingOptions[m.pendingChoice])
 			}
 			if text == "" || m.busy {
 				return m, nil
 			}
-			if isShellInput(m.input.Value()) {
-				command := shellCommand(m.input.Value())
+			rawInput := m.input.Value()
+			if isShellInput(rawInput) {
+				command := shellCommand(rawInput)
 				if command == "" {
 					return m, nil
 				}
@@ -660,7 +674,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chatCanceled = false
 				return m, startShellCommand(runCtx, m.cwd, command)
 			}
-			m.recordInputHistory(text)
+			m.recordInputHistory(m.input.Value())
 			if selected, ok := m.pendingOptionByInput(text); ok {
 				text = selected
 			}
@@ -686,7 +700,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.lastError = ""
-			m.items = append(m.items, transcriptItem{role: "user", text: text})
+			m.items = append(m.items, transcriptItem{role: "user", text: m.inputDisplayText()})
 			if m.pendingBashHash != "" {
 				if isReject(text) {
 					agentbuiltin.ClearBashApproval(m.activeSessionID())
@@ -758,7 +772,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.sessionID = cmd.sessionID
 					m.items = restoreTranscript(m.app.Agent, m.sessionID)
 					m.items = append(m.items, transcriptItem{role: "system", text: cmd.reply})
-					m.recordCurrentWorkspace()
+					m.recordCurrentSession()
 				} else {
 					m.items = append(m.items, transcriptItem{role: "system", text: cmd.reply})
 				}
@@ -770,11 +784,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				text = cmd.prompt
 			}
 			m.input.SetValue("")
+			m.clearPastedContents()
 			m.hadChatInput = true
 			if m.sessionID == "" {
 				m.sessionID = m.createProjectSession()
 			}
-			m.recordCurrentWorkspace()
+			m.recordCurrentSession()
 			m.busy = true
 			m.status = "running"
 			m.streamingIndex = -1
@@ -819,7 +834,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sessionID = sid
 			}
 		}
-		m.recordCurrentWorkspace()
+		m.recordCurrentSession()
 		if msg.err != nil {
 			m.lastError = msg.err.Error()
 			m.items = append(m.items, transcriptItem{role: "error", text: msg.err.Error()})
@@ -847,6 +862,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshContextUsage()
 		m.syncViewport(true)
 		return m, waitForEvent(m.events)
+	case clipboardImageDoneMsg:
+		if msg.err != nil {
+			m.status = "未检测到剪贴板图片"
+			return m, nil
+		}
+		m.addImageAttachment(msg.path, msg.mediaType)
+		m.status = "已添加图片"
+		return m, nil
 	case shellDoneMsg:
 		m.busy = false
 		m.status = "idle"
@@ -861,10 +884,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.chatCanceled = false
 		if strings.TrimSpace(msg.cwd) != "" {
-			m.cwd = msg.cwd
+			if err := m.setCWD(msg.cwd); err != nil {
+				m.items = append(m.items, transcriptItem{role: "error", text: err.Error()})
+			}
+		} else {
+			m.refreshGitSync()
 		}
-		m.refreshGitSync()
-		m.recordCurrentWorkspace()
+		m.recordCurrentSession()
 		m.items = append(m.items, msg.transcriptItem())
 		m.syncViewport(true)
 		return m, nil
@@ -1029,6 +1055,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if cleaned := stripMouseSGRFragments(m.input.Value()); cleaned != m.input.Value() {
 		m.input.SetValue(cleaned)
 	}
+	m.pruneUnreferencedPastedContents()
 	return m, tea.Batch(vpCmd, cmd)
 }
 
@@ -1224,7 +1251,7 @@ const (
 	runEventToolFailed
 )
 
-var runLoadingFrames = []string{"[li  ]", "[l i ]", "[l  i]", "[l i ]"}
+var runLoadingFrames = []string{"(^_^)"}
 
 var runStatusPhrases = []string{
 	"Aligning",
@@ -1265,7 +1292,7 @@ func activeRunStatus(frame int) string {
 }
 
 func renderRunEventLine(label string, width int, frame int, state runEventState) string {
-	prefix := "[li  ]"
+	prefix := "(^_^)"
 	colors := []lipgloss.Color{
 		lipgloss.Color("#d77757"),
 		lipgloss.Color("#eb9f7f"),
@@ -1278,21 +1305,21 @@ func renderRunEventLine(label string, width int, frame int, state runEventState)
 			prefix = runLoadingFrames[positiveMod(frame/4, len(runLoadingFrames))]
 		}
 	case runEventDone:
-		prefix = "[ ok ]"
+		prefix = "(ok)"
 		colors = []lipgloss.Color{
 			lipgloss.Color("#4eba65"),
 			lipgloss.Color("#7fdc94"),
 			lipgloss.Color("#4eba65"),
 		}
 	case runEventFailed:
-		prefix = "[ x  ]"
+		prefix = "(>_<)"
 		colors = []lipgloss.Color{
 			lipgloss.Color("#ff6b80"),
 			lipgloss.Color("#ff9aa8"),
 			lipgloss.Color("#d77757"),
 		}
 	case runEventToolActive:
-		prefix = "[run ]"
+		prefix = "(._.)"
 		colors = []lipgloss.Color{
 			lipgloss.Color("#b1b9f9"),
 			lipgloss.Color("#cfd7ff"),
@@ -1300,14 +1327,14 @@ func renderRunEventLine(label string, width int, frame int, state runEventState)
 			lipgloss.Color("#cfd7ff"),
 		}
 	case runEventToolDone:
-		prefix = "[ ok ]"
+		prefix = "(ok)"
 		colors = []lipgloss.Color{
 			lipgloss.Color("#4eba65"),
 			lipgloss.Color("#7fdc94"),
 			lipgloss.Color("#b1b9f9"),
 		}
 	case runEventToolFailed:
-		prefix = "[ x  ]"
+		prefix = "(>_<)"
 		colors = []lipgloss.Color{
 			lipgloss.Color("#ff6b80"),
 			lipgloss.Color("#ff9aa8"),
@@ -3067,6 +3094,303 @@ func pendingOptionValue(option string) string {
 	return title
 }
 
+func (m *model) handlePasteKey(msg tea.KeyMsg) (bool, tea.Cmd) {
+	if msg.String() == "ctrl+v" {
+		return true, readClipboardImage(m.cwd)
+	}
+	if !msg.Paste && !looksLikeBulkPaste(msg) {
+		return false, nil
+	}
+	text := pasteTextFromKey(msg)
+	if msg.Paste && strings.TrimSpace(text) == "" {
+		return true, readClipboardImage(m.cwd)
+	}
+	if imagePaths, rest := splitPastedImagePaths(m.cwd, text); len(imagePaths) > 0 {
+		for _, path := range imagePaths {
+			m.addImageAttachment(path, imageMediaType(path))
+		}
+		if strings.TrimSpace(rest) != "" {
+			m.addTextPaste(rest)
+		}
+		return true, nil
+	}
+	if shouldCollapsePastedText(text) {
+		m.addTextPaste(text)
+		return true, nil
+	}
+	if msg.Paste {
+		m.insertInputText(text)
+		return true, nil
+	}
+	return false, nil
+}
+
+func looksLikeBulkPaste(msg tea.KeyMsg) bool {
+	if msg.Type != tea.KeyRunes {
+		return false
+	}
+	text := string(msg.Runes)
+	return len([]rune(text)) > pasteTextCharThreshold || pasteLineCount(text) > pasteTextLineThreshold
+}
+
+func pasteTextFromKey(msg tea.KeyMsg) string {
+	text := string(msg.Runes)
+	text = ansiEscapeRE.ReplaceAllString(text, "")
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	text = strings.ReplaceAll(text, "\t", "    ")
+	return text
+}
+
+func shouldCollapsePastedText(text string) bool {
+	return len([]rune(text)) > pasteTextCharThreshold || pasteLineCount(text) > pasteTextLineThreshold
+}
+
+func pasteLineCount(text string) int {
+	if text == "" {
+		return 0
+	}
+	trimmed := strings.TrimSuffix(text, "\n")
+	if trimmed == "" {
+		return 1
+	}
+	return strings.Count(trimmed, "\n") + 1
+}
+
+func (m *model) addTextPaste(text string) {
+	id := m.nextPastedID()
+	lines := pasteLineCount(text)
+	m.ensurePastedContents()
+	m.pastedContents[id] = pastedContent{
+		ID:      id,
+		Type:    pastedContentText,
+		Content: text,
+		Lines:   lines,
+	}
+	m.insertInputText(formatTextPasteRef(id, lines))
+}
+
+func (m *model) addImageAttachment(path, mediaType string) {
+	id := m.nextPastedID()
+	m.ensurePastedContents()
+	m.pastedContents[id] = pastedContent{
+		ID:        id,
+		Type:      pastedContentImage,
+		Path:      path,
+		MediaType: mediaType,
+	}
+	m.insertInputText(formatImagePasteRef(id))
+}
+
+func (m *model) nextPastedID() int {
+	if m.nextPasteID <= 0 {
+		maxID := 0
+		for id := range m.pastedContents {
+			if id > maxID {
+				maxID = id
+			}
+		}
+		m.nextPasteID = maxID + 1
+	}
+	id := m.nextPasteID
+	m.nextPasteID++
+	return id
+}
+
+func (m *model) ensurePastedContents() {
+	if m.pastedContents == nil {
+		m.pastedContents = map[int]pastedContent{}
+	}
+}
+
+func (m *model) insertInputText(text string) {
+	value := []rune(m.input.Value())
+	pos := m.input.Position()
+	if pos < 0 || pos > len(value) {
+		pos = len(value)
+	}
+	next := string(value[:pos]) + text + string(value[pos:])
+	m.input.SetValue(next)
+	m.input.SetCursor(pos + len([]rune(text)))
+}
+
+func formatTextPasteRef(id, lines int) string {
+	unit := "lines"
+	if lines == 1 {
+		unit = "line"
+	}
+	return fmt.Sprintf("[Paste #%d · %d %s]", id, lines, unit)
+}
+
+func formatImagePasteRef(id int) string {
+	return fmt.Sprintf("[图#%d]", id)
+}
+
+func (m model) expandInputAttachments(input string) string {
+	if len(m.pastedContents) == 0 {
+		return input
+	}
+	out := input
+	ids := make([]int, 0, len(m.pastedContents))
+	for id := range m.pastedContents {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	for _, id := range ids {
+		content := m.pastedContents[id]
+		switch content.Type {
+		case pastedContentText:
+			out = strings.ReplaceAll(out, formatTextPasteRef(id, content.Lines), content.Content)
+		case pastedContentImage:
+			detail := fmt.Sprintf("图片 #%d：%s", id, content.Path)
+			if content.MediaType != "" {
+				detail += " (" + content.MediaType + ")"
+			}
+			out = strings.ReplaceAll(out, formatImagePasteRef(id), detail)
+		}
+	}
+	return out
+}
+
+func (m model) inputDisplayText() string {
+	if len(m.pastedContents) == 0 {
+		return m.input.Value()
+	}
+	return m.input.Value()
+}
+
+func (m *model) pruneUnreferencedPastedContents() {
+	if len(m.pastedContents) == 0 {
+		return
+	}
+	value := m.input.Value()
+	for id, content := range m.pastedContents {
+		ref := formatImagePasteRef(id)
+		if content.Type == pastedContentText {
+			ref = formatTextPasteRef(id, content.Lines)
+		}
+		if !strings.Contains(value, ref) {
+			delete(m.pastedContents, id)
+		}
+	}
+}
+
+func (m *model) clearPastedContents() {
+	m.pastedContents = nil
+	m.nextPasteID = 0
+}
+
+func splitPastedImagePaths(cwd, text string) ([]string, string) {
+	var images []string
+	var rest []string
+	for _, part := range pastePathCandidates(text) {
+		path := normalizePastedPath(cwd, part)
+		if path == "" {
+			continue
+		}
+		if isImagePath(path) && fileExists(path) {
+			images = append(images, path)
+		} else if strings.TrimSpace(part) != "" {
+			rest = append(rest, part)
+		}
+	}
+	return images, strings.Join(rest, "\n")
+}
+
+func pastePathCandidates(text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	split := strings.FieldsFunc(text, func(r rune) bool {
+		return r == '\n'
+	})
+	if len(split) <= 1 {
+		return []string{text}
+	}
+	return split
+}
+
+func normalizePastedPath(cwd, path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.Trim(path, `"'`)
+	path = strings.ReplaceAll(path, `\ `, " ")
+	if path == "" {
+		return ""
+	}
+	if strings.HasPrefix(path, "file://") {
+		path = strings.TrimPrefix(path, "file://")
+	}
+	if !filepath.IsAbs(path) && cwd != "" {
+		path = filepath.Join(cwd, path)
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	return path
+}
+
+func isImagePath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".heic":
+		return true
+	default:
+		return false
+	}
+}
+
+func imageMediaType(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	default:
+		return "image/png"
+	}
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+var readClipboardImageFunc = readClipboardImageFromSystemClipboard
+
+func readClipboardImage(cwd string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		path, mediaType, err := readClipboardImageFunc(ctx, cwd)
+		return clipboardImageDoneMsg{path: path, mediaType: mediaType, err: err}
+	}
+}
+
+func readClipboardImageFromSystemClipboard(ctx context.Context, cwd string) (string, string, error) {
+	if runtime.GOOS != "darwin" {
+		return "", "", fmt.Errorf("clipboard image paste is only supported on macOS for now")
+	}
+	path, err := exec.LookPath("pngpaste")
+	if err != nil {
+		return "", "", fmt.Errorf("pngpaste not found")
+	}
+	tmp, err := os.CreateTemp("", "xiaoli-clipboard-*.png")
+	if err != nil {
+		return "", "", err
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	_ = os.Remove(tmpPath)
+	cmd := exec.CommandContext(ctx, path, tmpPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", "", fmt.Errorf("pngpaste failed: %v %s", err, strings.TrimSpace(string(out)))
+	}
+	return tmpPath, "image/png", nil
+}
+
 func (m *model) recordInputHistory(text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -3079,6 +3403,7 @@ func (m *model) recordInputHistory(text string) {
 
 func (m *model) clearInputDraft() {
 	m.input.SetValue("")
+	m.clearPastedContents()
 	m.historyIndex = 0
 	m.historyDraft = ""
 	m.shellHistIndex = 0
@@ -3184,11 +3509,10 @@ func (m *model) handleLocalCommand(text string) bool {
 			m.items = append(m.items, transcriptItem{role: "error", text: err.Error()})
 			return true
 		}
-		m.cwd = target
-		m.gitSync = gitSyncStateForCWD(m.cwd)
-		m.gitStatus = m.gitSync.Format()
-		m.gitSyncFeedback = gitSyncFeedback{}
-		m.recordCurrentWorkspace()
+		if err := m.setCWD(target); err != nil {
+			m.items = append(m.items, transcriptItem{role: "error", text: err.Error()})
+			return true
+		}
 		m.items = append(m.items, transcriptItem{role: "system", text: "cwd: " + target})
 		return true
 	default:
@@ -3243,11 +3567,7 @@ func (m *model) consumeDoubleTab() bool {
 }
 
 func (m *model) openWorkspacePicker() {
-	m.recordCurrentWorkspace()
-	items := loadWorkspaces(m.workspaceStatePath)
-	if len(items) == 0 && strings.TrimSpace(m.cwd) != "" {
-		items = []workspaceItem{m.currentWorkspaceItem()}
-	}
+	items := loadWorkspaceSessions(m.workspaceStatePath)
 	m.workspacePicker = newWorkspacePicker(items, m.cwd, m.width, m.height)
 }
 
@@ -3256,18 +3576,14 @@ func (m *model) switchWorkspace(item workspaceItem) {
 	if target == "" {
 		return
 	}
-	info, err := os.Stat(target)
-	if err != nil || !info.IsDir() {
+	if err := m.setCWD(target); err != nil {
 		if m.workspacePicker != nil {
 			m.workspacePicker.err = "Project unavailable: " + target
 		}
 		return
 	}
-	m.cwd = target
-	m.sessionID = strings.TrimSpace(item.SessionID)
-	m.gitSync = gitSyncStateForCWD(m.cwd)
-	m.gitStatus = m.gitSync.Format()
-	m.gitSyncFeedback = gitSyncFeedback{}
+	nextSessionID := strings.TrimSpace(item.SessionID)
+	m.sessionID = nextSessionID
 	m.lastError = ""
 	m.pendingQuestion = ""
 	m.pendingOptions = nil
@@ -3282,12 +3598,41 @@ func (m *model) switchWorkspace(item workspaceItem) {
 		m.items = nil
 	}
 	m.items = append(m.items, transcriptItem{role: "system", text: "Switched to " + target})
-	m.recordCurrentWorkspace()
 	m.refreshContextUsage()
 	m.syncViewport(true)
 }
 
-func (m *model) currentWorkspaceItem() workspaceItem {
+func (m *model) setCWD(target string) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return fmt.Errorf("目录不可用：%s", target)
+	}
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("解析目录失败：%w", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return fmt.Errorf("目录不可用：%s", abs)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("不是目录：%s", abs)
+	}
+	if err := os.Chdir(abs); err != nil {
+		return fmt.Errorf("切换目录失败：%w", err)
+	}
+	if current, err := os.Getwd(); err == nil {
+		m.cwd = current
+	} else {
+		m.cwd = abs
+	}
+	m.gitSync = gitSyncStateForCWD(m.cwd)
+	m.gitStatus = m.gitSync.Format()
+	m.gitSyncFeedback = gitSyncFeedback{}
+	return nil
+}
+
+func (m *model) currentWorkspaceSessionItem() workspaceItem {
 	return workspaceItem{
 		CWD:        m.cwd,
 		SessionID:  m.sessionID,
@@ -3297,11 +3642,11 @@ func (m *model) currentWorkspaceItem() workspaceItem {
 	}
 }
 
-func (m *model) recordCurrentWorkspace() {
-	if m == nil || strings.TrimSpace(m.workspaceStatePath) == "" || strings.TrimSpace(m.cwd) == "" {
+func (m *model) recordCurrentSession() {
+	if m == nil || strings.TrimSpace(m.workspaceStatePath) == "" || strings.TrimSpace(m.cwd) == "" || strings.TrimSpace(m.sessionID) == "" {
 		return
 	}
-	_ = upsertWorkspace(m.workspaceStatePath, m.currentWorkspaceItem())
+	_ = recordWorkspaceSession(m.workspaceStatePath, m.currentWorkspaceSessionItem())
 }
 
 func (m *model) createProjectSession() string {

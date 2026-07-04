@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,10 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mnhkahn/xiaoli/internal/agent/localapp"
+	"github.com/mnhkahn/xiaoli/internal/agent/localconfig"
 	agentevent "github.com/mnhkahn/xiaoli/internal/event"
+	"github.com/muesli/termenv"
 )
 
 func TestLayoutUsesBottomStatusBar(t *testing.T) {
@@ -175,6 +179,104 @@ func TestCtrlKOpensDiffExplorer(t *testing.T) {
 	}
 	if got.input.Value() != "" {
 		t.Fatalf("Ctrl-K input = %q, want empty", got.input.Value())
+	}
+}
+
+func TestPastedLongTextCollapsesIntoAttachment(t *testing.T) {
+	input := textinput.New()
+	m := model{input: input, cwd: t.TempDir(), width: 100, height: 30}
+	pasted := strings.Repeat("这是一段很长的复制文本\n", 4)
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(pasted), Paste: true})
+	got := next.(model)
+
+	if got.input.Value() != "[Paste #1 · 4 lines]" {
+		t.Fatalf("input = %q, want collapsed paste ref", got.input.Value())
+	}
+	if len(got.pastedContents) != 1 || got.pastedContents[1].Content != pasted {
+		t.Fatalf("pastedContents = %#v, want original paste stored", got.pastedContents)
+	}
+	if expanded := got.expandInputAttachments(got.input.Value()); expanded != pasted {
+		t.Fatalf("expanded = %q, want original paste", expanded)
+	}
+}
+
+func TestPastedShortTextStaysInline(t *testing.T) {
+	input := textinput.New()
+	m := model{input: input, cwd: t.TempDir(), width: 100, height: 30}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("短文本"), Paste: true})
+	got := next.(model)
+
+	if got.input.Value() != "短文本" {
+		t.Fatalf("input = %q, want short paste inline", got.input.Value())
+	}
+	if len(got.pastedContents) != 0 {
+		t.Fatalf("pastedContents = %#v, want empty", got.pastedContents)
+	}
+}
+
+func TestImageAttachmentUsesCompactPlaceholder(t *testing.T) {
+	input := textinput.New()
+	m := model{input: input, cwd: t.TempDir(), width: 100, height: 30}
+	imagePath := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(imagePath, []byte("png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m.addImageAttachment(imagePath, "image/png")
+
+	if m.input.Value() != "[图#1]" {
+		t.Fatalf("input = %q, want compact image ref", m.input.Value())
+	}
+	if len(m.pastedContents) != 1 || m.pastedContents[1].Path != imagePath {
+		t.Fatalf("pastedContents = %#v, want image path stored", m.pastedContents)
+	}
+	expanded := m.expandInputAttachments(m.input.Value())
+	if !strings.Contains(expanded, imagePath) || !strings.Contains(expanded, "图片 #1") {
+		t.Fatalf("expanded = %q, want image path detail", expanded)
+	}
+}
+
+func TestCtrlVPastesClipboardImageAsCompactPlaceholder(t *testing.T) {
+	old := readClipboardImageFunc
+	defer func() { readClipboardImageFunc = old }()
+	imagePath := filepath.Join(t.TempDir(), "clip.png")
+	readClipboardImageFunc = func(context.Context, string) (string, string, error) {
+		return imagePath, "image/png", nil
+	}
+	input := textinput.New()
+	m := model{input: input, cwd: t.TempDir(), width: 100, height: 30}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
+	got := next.(model)
+	if cmd == nil {
+		t.Fatal("Ctrl+V command is nil, want clipboard image read")
+	}
+	msg := cmd()
+	next, _ = got.Update(msg)
+	got = next.(model)
+
+	if got.input.Value() != "[图#1]" {
+		t.Fatalf("input = %q, want compact image ref", got.input.Value())
+	}
+	if len(got.pastedContents) != 1 || got.pastedContents[1].Path != imagePath {
+		t.Fatalf("pastedContents = %#v, want clipboard image path stored", got.pastedContents)
+	}
+}
+
+func TestClearInputDraftClearsPastedAttachments(t *testing.T) {
+	input := textinput.New()
+	m := model{input: input, pastedContents: map[int]pastedContent{1: {ID: 1, Type: pastedContentText, Content: "hello"}}}
+	m.input.SetValue("[Paste #1 · 1 line]")
+
+	m.clearInputDraft()
+
+	if m.input.Value() != "" {
+		t.Fatalf("input = %q, want empty", m.input.Value())
+	}
+	if len(m.pastedContents) != 0 {
+		t.Fatalf("pastedContents = %#v, want cleared", m.pastedContents)
 	}
 }
 
@@ -357,6 +459,7 @@ func TestPendingOptionsUseUpDownBeforeViewportScroll(t *testing.T) {
 }
 
 func TestRunEventsRenderGradientStatusRows(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
 	start := eventTranscriptItem(agentevent.Event{Type: agentevent.TypeAgentRunStarted})
 	done := eventTranscriptItem(agentevent.Event{Type: agentevent.TypeAgentRunCompleted})
 	if start.role != "run-active" || done.role != "run-done" {
@@ -366,11 +469,12 @@ func TestRunEventsRenderGradientStatusRows(t *testing.T) {
 	if !strings.Contains(got, "Aligning") || !strings.Contains(got, "Delivered") {
 		t.Fatalf("render run events = %q, want run labels", got)
 	}
-	if !strings.Contains(got, "[li  ]") || !strings.Contains(got, "[ ok ]") {
-		t.Fatalf("render run events = %q, want Xiaoli ASCII glyphs", got)
+	if !strings.Contains(got, "(^_^)") || !strings.Contains(got, "(ok)") {
+		t.Fatalf("render run events = %q, want kaomoji status glyphs", got)
 	}
-	if !strings.Contains(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 1), "\x1b[") {
-		t.Fatalf("render run event missing ANSI shimmer")
+	shimmer := renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 4)
+	if !strings.Contains(shimmer, "\x1b[") {
+		t.Fatalf("render run event missing ANSI shimmer: %q", shimmer)
 	}
 	first := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 0))
 	second := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 1))
@@ -378,8 +482,8 @@ func TestRunEventsRenderGradientStatusRows(t *testing.T) {
 		t.Fatalf("loading frame changed too quickly: %q / %q", first, second)
 	}
 	laterGlyph := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 4))
-	if !strings.Contains(first, "[li  ]") || !strings.Contains(laterGlyph, "[l i ]") {
-		t.Fatalf("loading frames = %q / %q, want slower moving i glyph", first, laterGlyph)
+	if !strings.Contains(first, "(^_^)") || !strings.Contains(laterGlyph, "(^_^)") {
+		t.Fatalf("loading frames = %q / %q, want stable kaomoji glyph", first, laterGlyph)
 	}
 	later := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 32))
 	if !strings.Contains(later, "Syncing context") {
@@ -430,7 +534,7 @@ func TestToolEventsRenderWorkplaceStatusRows(t *testing.T) {
 			t.Fatalf("tool render = %q, missing %q", got, want)
 		}
 	}
-	for _, want := range []string{"[run ]", "[ ok ]", "[ x  ]"} {
+	for _, want := range []string{"(._.)", "(ok)", "(>_<)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("tool render = %q, missing glyph %q", got, want)
 		}
@@ -458,41 +562,195 @@ func TestDoubleTabOpensWorkspacePicker(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreUpsertsRecentProjects(t *testing.T) {
+func TestWorkspacePickerTabSwitchesToNextWorkspace(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "workspaces.json")
+	current := t.TempDir()
+	nextDir := t.TempDir()
+	if err := recordWorkspaceSession(statePath, workspaceItem{CWD: nextDir, SessionID: "next-session", Title: "Next", LastOpened: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatalf("upsert next workspace error = %v", err)
+	}
+	m := model{
+		input:              textinput.New(),
+		cwd:                current,
+		sessionID:          "current-session",
+		width:              100,
+		height:             30,
+		workspaceStatePath: statePath,
+	}
+	m.items = []transcriptItem{{role: "user", text: "old workspace transcript"}}
+	m.syncViewport(true)
+	nextModel, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got := nextModel.(model)
+	nextModel, _ = got.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got = nextModel.(model)
+	if got.workspacePicker == nil {
+		t.Fatalf("second Tab did not open workspace picker")
+	}
+
+	nextModel, cmd := got.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got = nextModel.(model)
+	if cmd != nil {
+		t.Fatalf("picker Tab returned command, want nil")
+	}
+	if got.workspacePicker != nil {
+		t.Fatalf("picker Tab left workspace picker open")
+	}
+	if !samePath(got.cwd, nextDir) || got.sessionID != "next-session" {
+		t.Fatalf("picker Tab cwd/session = %q/%q, want %q/next-session", got.cwd, got.sessionID, nextDir)
+	}
+	if len(got.items) == 0 || !strings.Contains(got.items[len(got.items)-1].text, "Switched to") {
+		t.Fatalf("items = %#v, want switch notice", got.items)
+	}
+	if view := got.viewport.View(); strings.Contains(view, "old workspace transcript") {
+		t.Fatalf("viewport still shows old workspace transcript: %q", view)
+	}
+}
+
+func TestNewModelDoesNotResumeWorkspaceSessionWithoutFlag(t *testing.T) {
+	dataDir := t.TempDir()
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	statePath := workspaceStatePath(dataDir)
+	if err := recordWorkspaceSession(statePath, workspaceItem{CWD: cwd, SessionID: "recorded-session", Title: "Recorded", LastOpened: time.Now()}); err != nil {
+		t.Fatalf("upsert workspace error = %v", err)
+	}
+	app := &localapp.App{
+		Config: localconfig.Config{DataDir: dataDir},
+		Bus:    agentevent.NewBus(),
+	}
+
+	m := newModel(app, "", "")
+
+	if m.sessionID != "" {
+		t.Fatalf("newModel sessionID = %q, want empty without -s", m.sessionID)
+	}
+	if len(m.items) != 1 || m.items[0].role != "banner" {
+		t.Fatalf("items = %#v, want welcome banner", m.items)
+	}
+	item, ok := findWorkspace(statePath, cwd)
+	if !ok {
+		t.Fatalf("workspace %q not recorded", cwd)
+	}
+	if item.SessionID != "recorded-session" {
+		t.Fatalf("recorded session = %q, want existing recorded-session preserved", item.SessionID)
+	}
+}
+
+func TestSwitchWorkspaceWithoutRecordedSessionClearsActiveSession(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "workspaces.json")
+	current := t.TempDir()
+	nextDir := t.TempDir()
+	m := model{
+		input:              textinput.New(),
+		cwd:                current,
+		sessionID:          "current-session",
+		width:              100,
+		height:             30,
+		workspaceStatePath: statePath,
+		items:              []transcriptItem{{role: "user", text: "old workspace transcript"}},
+	}
+	m.syncViewport(true)
+
+	m.switchWorkspace(workspaceItem{CWD: nextDir, Title: "Next"})
+
+	if !samePath(m.cwd, nextDir) || m.sessionID != "" {
+		t.Fatalf("switchWorkspace cwd/session = %q/%q, want %q/empty", m.cwd, m.sessionID, nextDir)
+	}
+	if view := m.viewport.View(); strings.Contains(view, "old workspace transcript") {
+		t.Fatalf("viewport still shows old workspace transcript: %q", view)
+	}
+}
+
+func TestWorkspaceStoreRecordsRecentSessions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "workspaces.json")
-	first := workspaceItem{CWD: "/tmp/one", SessionID: "s1", Title: "one", LastOpened: time.Now().Add(-time.Hour)}
-	second := workspaceItem{CWD: "/tmp/two", SessionID: "s2", Title: "two", LastOpened: time.Now()}
-	if err := upsertWorkspace(path, first); err != nil {
-		t.Fatalf("upsert first error = %v", err)
+	project := t.TempDir()
+	base := time.Now()
+	for i, sid := range []string{"s1", "s2", "s3", "s4"} {
+		if err := recordWorkspaceSession(path, workspaceItem{CWD: project, SessionID: sid, Title: sid, LastOpened: base.Add(time.Duration(i) * time.Minute)}); err != nil {
+			t.Fatalf("record %s error = %v", sid, err)
+		}
 	}
-	if err := upsertWorkspace(path, second); err != nil {
-		t.Fatalf("upsert second error = %v", err)
+	if err := recordWorkspaceSession(path, workspaceItem{CWD: project, LastOpened: base.Add(time.Hour)}); err != nil {
+		t.Fatalf("record empty session error = %v", err)
 	}
-	items := loadWorkspaces(path)
-	if len(items) != 2 {
-		t.Fatalf("len(loadWorkspaces) = %d, want 2", len(items))
+	items := loadWorkspaceSessions(path)
+	if len(items) != 3 {
+		t.Fatalf("len(loadWorkspaceSessions) = %d, want 3", len(items))
 	}
-	if items[0].CWD != "/tmp/two" || items[1].CWD != "/tmp/one" {
-		t.Fatalf("workspace order = %#v, want newest first", items)
+	for i, want := range []string{"s4", "s3", "s2"} {
+		if items[i].SessionID != want {
+			t.Fatalf("items[%d].SessionID = %q, want %q; items=%#v", i, items[i].SessionID, want, items)
+		}
 	}
-	first.SessionID = "s3"
-	first.LastOpened = time.Now().Add(time.Hour)
-	if err := upsertWorkspace(path, first); err != nil {
-		t.Fatalf("upsert existing error = %v", err)
+}
+
+func TestWorkspaceStoreKeepsSessionInOnlyNewestProject(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "workspaces.json")
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+	base := time.Now()
+	if err := recordWorkspaceSession(path, workspaceItem{CWD: projectA, SessionID: "shared-session", Title: "A", LastOpened: base}); err != nil {
+		t.Fatalf("record project A error = %v", err)
 	}
-	items = loadWorkspaces(path)
-	if len(items) != 2 || items[0].CWD != "/tmp/one" || items[0].SessionID != "s3" {
-		t.Fatalf("updated workspaces = %#v", items)
+	if err := recordWorkspaceSession(path, workspaceItem{CWD: projectB, SessionID: "shared-session", Title: "B", LastOpened: base.Add(time.Minute)}); err != nil {
+		t.Fatalf("record project B error = %v", err)
+	}
+
+	items := loadWorkspaceSessions(path)
+	if len(items) != 1 {
+		t.Fatalf("len(loadWorkspaceSessions) = %d, want 1: %#v", len(items), items)
+	}
+	if !samePath(items[0].CWD, projectB) || items[0].SessionID != "shared-session" {
+		t.Fatalf("session owner = %q/%q, want projectB/shared-session", items[0].CWD, items[0].SessionID)
+	}
+}
+
+func TestWorkspacePickerSwitchDoesNotPersistEmptySession(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "workspaces.json")
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+	t.Chdir(projectA)
+	if err := recordWorkspaceSession(statePath, workspaceItem{CWD: projectA, SessionID: "session-a", Title: "A", LastOpened: time.Now()}); err != nil {
+		t.Fatalf("record project A error = %v", err)
+	}
+	m := model{
+		input:              textinput.New(),
+		cwd:                projectA,
+		sessionID:          "session-a",
+		width:              100,
+		height:             30,
+		workspaceStatePath: statePath,
+	}
+
+	m.switchWorkspace(workspaceItem{CWD: projectB, Title: "B"})
+	m.switchWorkspace(workspaceItem{CWD: projectA, SessionID: "session-a", Title: "A"})
+	m.switchWorkspace(workspaceItem{CWD: projectB, Title: "B"})
+
+	if !samePath(m.cwd, projectB) || m.sessionID != "" {
+		t.Fatalf("switch back to empty project cwd/session = %q/%q, want %q/empty", m.cwd, m.sessionID, projectB)
+	}
+	if got, _ := os.Getwd(); !samePath(got, projectB) {
+		t.Fatalf("process cwd = %q, want %q", got, projectB)
+	}
+	for _, item := range loadWorkspaceSessions(statePath) {
+		if samePath(item.CWD, projectB) {
+			t.Fatalf("empty project was persisted in session list: %#v", item)
+		}
 	}
 }
 
 func TestSwitchWorkspaceRestoresSession(t *testing.T) {
 	dir := t.TempDir()
+	start := t.TempDir()
+	t.Chdir(start)
 	m := model{cwd: t.TempDir(), input: textinput.New(), workspaceStatePath: filepath.Join(t.TempDir(), "workspaces.json")}
 	item := workspaceItem{CWD: dir, SessionID: "session-1", Title: "Project"}
 	m.switchWorkspace(item)
-	if m.cwd != dir || m.sessionID != "session-1" {
+	if !samePath(m.cwd, dir) || m.sessionID != "session-1" {
 		t.Fatalf("switchWorkspace cwd/session = %q/%q", m.cwd, m.sessionID)
+	}
+	if got, _ := os.Getwd(); !samePath(got, dir) {
+		t.Fatalf("process cwd = %q, want %q", got, dir)
 	}
 	if len(m.items) == 0 || !strings.Contains(m.items[len(m.items)-1].text, "Switched to") {
 		t.Fatalf("items = %#v, want switch notice", m.items)
@@ -681,12 +939,16 @@ func TestHandleLocalCDChangesCWD(t *testing.T) {
 	if err := os.Mkdir(child, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Chdir(root)
 	m := model{cwd: root, gitStatus: "old", input: textinput.New()}
 	if !m.handleLocalCommand("/cd child") {
 		t.Fatalf("handleLocalCommand(/cd child) = false, want true")
 	}
-	if m.cwd != child {
+	if !samePath(m.cwd, child) {
 		t.Fatalf("cwd = %q, want %q", m.cwd, child)
+	}
+	if got, _ := os.Getwd(); !samePath(got, child) {
+		t.Fatalf("process cwd = %q, want %q", got, child)
 	}
 	if len(m.items) == 0 || !strings.Contains(m.items[len(m.items)-1].text, child) {
 		t.Fatalf("items = %#v, want cd confirmation", m.items)
