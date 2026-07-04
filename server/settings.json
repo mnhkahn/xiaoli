@@ -132,6 +132,9 @@
     "max_steps": 8,
     "timeout": "600s"
   },
+  "reminder": {
+    "default_channel": "lark"
+  },
   "cron": {
     "study_monitor": {
       "name": "学习状态监控",
