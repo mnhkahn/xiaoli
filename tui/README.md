@@ -70,11 +70,10 @@ opens a full-screen Git changes browser. `/commit` generates a commit message
 from the current staged diff; if nothing is staged, it stages the provided file
 arguments, or falls back to `git add .`.
 
-The TUI leaves mouse selection with the terminal by default, so drag-select
-copying works normally. Press `Ctrl+O` (`⌃O`) to temporarily enable mouse mode
-for wheel scrolling and mouse interactions, then press `Esc` or `Ctrl+O` to
-return to copy-friendly selection. Press `Ctrl+T` (`⌃T`) to open `/tree`,
-`Ctrl+K` (`⌃K`) to open `/diff`, and `Ctrl+S` (`⌃S`) to run Git sync.
+The TUI handles mouse wheel scrolling inside the transcript. Drag over visible
+transcript text to select it; releasing the mouse copies the selected text to
+the clipboard, and `Esc` clears the selection. Press `Ctrl+T` (`⌃T`) to open
+`/tree`, `Ctrl+K` (`⌃K`) to open `/diff`, and `Ctrl+S` (`⌃S`) to run Git sync.
 Press `Tab` twice quickly to open the recent-project switcher. The switcher
 stores recent TUI workspaces in `~/.xiaoli/state/tui_workspaces.json`; selecting
 a project switches cwd, restores that project's session history when available,

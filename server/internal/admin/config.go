@@ -22,6 +22,7 @@ const (
 	defaultGoLLMTimeoutSeconds      = 240
 	defaultAgentRunTimeoutSeconds   = 600
 	defaultA2ARequestTimeoutSeconds = 600
+	defaultReminderChannel          = "lark"
 )
 
 type Config struct {
@@ -79,6 +80,7 @@ type Config struct {
 	AgentFileRoots          []string
 	ChatReact               agentworkflow.AgentSpec
 	Workflows               []agentworkflow.Definition
+	ReminderDefaultChannel  string
 	LarkWebhookURL          string
 	LarkAppID               string
 	LarkAppToken            string
@@ -247,6 +249,7 @@ func LoadConfig() Config {
 		AgentFileRoots:          agentbuiltin.FileAgentRoots(),
 		ChatReact:               parseChatReact(settings.ChatReact),
 		Workflows:               parseWorkflows(settings.Workflows),
+		ReminderDefaultChannel:  settings.reminderDefaultChannel(),
 		LarkWebhookURL:          env("LARK_BOT_WEBHOOK_URL", ""),
 		LarkAppID:               env("LARK_APP_ID", ""),
 		LarkAppToken:            env("LARK_APP_TOKEN", ""),
@@ -325,9 +328,29 @@ type settingsConfig struct {
 	MCPServers []settingsMCPServer            `json:"mcp_servers"`
 	Tools      settingsTools                  `json:"tools"`
 	Storage    settingsStorage                `json:"storage"`
+	Reminder   settingsReminder               `json:"reminder"`
 	ChatReact  settingsWorkflowAgent          `json:"chat_react"`
 	Workflows  map[string]settingsWorkflowDef `json:"cron"`
 	A2A        settingsA2AConfig              `json:"a2a"`
+}
+
+type settingsReminder struct {
+	DefaultChannel string `json:"default_channel"`
+}
+
+func normalizeReminderDeliveryChannel(channel, fallback string) string {
+	switch strings.TrimSpace(strings.ToLower(channel)) {
+	case "lark", "lark_text":
+		return "lark"
+	case "wechat", "wechat_text":
+		return "wechat"
+	case "esp32", "device", "device_voice":
+		return "esp32"
+	case "":
+		return fallback
+	default:
+		return fallback
+	}
 }
 
 type settingsStorage struct {
@@ -761,6 +784,10 @@ func (s settingsConfig) webFetchEnabled() bool {
 		return true
 	}
 	return *s.Tools.WebFetch.Enabled
+}
+
+func (s settingsConfig) reminderDefaultChannel() string {
+	return normalizeReminderDeliveryChannel(s.Reminder.DefaultChannel, defaultReminderChannel)
 }
 
 func (s settingsConfig) storageConfig() settingsStorage {

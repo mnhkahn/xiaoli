@@ -49,6 +49,35 @@ func TestPrepareGitCmsgDiffKeepsExistingStagedSet(t *testing.T) {
 	}
 }
 
+func TestRunGitCombinedDisplaysChinesePaths(t *testing.T) {
+	if _, err := runGitCombined(t.TempDir(), "version"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	mustRunGit(t, dir, "init")
+	mustRunGit(t, dir, "config", "core.quotepath", "true")
+
+	path := filepath.Join(dir, "docs", "古诗文.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("# 古诗文\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunGit(t, dir, "add", ".")
+
+	stat, err := runGitCombined(dir, "diff", "--cached", "--stat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stat, "古诗文.md") {
+		t.Fatalf("git stat = %q, want Chinese path", stat)
+	}
+	if strings.Contains(stat, `\345`) || strings.Contains(stat, `\346`) || strings.Contains(stat, `\347`) {
+		t.Fatalf("git stat = %q, should not contain octal-escaped Chinese path", stat)
+	}
+}
+
 func TestSanitizeCommitMessagePreservesBody(t *testing.T) {
 	input := "```text\nfeat(agent): 放宽模型调用超时\n\n1. 将 LLM HTTP 超时调整为 240 秒\n2. 将 A2A 外层超时调整为 600 秒\n```\n"
 

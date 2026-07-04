@@ -35,6 +35,7 @@ func testConfig() Config {
 		SkillMaxBytes:           1024 * 1024,
 		SkillExecTimeout:        time.Second,
 		SkillExecMaxOutputBytes: 1024 * 1024,
+		ReminderDefaultChannel:  defaultReminderChannel,
 		Now: func() time.Time {
 			return time.Date(2026, 6, 30, 12, 0, 0, 0, time.FixedZone("CST", 8*3600))
 		},

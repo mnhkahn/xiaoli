@@ -769,7 +769,8 @@ func readProjectFile(cwd, rel string, maxBytes int64) (string, error) {
 }
 
 func runGit(cwd string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	gitArgs := append([]string{"-c", "core.quotepath=false"}, args...)
+	cmd := exec.Command("git", gitArgs...)
 	cmd.Dir = cwd
 	out, err := cmd.CombinedOutput()
 	return string(out), err

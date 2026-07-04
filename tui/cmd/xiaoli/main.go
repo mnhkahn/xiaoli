@@ -12,12 +12,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -48,8 +51,9 @@ const (
 )
 
 type transcriptItem struct {
-	role string
-	text string
+	role  string
+	text  string
+	frame int
 }
 
 type slashSuggestion = slash.Suggestion
@@ -77,6 +81,24 @@ type gitSyncDoneMsg struct {
 	action string
 	output string
 	err    error
+}
+
+type selectionCopyDoneMsg struct {
+	text string
+	err  error
+}
+
+type selectionPoint struct {
+	x int
+	y int
+}
+
+type transcriptSelection struct {
+	active   bool
+	dragging bool
+	anchor   selectionPoint
+	focus    selectionPoint
+	text     string
 }
 
 type updateCheckDoneMsg struct {
@@ -165,28 +187,35 @@ type model struct {
 	pendingGitCmsg     gitCmsgPending
 	explorer           *tuiExplorer
 	mouseEnabled       bool
-	copyMode           bool
+	selection          transcriptSelection
 	quitting           bool
 }
 
 var (
-	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86"))
-	userStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75"))
-	agentStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("114"))
-	shellStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))
-	eventStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-	errStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	hintStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	boxStyle        = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
-	sideStyle       = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
-	gitOKStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Bold(true)
-	gitPushStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
-	gitPullStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Bold(true)
-	gitDirtyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
-	gitActionStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
-	gitLoadingStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true)
-	gitResultStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Bold(true)
-	gitFailedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
+	titleStyle         = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86"))
+	userStyle          = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75"))
+	agentStyle         = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("114"))
+	shellStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))
+	eventStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	errStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	hintStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	boxStyle           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
+	sideStyle          = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
+	gitOKStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Bold(true)
+	gitPushStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
+	gitPullStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("213")).Bold(true)
+	gitDirtyStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Bold(true)
+	gitActionStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
+	gitLoadingStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("51")).Bold(true)
+	gitResultStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Bold(true)
+	gitFailedStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
+	ansiEscapeRE       = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+	mouseSGRFragmentRE = regexp.MustCompile(`(?:\x1b)?\[<\d+;\d+;\d+[Mm]`)
+)
+
+const (
+	selectionStartSeq = "\x1b[7m"
+	selectionEndSeq   = "\x1b[27m"
 )
 
 func main() {
@@ -244,8 +273,7 @@ func main() {
 		return
 	}
 
-	defer disableBasicMouseReporting()
-	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "xiaoli: %v\n", err)
@@ -349,7 +377,7 @@ func newModel(app *localapp.App, resumeSessionID string, logPath string) model {
 		status:             "idle",
 		streamingIndex:     -1,
 		items:              items,
-		mouseEnabled:       false,
+		mouseEnabled:       true,
 	}
 }
 
@@ -413,19 +441,6 @@ func renderFigletLogo() string {
 	return strings.Join(out, "\n")
 }
 
-const (
-	enableBasicMouseSeq  = "\x1b[?1000h\x1b[?1006h"
-	disableBasicMouseSeq = "\x1b[?1000l\x1b[?1006l"
-)
-
-func enableBasicMouseReporting() {
-	_, _ = fmt.Fprint(os.Stdout, enableBasicMouseSeq)
-}
-
-func disableBasicMouseReporting() {
-	_, _ = fmt.Fprint(os.Stdout, disableBasicMouseSeq)
-}
-
 func figletLogoLines() []string {
 	return []string{
 		"  ___ _   _  ___  __ _ _ __ ___      ___ ___  _ __ ___",
@@ -471,12 +486,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.syncViewport(false)
 		return m, nil
 	case tea.MouseMsg:
-		if !m.mouseEnabled || m.copyMode {
+		if !m.mouseEnabled {
 			return m, nil
 		}
 		if m.explorer != nil {
 			m.explorer.handleMouse(msg)
 			return m, nil
+		}
+		if handled, cmd := m.handleTranscriptSelectionMouse(msg); handled {
+			return m, cmd
 		}
 		if m.handleGitSyncClick(msg) {
 			return m, tea.Batch(startGitSync(m.cwd, m.gitSync), tickGitSyncSpinner())
@@ -488,21 +506,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		return m, vpCmd
 	case tea.KeyMsg:
-		if m.copyMode {
-			switch msg.String() {
-			case "ctrl+c":
-				m.quitting = true
-				return m, tea.Quit
-			case "esc", "ctrl+o":
-				m.copyMode = false
-				m.mouseEnabled = false
-				m.status = "idle"
-				disableBasicMouseReporting()
-				return m, nil
-			default:
-				return m, nil
-			}
-		}
 		if m.workspacePicker != nil {
 			item, selected, closePicker := m.workspacePicker.handleKey(msg)
 			if selected {
@@ -528,6 +531,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitting = true
 			return m, tea.Quit
 		case "esc":
+			if m.selection.active || m.selection.dragging {
+				m.selection = transcriptSelection{}
+				m.status = "idle"
+				return m, nil
+			}
 			if m.busy {
 				if m.activeCancel != nil {
 					m.activeCancel()
@@ -543,10 +551,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clearInputDraft()
 			return m, nil
 		case "ctrl+o":
-			m.copyMode = true
-			m.mouseEnabled = true
-			m.status = "mouse mode"
-			enableBasicMouseReporting()
 			return m, nil
 		case "ctrl+k":
 			if m.busy || m.hasPendingOptions() {
@@ -744,9 +748,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.SetValue("")
 				m.busy = true
 				m.status = "commit"
-				m.items = append(m.items, transcriptItem{role: "event", text: "commit started"})
+				m.appendRunActiveEvent("Preparing commit")
 				m.syncViewport(true)
-				return m, cmd
+				return m, tea.Batch(cmd, tickRunPulse())
 			}
 			if cmd := m.handleSlash(text); cmd.handled {
 				m.input.SetValue("")
@@ -887,6 +891,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gitCmsgPrepareMsg:
 		m.busy = false
 		m.status = "idle"
+		m.runPulseActive = false
 		if m.activeCancel != nil {
 			m.activeCancel()
 			m.activeCancel = nil
@@ -900,6 +905,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshGitSync()
 		if msg.err != nil {
 			m.lastError = msg.err.Error()
+			m.items = append(m.items, transcriptItem{role: "run-failed", text: "Commit blocked", frame: m.runPulseFrame})
 			m.items = append(m.items, transcriptItem{role: "error", text: msg.err.Error()})
 			m.syncViewport(true)
 			return m, nil
@@ -908,12 +914,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingQuestion = formatGitCmsgQuestion(msg)
 		m.pendingOptions = []string{"提交并推送", "确认提交", "重新生成", "取消操作"}
 		m.pendingChoice = 0
+		m.items = append(m.items, transcriptItem{role: "run-done", text: "Commit plan ready", frame: m.runPulseFrame})
 		m.items = append(m.items, transcriptItem{role: "assistant", text: m.pendingQuestion})
 		m.syncViewport(true)
 		return m, nil
 	case gitCmsgCommitMsg:
 		m.busy = false
 		m.status = "idle"
+		m.runPulseActive = false
 		if m.activeCancel != nil {
 			m.activeCancel()
 			m.activeCancel = nil
@@ -931,12 +939,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingChoice = 0
 		if msg.err != nil {
 			m.lastError = msg.err.Error()
+			m.items = append(m.items, transcriptItem{role: "run-failed", text: "Commit blocked", frame: m.runPulseFrame})
 			m.items = append(m.items, transcriptItem{role: "error", text: formatGitCmsgCommitError(msg.err, msg.output)})
 		} else {
 			doneText := "提交完成。"
 			if msg.push {
 				doneText = "提交并推送完成。"
 			}
+			m.items = append(m.items, transcriptItem{role: "run-done", text: "Commit delivered", frame: m.runPulseFrame})
 			m.items = append(m.items, transcriptItem{role: "system", text: doneText + "\n" + strings.TrimSpace(msg.output)})
 		}
 		m.syncViewport(true)
@@ -970,6 +980,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.gitSyncFeedback.Frame++
 		return m, tickGitSyncSpinner()
+	case selectionCopyDoneMsg:
+		if msg.err != nil {
+			m.status = "copy failed"
+			m.lastError = msg.err.Error()
+			return m, nil
+		}
+		if strings.TrimSpace(msg.text) != "" {
+			m.status = fmt.Sprintf("copied %d chars", len([]rune(msg.text)))
+		}
+		return m, nil
 	case updateCheckDoneMsg:
 		m.updateInfo = msg.info
 		m.syncViewport(false)
@@ -983,10 +1003,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickRunPulse()
 	case eventMsg:
 		item := eventTranscriptItem(msg.event)
+		item.frame = m.runPulseFrame
 		switch item.role {
 		case "run-active":
 			m.runPulseActive = true
 			m.runPulseFrame = 0
+			item.frame = 0
 			m.items = append(m.items, item)
 			m.refreshContextUsage()
 			m.syncViewport(true)
@@ -1004,6 +1026,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.viewport, vpCmd = m.viewport.Update(msg)
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	if cleaned := stripMouseSGRFragments(m.input.Value()); cleaned != m.input.Value() {
+		m.input.SetValue(cleaned)
+	}
 	return m, tea.Batch(vpCmd, cmd)
 }
 
@@ -1026,6 +1051,9 @@ func (m model) View() string {
 
 	m.syncViewport(false)
 	transcript := m.viewport.View()
+	if m.selection.active || m.selection.dragging {
+		transcript = renderTranscriptSelectionOverlay(strings.Split(transcript, "\n"), m.selection, mainW)
+	}
 	top := boxStyle.Width(mainW).Height(bodyH).Render(transcript)
 	status := renderStatusBar(m, max(20, promptW+boxStyle.GetHorizontalFrameSize()))
 
@@ -1101,10 +1129,15 @@ func renderTranscriptContent(items []transcriptItem, width int) string {
 func renderTranscriptContentWithFrame(items []transcriptItem, width int, frame int) string {
 	lines := make([]string, 0, len(items)*2)
 	textWidth := max(20, width-2)
-	for _, item := range items {
+	latestActive := latestActiveEventIndex(items)
+	for i, item := range items {
 		var plain string
 		style := eventStyle
 		custom := false
+		itemFrame := item.frame
+		if i == latestActive {
+			itemFrame = frame
+		}
 		switch item.role {
 		case "user":
 			plain = wrapWithPrefix("› ", item.text, textWidth)
@@ -1119,22 +1152,34 @@ func renderTranscriptContentWithFrame(items []transcriptItem, width int, frame i
 			plain = wrapWithPrefix("· ", item.text, textWidth)
 			style = eventStyle
 		case "run-active":
-			plain = renderRunEventLine(activeRunStatus(frame), width, frame, runEventActive)
+			label := item.text
+			if strings.TrimSpace(label) == "" {
+				label = activeRunStatus(itemFrame)
+			}
+			plain = renderRunEventLine(label, width, itemFrame, runEventActive)
 			custom = true
 		case "run-done":
-			plain = renderRunEventLine("Delivered", width, frame, runEventDone)
+			label := item.text
+			if strings.TrimSpace(label) == "" {
+				label = "Delivered"
+			}
+			plain = renderRunEventLine(label, width, itemFrame, runEventDone)
 			custom = true
 		case "run-failed":
-			plain = renderRunEventLine("Blocked", width, frame, runEventFailed)
+			label := item.text
+			if strings.TrimSpace(label) == "" {
+				label = "Blocked"
+			}
+			plain = renderRunEventLine(label, width, itemFrame, runEventFailed)
 			custom = true
 		case "tool-active":
-			plain = renderRunEventLine(item.text, width, frame, runEventToolActive)
+			plain = renderRunEventLine(item.text, width, itemFrame, runEventToolActive)
 			custom = true
 		case "tool-done":
-			plain = renderRunEventLine(item.text, width, frame, runEventToolDone)
+			plain = renderRunEventLine(item.text, width, itemFrame, runEventToolDone)
 			custom = true
 		case "tool-failed":
-			plain = renderRunEventLine(item.text, width, frame, runEventToolFailed)
+			plain = renderRunEventLine(item.text, width, itemFrame, runEventToolFailed)
 			custom = true
 		case "error":
 			plain = wrapWithPrefix("error: ", item.text, textWidth)
@@ -1156,6 +1201,16 @@ func renderTranscriptContentWithFrame(items []transcriptItem, width int, frame i
 		lines = lines[:len(lines)-1]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func latestActiveEventIndex(items []transcriptItem) int {
+	for i := len(items) - 1; i >= 0; i-- {
+		switch items[i].role {
+		case "run-active", "tool-active":
+			return i
+		}
+	}
+	return -1
 }
 
 type runEventState int
@@ -1206,34 +1261,60 @@ func activeRunStatus(frame int) string {
 	if len(runStatusPhrases) == 0 {
 		return "Working"
 	}
-	return runStatusPhrases[positiveMod(frame/12, len(runStatusPhrases))]
+	return runStatusPhrases[positiveMod(frame/32, len(runStatusPhrases))]
 }
 
 func renderRunEventLine(label string, width int, frame int, state runEventState) string {
 	prefix := "[li  ]"
-	colors := []lipgloss.Color{"208", "214", "220", "226", "221", "215", "209"}
+	colors := []lipgloss.Color{
+		lipgloss.Color("#d77757"),
+		lipgloss.Color("#eb9f7f"),
+		lipgloss.Color("#ffc107"),
+		lipgloss.Color("#eb9f7f"),
+	}
 	switch state {
 	case runEventActive:
 		if len(runLoadingFrames) > 0 {
-			prefix = runLoadingFrames[positiveMod(frame, len(runLoadingFrames))]
+			prefix = runLoadingFrames[positiveMod(frame/4, len(runLoadingFrames))]
 		}
 	case runEventDone:
-		prefix = "[ok  ]"
-		colors = []lipgloss.Color{"76", "82", "118", "154", "190"}
+		prefix = "[ ok ]"
+		colors = []lipgloss.Color{
+			lipgloss.Color("#4eba65"),
+			lipgloss.Color("#7fdc94"),
+			lipgloss.Color("#4eba65"),
+		}
 	case runEventFailed:
-		prefix = "[x   ]"
-		colors = []lipgloss.Color{"196", "203", "209", "215", "209"}
+		prefix = "[ x  ]"
+		colors = []lipgloss.Color{
+			lipgloss.Color("#ff6b80"),
+			lipgloss.Color("#ff9aa8"),
+			lipgloss.Color("#d77757"),
+		}
 	case runEventToolActive:
 		prefix = "[run ]"
-		colors = []lipgloss.Color{"37", "43", "79", "115", "151", "115", "79"}
+		colors = []lipgloss.Color{
+			lipgloss.Color("#b1b9f9"),
+			lipgloss.Color("#cfd7ff"),
+			lipgloss.Color("#93a5ff"),
+			lipgloss.Color("#cfd7ff"),
+		}
 	case runEventToolDone:
-		prefix = "[ok  ]"
-		colors = []lipgloss.Color{"70", "76", "112", "148", "184"}
+		prefix = "[ ok ]"
+		colors = []lipgloss.Color{
+			lipgloss.Color("#4eba65"),
+			lipgloss.Color("#7fdc94"),
+			lipgloss.Color("#b1b9f9"),
+		}
 	case runEventToolFailed:
-		prefix = "[x   ]"
-		colors = []lipgloss.Color{"197", "203", "209", "215", "203"}
+		prefix = "[ x  ]"
+		colors = []lipgloss.Color{
+			lipgloss.Color("#ff6b80"),
+			lipgloss.Color("#ff9aa8"),
+			lipgloss.Color("#ffc107"),
+		}
 	default:
-		prefix = runLoadingFrames[positiveMod(frame, len(runLoadingFrames))]
+		prefix = runLoadingFrames[positiveMod(frame/4, len(runLoadingFrames))]
 	}
 	return shimmerText(fitDisplay(prefix+" "+label, width), colors, frame)
 }
@@ -1255,17 +1336,29 @@ func shimmerText(text string, colors []lipgloss.Color, offset int) string {
 	}
 	var b strings.Builder
 	runes := []rune(text)
-	span := len(colors)
-	lead := positiveMod(offset, len(runes)+span)
+	base := colors[0]
+	shimmer := colors[len(colors)-1]
+	if len(colors) > 1 {
+		shimmer = colors[1]
+	}
+	lead := positiveMod(offset/2, len(runes)+4)
 	for i, r := range runes {
 		if r == ' ' {
 			b.WriteRune(r)
 			continue
 		}
 		distance := absInt(i - lead)
-		colorIndex := max(0, span-1-distance)
-		color := colors[colorIndex]
-		b.WriteString(lipgloss.NewStyle().Foreground(color).Bold(true).Render(string(r)))
+		color := base
+		bold := false
+		if distance <= 1 {
+			color = shimmer
+			bold = true
+		}
+		style := lipgloss.NewStyle().Foreground(color)
+		if bold {
+			style = style.Bold(true)
+		}
+		b.WriteString(style.Render(string(r)))
 	}
 	return b.String()
 }
@@ -1291,17 +1384,29 @@ func renderTranscript(items []transcriptItem, width, height int, scroll int) str
 		case "event":
 			lines = append(lines, eventStyle.Render(wrapWithPrefix("· ", item.text, textWidth)))
 		case "run-active":
-			lines = append(lines, renderRunEventLine(activeRunStatus(0), width, 0, runEventActive))
+			label := item.text
+			if strings.TrimSpace(label) == "" {
+				label = activeRunStatus(item.frame)
+			}
+			lines = append(lines, renderRunEventLine(label, width, item.frame, runEventActive))
 		case "run-done":
-			lines = append(lines, renderRunEventLine("Delivered", width, 0, runEventDone))
+			label := item.text
+			if strings.TrimSpace(label) == "" {
+				label = "Delivered"
+			}
+			lines = append(lines, renderRunEventLine(label, width, item.frame, runEventDone))
 		case "run-failed":
-			lines = append(lines, renderRunEventLine("Blocked", width, 0, runEventFailed))
+			label := item.text
+			if strings.TrimSpace(label) == "" {
+				label = "Blocked"
+			}
+			lines = append(lines, renderRunEventLine(label, width, item.frame, runEventFailed))
 		case "tool-active":
-			lines = append(lines, renderRunEventLine(item.text, width, 0, runEventToolActive))
+			lines = append(lines, renderRunEventLine(item.text, width, item.frame, runEventToolActive))
 		case "tool-done":
-			lines = append(lines, renderRunEventLine(item.text, width, 0, runEventToolDone))
+			lines = append(lines, renderRunEventLine(item.text, width, item.frame, runEventToolDone))
 		case "tool-failed":
-			lines = append(lines, renderRunEventLine(item.text, width, 0, runEventToolFailed))
+			lines = append(lines, renderRunEventLine(item.text, width, item.frame, runEventToolFailed))
 		case "error":
 			lines = append(lines, errStyle.Render(wrapWithPrefix("error: ", item.text, textWidth)))
 		default:
@@ -1453,12 +1558,7 @@ func renderStatusBar(m model, width int) string {
 	if m.updateInfo.Available() {
 		stateParts = append(stateParts, "update "+m.updateInfo.Latest)
 	}
-	actionParts := []string{}
-	if m.copyMode {
-		actionParts = append(actionParts, "mouse mode", "wheel scroll", "esc copy", "⌃C quit")
-	} else {
-		actionParts = append(actionParts, "drag copy", "⌃O mouse", "Tab Tab projects", "⌃S sync", "⌃T tree", "⌃K diff", "/cd", "/upgrade", "⌃C quit")
-	}
+	actionParts := []string{"wheel scroll", "drag select copies", "Esc clear", "⌃S sync", "⌃T tree", "⌃K diff", "Tab Tab projects", "/cd", "/upgrade", "⌃C quit"}
 	lines := []string{
 		hintStyle.Render(fitDisplay(strings.Join(stateParts, " · "), bodyWidth)),
 		hintStyle.Render(fitDisplay(strings.Join(actionParts, " · "), bodyWidth)),
@@ -2001,19 +2101,12 @@ func sidebarFooterLines(m model, width int) []string {
 	}
 	m.gitStatus = git
 	lines = append(lines, truncateDisplay(gitSyncButtonLabel(m), width))
-	if m.copyMode {
-		lines = append(lines, "mouse mode")
-		lines = append(lines, "wheel scroll")
-		lines = append(lines, "esc back")
-		lines = append(lines, "⌃C quit")
-		return lines
-	}
-	lines = append(lines, "drag copy")
-	lines = append(lines, "⌃O mouse")
+	lines = append(lines, "wheel scroll")
+	lines = append(lines, "drag select copies")
+	lines = append(lines, "Esc clear")
 	lines = append(lines, "⌃S sync")
 	lines = append(lines, "⌃T tree")
 	lines = append(lines, "⌃K diff")
-	lines = append(lines, "⌃O copy")
 	lines = append(lines, "⌃Y copy")
 	lines = append(lines, "⌃C quit")
 	return lines
@@ -2026,6 +2119,276 @@ func isMouseWheel(msg tea.MouseMsg) bool {
 func (m model) mouseInMainViewport(msg tea.MouseMsg) bool {
 	mainW, _, bodyH, _, _ := layoutSizes(m.width, m.height)
 	return msg.X >= 0 && msg.X < mainW && msg.Y >= 0 && msg.Y < bodyH
+}
+
+func (m *model) handleTranscriptSelectionMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
+	if isMouseWheel(msg) {
+		return false, nil
+	}
+	point, ok := m.transcriptMousePoint(msg)
+	if msg.Action == tea.MouseActionRelease || msg.Type == tea.MouseRelease {
+		if !m.selection.dragging {
+			return false, nil
+		}
+		if ok {
+			m.selection.focus = point
+		}
+		m.selection.dragging = false
+		lines := plainTranscriptLines(m.viewport.View())
+		text := selectedTranscriptText(lines, m.selection)
+		m.selection.text = text
+		if strings.TrimSpace(text) == "" {
+			m.selection = transcriptSelection{}
+			m.status = "idle"
+			return true, nil
+		}
+		m.selection.active = true
+		m.status = "selected"
+		return true, copySelectionCmd(text)
+	}
+	if !ok {
+		if m.selection.dragging && msg.Action == tea.MouseActionMotion {
+			m.selection.focus = point
+			m.selection.active = true
+			return true, nil
+		}
+		return false, nil
+	}
+	switch msg.Action {
+	case tea.MouseActionPress:
+		if msg.Button != tea.MouseButtonLeft && msg.Type != tea.MouseLeft {
+			return false, nil
+		}
+		m.selection = transcriptSelection{dragging: true, anchor: point, focus: point}
+		m.status = "selecting"
+		return true, nil
+	case tea.MouseActionMotion:
+		if !m.selection.dragging {
+			return false, nil
+		}
+		m.selection.focus = point
+		if point != m.selection.anchor {
+			m.selection.active = true
+		}
+		return true, nil
+	default:
+		return false, nil
+	}
+}
+
+func (m model) transcriptMousePoint(msg tea.MouseMsg) (selectionPoint, bool) {
+	mainW, _, bodyH, _, _ := layoutSizes(m.width, m.height)
+	x := msg.X - 2
+	y := msg.Y - 1
+	point := selectionPoint{x: x, y: y}
+	if x < 0 {
+		point.x = 0
+	}
+	if y < 0 {
+		point.y = 0
+	}
+	maxX := max(0, mainW-3)
+	maxY := max(0, bodyH-2)
+	if point.x > maxX {
+		point.x = maxX
+	}
+	if point.y > maxY {
+		point.y = maxY
+	}
+	return point, msg.X >= 2 && msg.X < mainW-1 && msg.Y >= 1 && msg.Y < bodyH-1
+}
+
+func copySelectionCmd(text string) tea.Cmd {
+	return func() tea.Msg {
+		return selectionCopyDoneMsg{text: text, err: copyTextToClipboard(text)}
+	}
+}
+
+func plainTranscriptLines(rendered string) []string {
+	if rendered == "" {
+		return nil
+	}
+	raw := strings.Split(rendered, "\n")
+	lines := make([]string, 0, len(raw))
+	for _, line := range raw {
+		lines = append(lines, ansiEscapeRE.ReplaceAllString(line, ""))
+	}
+	return lines
+}
+
+func selectedTranscriptText(lines []string, sel transcriptSelection) string {
+	if !sel.active && !sel.dragging {
+		return ""
+	}
+	start, end := normalizedSelection(sel)
+	if start.y >= len(lines) {
+		return ""
+	}
+	if end.y >= len(lines) {
+		end.y = len(lines) - 1
+	}
+	var out []string
+	for y := start.y; y <= end.y; y++ {
+		runes := []rune(lines[y])
+		if len(runes) == 0 {
+			out = append(out, "")
+			continue
+		}
+		from, to := 0, len(runes)-1
+		if y == start.y {
+			from = clampInt(start.x, 0, len(runes)-1)
+		}
+		if y == end.y {
+			to = clampInt(end.x, 0, len(runes)-1)
+		}
+		if from > to {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, strings.TrimRight(string(runes[from:to+1]), " "))
+	}
+	return strings.Trim(strings.Join(out, "\n"), "\n")
+}
+
+func renderTranscriptSelectionOverlay(lines []string, sel transcriptSelection, width int) string {
+	start, end := normalizedSelection(sel)
+	rendered := make([]string, 0, len(lines))
+	for y, line := range lines {
+		rendered = append(rendered, renderSelectionOverlayLine(line, y, start, end, width))
+	}
+	return strings.Join(rendered, "\n")
+}
+
+func renderSelectionOverlayLine(line string, y int, start, end selectionPoint, width int) string {
+	if y < start.y || y > end.y || line == "" {
+		return line
+	}
+	lastContentCol, ok := lastNonSpaceVisibleCol(line)
+	if !ok {
+		return line
+	}
+	maxSelectedCol := lastContentCol
+	if width > 1 && maxSelectedCol >= width-1 {
+		maxSelectedCol = width - 2
+	}
+	if maxSelectedCol < 0 {
+		return line
+	}
+	var b strings.Builder
+	col := 0
+	inSelection := false
+	for i := 0; i < len(line); {
+		if line[i] == '\x1b' {
+			if loc := ansiEscapeRE.FindStringIndex(line[i:]); loc != nil && loc[0] == 0 {
+				seq := line[i : i+loc[1]]
+				b.WriteString(seq)
+				i += loc[1]
+				if inSelection {
+					b.WriteString(selectionStartSeq)
+				}
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		if r == utf8.RuneError && size == 0 {
+			break
+		}
+		cellWidth := max(1, lipgloss.Width(string(r)))
+		cellEnd := col + cellWidth - 1
+		selected := cellEnd <= maxSelectedCol && selectionContains(start, end, selectionPoint{x: col, y: y})
+		if selected && !inSelection {
+			b.WriteString(selectionStartSeq)
+			inSelection = true
+		}
+		if !selected && inSelection {
+			b.WriteString(selectionEndSeq)
+			inSelection = false
+		}
+		b.WriteString(line[i : i+size])
+		col += cellWidth
+		i += size
+	}
+	if inSelection {
+		b.WriteString(selectionEndSeq)
+	}
+	return b.String()
+}
+
+func lastNonSpaceVisibleCol(line string) (int, bool) {
+	last := -1
+	col := 0
+	for i := 0; i < len(line); {
+		if line[i] == '\x1b' {
+			if loc := ansiEscapeRE.FindStringIndex(line[i:]); loc != nil && loc[0] == 0 {
+				i += loc[1]
+				continue
+			}
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		if r == utf8.RuneError && size == 0 {
+			break
+		}
+		w := max(1, lipgloss.Width(string(r)))
+		if !unicode.IsSpace(r) {
+			last = col + w - 1
+		}
+		col += w
+		i += size
+	}
+	return last, last >= 0
+}
+
+func normalizedSelection(sel transcriptSelection) (selectionPoint, selectionPoint) {
+	start, end := sel.anchor, sel.focus
+	if end.y < start.y || (end.y == start.y && end.x < start.x) {
+		start, end = end, start
+	}
+	if start.y < 0 {
+		start.y = 0
+	}
+	if start.x < 0 {
+		start.x = 0
+	}
+	if end.y < 0 {
+		end.y = 0
+	}
+	if end.x < 0 {
+		end.x = 0
+	}
+	return start, end
+}
+
+func selectionContains(start, end, p selectionPoint) bool {
+	if p.y < start.y || p.y > end.y {
+		return false
+	}
+	if start.y == end.y {
+		return p.x >= start.x && p.x <= end.x
+	}
+	if p.y == start.y {
+		return p.x >= start.x
+	}
+	if p.y == end.y {
+		return p.x <= end.x
+	}
+	return true
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+func stripMouseSGRFragments(input string) string {
+	if input == "" {
+		return input
+	}
+	return mouseSGRFragmentRE.ReplaceAllString(input, "")
 }
 
 func gitSyncButtonLabel(m model) string {
@@ -3080,15 +3443,21 @@ func waitForEvent(ch <-chan agentevent.Event) tea.Cmd {
 }
 
 func tickRunPulse() tea.Cmd {
-	return tea.Tick(140*time.Millisecond, func(time.Time) tea.Msg {
+	return tea.Tick(220*time.Millisecond, func(time.Time) tea.Msg {
 		return runPulseTickMsg{}
 	})
+}
+
+func (m *model) appendRunActiveEvent(label string) {
+	m.items = append(m.items, transcriptItem{role: "run-active", text: label, frame: m.runPulseFrame})
+	m.runPulseActive = true
+	m.runPulseFrame = 0
 }
 
 func eventTranscriptItem(e agentevent.Event) transcriptItem {
 	switch e.Type {
 	case agentevent.TypeAgentRunStarted:
-		return transcriptItem{role: "run-active", text: "Aligning"}
+		return transcriptItem{role: "run-active"}
 	case agentevent.TypeAgentRunCompleted:
 		return transcriptItem{role: "run-done", text: "Delivered"}
 	case agentevent.TypeAgentRunFailed:

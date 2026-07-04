@@ -151,14 +151,14 @@ func TestStartGitSyncFeedbackOnlyUpdatesFooter(t *testing.T) {
 	}
 }
 
-func TestStatusBarShowsCopyFriendlyMouseHint(t *testing.T) {
+func TestStatusBarShowsSelectionMouseHint(t *testing.T) {
 	got := stripTestANSI(renderStatusBar(model{cwd: "/tmp/repo", gitStatus: "main ✓", status: "idle"}, 80))
-	if !strings.Contains(got, "drag copy") || !strings.Contains(got, "⌃O mouse") {
-		t.Fatalf("renderStatusBar(idle) = %q, want copy-friendly mouse hint", got)
+	if !strings.Contains(got, "drag select copies") || !strings.Contains(got, "Esc clear") {
+		t.Fatalf("renderStatusBar(idle) = %q, want selection mouse hint", got)
 	}
-	got = stripTestANSI(renderStatusBar(model{cwd: "/tmp/repo", gitStatus: "main ✓", copyMode: true, status: "mouse mode"}, 80))
-	if !strings.Contains(got, "mouse mode") || !strings.Contains(got, "esc copy") {
-		t.Fatalf("renderStatusBar(mouse mode) = %q, want mouse mode hints", got)
+	got = stripTestANSI(renderStatusBar(model{cwd: "/tmp/repo", gitStatus: "main ✓", selection: transcriptSelection{active: true}, status: "selecting"}, 80))
+	if !strings.Contains(got, "selecting") || !strings.Contains(got, "Esc clear") {
+		t.Fatalf("renderStatusBar(selecting) = %q, want selection hints", got)
 	}
 }
 
@@ -191,7 +191,7 @@ func TestCtrlTOpensTreeExplorer(t *testing.T) {
 	}
 }
 
-func TestCtrlOTogglesMouseMode(t *testing.T) {
+func TestCtrlONoLongerTogglesMouseMode(t *testing.T) {
 	input := textinput.New()
 	m := model{input: input, mouseEnabled: false, status: "idle"}
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
@@ -199,16 +199,121 @@ func TestCtrlOTogglesMouseMode(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("Ctrl-O returned command, want nil")
 	}
-	if !got.copyMode || !got.mouseEnabled || got.status != "mouse mode" {
-		t.Fatalf("mouse enter = copyMode:%v mouse:%v status:%q", got.copyMode, got.mouseEnabled, got.status)
+	if got.status == "mouse mode" {
+		t.Fatalf("Ctrl-O entered mouse mode: status:%q", got.status)
 	}
-	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEsc})
+}
+
+func TestTranscriptSelectionExtractsVisibleText(t *testing.T) {
+	lines := []string{"alpha beta", "gamma delta"}
+	sel := transcriptSelection{active: true, anchor: selectionPoint{x: 6, y: 0}, focus: selectionPoint{x: 4, y: 1}}
+	got := selectedTranscriptText(lines, sel)
+	if got != "beta\ngamma" {
+		t.Fatalf("selectedTranscriptText() = %q, want beta/gamma", got)
+	}
+}
+
+func TestTranscriptSelectionOverlayMarksSelectedCells(t *testing.T) {
+	lines := []string{"alpha beta", "gamma delta"}
+	sel := transcriptSelection{active: true, anchor: selectionPoint{x: 6, y: 0}, focus: selectionPoint{x: 4, y: 1}}
+	got := renderTranscriptSelectionOverlay(lines, sel, 20)
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("selection overlay missing ANSI highlight: %q", got)
+	}
+	plain := stripTestANSI(got)
+	if !strings.Contains(plain, "alpha beta") || !strings.Contains(plain, "gamma delta") {
+		t.Fatalf("selection overlay plain = %q, want original text", plain)
+	}
+}
+
+func TestTranscriptSelectionOverlayKeepsHeightAndOriginalANSI(t *testing.T) {
+	lines := []string{
+		"\x1b[38;5;114massistant text\x1b[0m",
+		"",
+		"plain text",
+	}
+	sel := transcriptSelection{active: true, anchor: selectionPoint{x: 0, y: 0}, focus: selectionPoint{x: 5, y: 0}}
+	got := renderTranscriptSelectionOverlay(lines, sel, 40)
+	if len(strings.Split(got, "\n")) != len(lines) {
+		t.Fatalf("overlay changed height: got %d lines, want %d: %q", len(strings.Split(got, "\n")), len(lines), got)
+	}
+	if !strings.Contains(got, "\x1b[38;5;114m") {
+		t.Fatalf("overlay dropped original ANSI style: %q", got)
+	}
+	if strings.Contains(got, "48;5;238") {
+		t.Fatalf("overlay used gray background instead of selection inverse: %q", got)
+	}
+}
+
+func TestTranscriptSelectionOverlayAvoidsRightEdgeReset(t *testing.T) {
+	lines := []string{"0123456789"}
+	sel := transcriptSelection{active: true, anchor: selectionPoint{x: 0, y: 0}, focus: selectionPoint{x: 9, y: 0}}
+	got := renderTranscriptSelectionOverlay(lines, sel, 10)
+	if strings.HasSuffix(got, selectionEndSeq) {
+		t.Fatalf("overlay ended with selection reset after the right edge: %q", got)
+	}
+	if stripTestANSI(got) != lines[0] {
+		t.Fatalf("overlay plain text = %q, want %q", stripTestANSI(got), lines[0])
+	}
+}
+
+func TestTranscriptSelectionOverlayDoesNotSelectTrailingPadding(t *testing.T) {
+	lines := []string{"abc   "}
+	sel := transcriptSelection{active: true, anchor: selectionPoint{x: 0, y: 0}, focus: selectionPoint{x: 5, y: 0}}
+	got := renderTranscriptSelectionOverlay(lines, sel, 20)
+	want := selectionStartSeq + "abc" + selectionEndSeq + "   "
+	if got != want {
+		t.Fatalf("overlay = %q, want selection only on content %q", got, want)
+	}
+}
+
+func TestMouseDragSelectsTranscriptAndReleaseCopies(t *testing.T) {
+	input := textinput.New()
+	m := model{
+		input:        input,
+		mouseEnabled: true,
+		width:        80,
+		height:       24,
+		viewport:     viewport.New(80, 5),
+		items:        []transcriptItem{{role: "assistant", text: "hello world"}},
+	}
+	m.syncViewport(true)
+
+	next, cmd := m.Update(tea.MouseMsg{Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 2, Y: 1})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("mouse press returned command, want nil")
+	}
+	if !got.selection.dragging {
+		t.Fatalf("mouse press did not start dragging: %#v", got.selection)
+	}
+
+	next, cmd = got.Update(tea.MouseMsg{Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: 7, Y: 1})
 	got = next.(model)
 	if cmd != nil {
-		t.Fatalf("Esc returned command, want nil when leaving mouse mode")
+		t.Fatalf("mouse motion returned command, want nil")
 	}
-	if got.copyMode || got.mouseEnabled || got.status != "idle" {
-		t.Fatalf("mouse exit = copyMode:%v mouse:%v status:%q", got.copyMode, got.mouseEnabled, got.status)
+	if !got.selection.active {
+		t.Fatalf("mouse motion did not activate selection: %#v", got.selection)
+	}
+
+	next, cmd = got.Update(tea.MouseMsg{Type: tea.MouseRelease, Button: tea.MouseButtonNone, Action: tea.MouseActionRelease, X: 7, Y: 1})
+	got = next.(model)
+	if cmd == nil {
+		t.Fatalf("mouse release returned nil command, want copy command")
+	}
+	if got.selection.dragging {
+		t.Fatalf("mouse release left dragging active: %#v", got.selection)
+	}
+	if strings.TrimSpace(got.selection.text) == "" {
+		t.Fatalf("mouse release did not capture selected text: %#v", got.selection)
+	}
+}
+
+func TestStripMouseSGRFragmentsFromInput(t *testing.T) {
+	got := stripMouseSGRFragments("hello [<65;96;30M world \x1b[<64;10;5M!")
+	if got != "hello  world !" {
+		t.Fatalf("stripMouseSGRFragments() = %q, want mouse SGR fragments removed", got)
 	}
 }
 
@@ -261,7 +366,7 @@ func TestRunEventsRenderGradientStatusRows(t *testing.T) {
 	if !strings.Contains(got, "Aligning") || !strings.Contains(got, "Delivered") {
 		t.Fatalf("render run events = %q, want run labels", got)
 	}
-	if !strings.Contains(got, "[l  i]") || !strings.Contains(got, "[ok  ]") {
+	if !strings.Contains(got, "[li  ]") || !strings.Contains(got, "[ ok ]") {
 		t.Fatalf("render run events = %q, want Xiaoli ASCII glyphs", got)
 	}
 	if !strings.Contains(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 1), "\x1b[") {
@@ -269,15 +374,37 @@ func TestRunEventsRenderGradientStatusRows(t *testing.T) {
 	}
 	first := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 0))
 	second := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 1))
-	if first == second {
-		t.Fatalf("loading frame did not change: %q", first)
+	if first != second {
+		t.Fatalf("loading frame changed too quickly: %q / %q", first, second)
 	}
-	if !strings.Contains(first, "[li  ]") || !strings.Contains(second, "[l i ]") {
-		t.Fatalf("loading frames = %q / %q, want moving i glyph", first, second)
+	laterGlyph := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 4))
+	if !strings.Contains(first, "[li  ]") || !strings.Contains(laterGlyph, "[l i ]") {
+		t.Fatalf("loading frames = %q / %q, want slower moving i glyph", first, laterGlyph)
 	}
-	later := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 12))
+	later := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 32))
 	if !strings.Contains(later, "Syncing context") {
 		t.Fatalf("status phrase did not rotate: %q", later)
+	}
+}
+
+func TestOnlyLatestRunEventAnimates(t *testing.T) {
+	first := transcriptItem{role: "run-active", frame: 0}
+	second := transcriptItem{role: "run-active"}
+	got := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{first, second}, 80, 32))
+	if strings.Count(got, "Aligning") != 1 || strings.Count(got, "Syncing context") != 1 {
+		t.Fatalf("rendered active events = %q, want frozen first and animated latest", got)
+	}
+}
+
+func TestCommitSlashUsesRunEventStart(t *testing.T) {
+	m := model{runPulseFrame: 7}
+	m.appendRunActiveEvent("Preparing commit")
+	if len(m.items) == 0 {
+		t.Fatalf("/commit added no transcript item")
+	}
+	last := m.items[len(m.items)-1]
+	if last.role != "run-active" || last.text != "Preparing commit" || !m.runPulseActive || m.runPulseFrame != 0 {
+		t.Fatalf("/commit event = %#v, want run-active Preparing commit", last)
 	}
 }
 
@@ -303,7 +430,7 @@ func TestToolEventsRenderWorkplaceStatusRows(t *testing.T) {
 			t.Fatalf("tool render = %q, missing %q", got, want)
 		}
 	}
-	for _, want := range []string{"[run ]", "[ok  ]", "[x   ]"} {
+	for _, want := range []string{"[run ]", "[ ok ]", "[ x  ]"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("tool render = %q, missing glyph %q", got, want)
 		}

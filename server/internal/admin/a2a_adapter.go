@@ -65,14 +65,15 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 		}
 		p.applyProfileOverrides(&profile, req.Profile)
 		reply, err := p.agent.RunPromptProfile(ctx, agentruntime.PromptProfileRequest{
-			Name:         profile.Name,
-			SystemPrompt: profile.SystemPrompt,
-			UserText:     req.UserText,
-			ChannelName:  turn.Channel,
-			SessionKey:   turn.ConversationID,
-			AllowTools:   profile.AllowTools,
-			MaxSteps:     profile.MaxSteps,
-			Model:        profile.Model,
+			Name:           profile.Name,
+			SystemPrompt:   profile.SystemPrompt,
+			UserText:       req.UserText,
+			ChannelName:    turn.Channel,
+			SessionKey:     turn.ConversationID,
+			DisableHistory: true,
+			AllowTools:     profile.AllowTools,
+			MaxSteps:       profile.MaxSteps,
+			Model:          profile.Model,
 		})
 		if err != nil {
 			return a2a.ConversationReply{}, err
@@ -110,14 +111,15 @@ func (p *a2aPipeline) RunStream(ctx context.Context, turn a2a.ConversationTurn, 
 	}
 	p.applyProfileOverrides(&profile, req.Profile)
 	reply, err := p.agent.RunPromptProfileStream(ctx, agentruntime.PromptProfileRequest{
-		Name:         profile.Name,
-		SystemPrompt: profile.SystemPrompt,
-		UserText:     req.UserText,
-		ChannelName:  turn.Channel,
-		SessionKey:   turn.ConversationID,
-		AllowTools:   profile.AllowTools,
-		MaxSteps:     profile.MaxSteps,
-		Model:        profile.Model,
+		Name:           profile.Name,
+		SystemPrompt:   profile.SystemPrompt,
+		UserText:       req.UserText,
+		ChannelName:    turn.Channel,
+		SessionKey:     turn.ConversationID,
+		DisableHistory: true,
+		AllowTools:     profile.AllowTools,
+		MaxSteps:       profile.MaxSteps,
+		Model:          profile.Model,
 	}, func(ev agentruntime.PromptProfileStreamEvent) bool {
 		return emit(a2a.ConversationStreamEvent{
 			Kind:  a2a.ConversationStreamKind(ev.Kind),

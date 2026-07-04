@@ -59,12 +59,12 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		m.input.SetValue("")
 		m.busy = true
 		m.status = "git commit && push"
-		m.items = append(m.items, transcriptItem{role: "event", text: "git commit and push started"})
+		m.appendRunActiveEvent("Commit and push")
 		m.syncViewport(true)
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		m.activeCancel = cancel
 		m.chatCanceled = false
-		return startGitCmsgCommit(ctx, m.cwd, msg, true)
+		return tea.Batch(startGitCmsgCommit(ctx, m.cwd, msg, true), tickRunPulse())
 	case choice == "确认提交" || strings.EqualFold(choice, "commit") || isApprove(choice):
 		msg := m.pendingGitCmsg.Message
 		m.pendingGitCmsg = gitCmsgPending{}
@@ -74,12 +74,12 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		m.input.SetValue("")
 		m.busy = true
 		m.status = "git commit"
-		m.items = append(m.items, transcriptItem{role: "event", text: "git commit started"})
+		m.appendRunActiveEvent("Committing changes")
 		m.syncViewport(true)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		m.activeCancel = cancel
 		m.chatCanceled = false
-		return startGitCmsgCommit(ctx, m.cwd, msg, false)
+		return tea.Batch(startGitCmsgCommit(ctx, m.cwd, msg, false), tickRunPulse())
 	case choice == "重新生成" || strings.EqualFold(choice, "regenerate"):
 		args := m.pendingGitCmsg.Args
 		m.pendingGitCmsg = gitCmsgPending{}
@@ -89,12 +89,12 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		m.input.SetValue("")
 		m.busy = true
 		m.status = "commit"
-		m.items = append(m.items, transcriptItem{role: "event", text: "commit message regenerating"})
+		m.appendRunActiveEvent("Refreshing commit plan")
 		m.syncViewport(true)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		m.activeCancel = cancel
 		m.chatCanceled = false
-		return startGitCmsgPrepare(ctx, m.app.Agent, m.cwd, args)
+		return tea.Batch(startGitCmsgPrepare(ctx, m.app.Agent, m.cwd, args), tickRunPulse())
 	case choice == "取消操作" || isReject(choice):
 		m.pendingGitCmsg = gitCmsgPending{}
 		m.pendingQuestion = ""
@@ -295,7 +295,8 @@ func runGitCombined(cwd string, args ...string) (string, error) {
 }
 
 func runGitCombinedContext(ctx context.Context, cwd string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	gitArgs := append([]string{"-c", "core.quotepath=false"}, args...)
+	cmd := exec.CommandContext(ctx, "git", gitArgs...)
 	cmd.Dir = cwd
 	var buf bytes.Buffer
 	cmd.Stdout = &buf

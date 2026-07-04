@@ -438,14 +438,15 @@ type ChannelSendersConfig struct {
 }
 
 type PromptProfileRequest struct {
-	Name         string
-	SystemPrompt string
-	UserText     string
-	ChannelName  string
-	SessionKey   string
-	AllowTools   bool
-	MaxSteps     int
-	Model        string // 可选：强制使用指定模型，为空则用默认
+	Name           string
+	SystemPrompt   string
+	UserText       string
+	ChannelName    string
+	SessionKey     string
+	DisableHistory bool
+	AllowTools     bool
+	MaxSteps       int
+	Model          string // 可选：强制使用指定模型，为空则用默认
 }
 
 type PromptProfileStreamKind string
@@ -1076,7 +1077,7 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 		return "", fmt.Errorf("profile user text is required")
 	}
 	profileSystemAsUser := req.ChannelName == "a2a" && req.AllowTools && a.a2aSkillMW != nil
-	msgs, profileSessionID := a.buildPromptProfileMessages(ctx, req.SystemPrompt, userText, req.ChannelName, req.SessionKey, req.Model, profileSystemAsUser)
+	msgs, profileSessionID := a.buildPromptProfileMessages(ctx, req.SystemPrompt, userText, req.ChannelName, req.SessionKey, req.Model, profileSystemAsUser, req.DisableHistory)
 	historyMsgs := promptProfilePersistMessages(msgs, userText)
 
 	chatModel, modelID, err := a.chatModelForID(ctx, req.Model)
@@ -1168,7 +1169,7 @@ func (a *Agent) RunPromptProfileStream(ctx context.Context, req PromptProfileReq
 		emit = func(PromptProfileStreamEvent) bool { return true }
 	}
 	profileSystemAsUser := req.ChannelName == "a2a" && req.AllowTools && a.a2aSkillMW != nil
-	msgs, profileSessionID := a.buildPromptProfileMessages(ctx, req.SystemPrompt, userText, req.ChannelName, req.SessionKey, req.Model, profileSystemAsUser)
+	msgs, profileSessionID := a.buildPromptProfileMessages(ctx, req.SystemPrompt, userText, req.ChannelName, req.SessionKey, req.Model, profileSystemAsUser, req.DisableHistory)
 	historyMsgs := promptProfilePersistMessages(msgs, userText)
 
 	chatModel, modelID, err := a.chatModelForID(ctx, req.Model)
@@ -1316,14 +1317,14 @@ func promptProfileMaxSteps(value int) int {
 	return defaultAgentMaxIterations
 }
 
-func (a *Agent) buildPromptProfileMessages(ctx context.Context, systemPrompt, userText, channelName, sessionKey, model string, systemAsUser bool) ([]*schema.Message, string) {
+func (a *Agent) buildPromptProfileMessages(ctx context.Context, systemPrompt, userText, channelName, sessionKey, model string, systemAsUser bool, disableHistory bool) ([]*schema.Message, string) {
 	msgs := make([]*schema.Message, 0, 4)
 	if !systemAsUser {
 		msgs = append(msgs, schema.SystemMessage(systemPrompt))
 	}
 
 	sessionID := ""
-	if strings.TrimSpace(sessionKey) != "" && a != nil && a.sessionMgr != nil && a.memory != nil {
+	if !disableHistory && strings.TrimSpace(sessionKey) != "" && a != nil && a.sessionMgr != nil && a.memory != nil {
 		modelID := strings.TrimSpace(model)
 		if modelID == "" {
 			modelID = strings.TrimSpace(a.CurrentLLMModel())
@@ -1495,7 +1496,7 @@ func (a *Agent) runNormalSubAgent(ctx context.Context, spec agentbuiltin.SubAgen
 	if spec.SystemPrompt != "" {
 		msgs = append(msgs, schema.SystemMessage(spec.SystemPrompt))
 	}
-	sessionKey := rt.SessionKey
+	sessionKey := subAgentHistorySessionKey(rt)
 	// Disable memory entirely for A2A channel - no conversation history
 	// persistence to avoid any cross-session leakage risks.
 	if sessionKey != "" && rt.ChannelName != "a2a" && a.sessionMgr != nil && a.memory != nil {
@@ -1619,6 +1620,13 @@ func (a *Agent) saveSubAgentHistory(ctx context.Context, sessionKey string, prom
 	}
 	updated = append(updated, assistantMsg)
 	a.memory.Save(ctx, subSession, updated)
+}
+
+func subAgentHistorySessionKey(rt agentbuiltin.SubAgentRuntime) string {
+	if rt.ChannelName == "a2a" {
+		return ""
+	}
+	return rt.SessionKey
 }
 
 func (a *Agent) runForkSubAgent(ctx context.Context, spec agentbuiltin.SubAgentSpec, rt agentbuiltin.SubAgentRuntime, prompt string) (string, error) {

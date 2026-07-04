@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	agentsession "github.com/mnhkahn/xiaoli/internal/agent/session"
+	agentbuiltin "github.com/mnhkahn/xiaoli/internal/agent/tool/builtin"
 )
 
 func TestNewAgentInitializesA2ASkillsIndependentlyFromDefaultSkills(t *testing.T) {
@@ -107,7 +108,7 @@ func TestA2APromptProfileHistoryLoadsAndSavesIsolatedSession(t *testing.T) {
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "提示", "新的输入", "a2a", sessionKey, "", false)
+	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "提示", "新的输入", "a2a", sessionKey, "", false, false)
 	if loadedSession != sessionID {
 		t.Fatalf("loadedSession = %q, want %q", loadedSession, sessionID)
 	}
@@ -132,7 +133,7 @@ func TestA2APromptProfileHistoryLoadsAndSavesIsolatedSession(t *testing.T) {
 	if len(savedWithDiagnostic) != 4 || !isDiagnosticMessage(savedWithDiagnostic[len(savedWithDiagnostic)-1]) {
 		t.Fatalf("savedWithDiagnostic tail = %#v, want diagnostic assistant replacing latest response", savedWithDiagnostic)
 	}
-	nextMsgs, _ := agent.buildPromptProfileMessages(ctx, "提示", "下一次输入", "a2a", sessionKey, "", false)
+	nextMsgs, _ := agent.buildPromptProfileMessages(ctx, "提示", "下一次输入", "a2a", sessionKey, "", false, false)
 	for _, msg := range nextMsgs {
 		if msg != nil && strings.Contains(msg.Content, "exceeds max iterations") {
 			t.Fatalf("diagnostic failure leaked into next prompt: %#v", nextMsgs)
@@ -174,7 +175,7 @@ func TestA2APromptProfileCanEmbedSystemPromptInCurrentUserMessage(t *testing.T) 
 		t.Fatalf("Save() error = %v", err)
 	}
 
-	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "必须输出 JSON", `{"date":"2026-06-28"}`, "a2a", sessionKey, "", true)
+	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "必须输出 JSON", `{"date":"2026-06-28"}`, "a2a", sessionKey, "", true, false)
 	if loadedSession != sessionID {
 		t.Fatalf("loadedSession = %q, want %q", loadedSession, sessionID)
 	}
@@ -197,6 +198,63 @@ func TestA2APromptProfileCanEmbedSystemPromptInCurrentUserMessage(t *testing.T) 
 	}
 	if strings.Contains(saved[len(saved)-2].Content, "必须输出 JSON") {
 		t.Fatalf("profile instruction leaked into saved history: %q", saved[len(saved)-2].Content)
+	}
+}
+
+func TestA2APromptProfileHistoryCanBeDisabled(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+
+	mem := &Memory{client: client, prefix: "test:", ttl: time.Hour}
+	mgr := agentsession.NewManager(client, "test:")
+	agent := &Agent{
+		memory:     mem,
+		sessionMgr: mgr,
+		cfg:        Config{LLMModel: "test-model"},
+	}
+
+	sessionKey := "a2a:partner:ctx-no-history"
+	sessionID, _, err := mgr.GetOrCreate(ctx, "a2a_profile", sessionKey, "test-model")
+	if err != nil {
+		t.Fatalf("GetOrCreate() error = %v", err)
+	}
+	if err := mem.Save(ctx, sessionID, []*schema.Message{
+		schema.UserMessage(`{"date":"2026-07-03"}`),
+		{Role: schema.Assistant, Content: "旧新闻"},
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	msgs, loadedSession := agent.buildPromptProfileMessages(ctx, "提示", "新的输入", "a2a", sessionKey, "", false, true)
+	if loadedSession != "" {
+		t.Fatalf("loadedSession = %q, want empty when history disabled", loadedSession)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("len(msgs) = %d, want system + current user only", len(msgs))
+	}
+	for _, msg := range msgs {
+		if msg != nil && strings.Contains(msg.Content, "旧新闻") {
+			t.Fatalf("disabled history leaked into prompt: %#v", msgs)
+		}
+	}
+
+	agent.savePromptProfileHistory(ctx, loadedSession, msgs, "新的回复")
+	saved := mem.Load(ctx, sessionID)
+	if len(saved) != 2 || saved[1].Content != "旧新闻" {
+		t.Fatalf("saved = %#v, want existing history unchanged", saved)
+	}
+}
+
+func TestSubAgentHistorySessionKeyDisabledForA2A(t *testing.T) {
+	rt := agentbuiltin.SubAgentRuntime{SessionKey: "a2a:partner:ctx", ChannelName: "a2a"}
+	if got := subAgentHistorySessionKey(rt); got != "" {
+		t.Fatalf("subAgentHistorySessionKey(a2a) = %q, want empty", got)
+	}
+	rt.ChannelName = "local"
+	if got := subAgentHistorySessionKey(rt); got != "a2a:partner:ctx" {
+		t.Fatalf("subAgentHistorySessionKey(local) = %q, want original session key", got)
 	}
 }
 

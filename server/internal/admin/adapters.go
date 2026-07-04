@@ -1525,11 +1525,7 @@ func (s *AdminServer) runSpeakAction(ctx context.Context, def agentworkflow.Defi
 
 // sendReminderByChannel 根据 channel 发送提醒到对应的渠道
 func (s *AdminServer) sendReminderByChannel(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
-	channel := def.Channel
-	if channel == "" {
-		// 旧数据没有 channel，先尝试 ESP32，不在线就 fallback 到飞书
-		channel = "esp32"
-	}
+	channel := s.reminderDeliveryChannel(def.Channel)
 
 	switch channel {
 	case "esp32":
@@ -1540,9 +1536,15 @@ func (s *AdminServer) sendReminderByChannel(ctx context.Context, def agentworkfl
 		// TODO: 微信提醒需要保存 context token，暂未实现
 		return s.sendReminderToWechat(ctx, def, scheduledAt)
 	default:
-		// 未知 channel，尝试 ESP32，不在线就 fallback 到飞书
-		return s.sendReminderToESP32(ctx, def, scheduledAt)
+		return s.sendReminderToLark(ctx, def, scheduledAt)
 	}
+}
+
+func (s *AdminServer) reminderDeliveryChannel(channel string) string {
+	if normalized := normalizeReminderDeliveryChannel(channel, ""); normalized != "" {
+		return normalized
+	}
+	return normalizeReminderDeliveryChannel(s.cfg.ReminderDefaultChannel, defaultReminderChannel)
 }
 
 // sendReminderToESP32 发送提醒到 ESP32 设备语音播报

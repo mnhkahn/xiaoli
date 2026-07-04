@@ -16,6 +16,7 @@ type fakeA2AAgent struct {
 	subAgentCalls      int
 	lastProfile        agentruntime.PromptProfileRequest
 	lastSubAgent       string
+	lastSubSessionKey  string
 	profileReply       string
 }
 
@@ -37,6 +38,7 @@ func (f *fakeA2AAgent) RunPromptProfileStream(ctx context.Context, req agentrunt
 func (f *fakeA2AAgent) RunNamedSubAgent(ctx context.Context, name string, prompt string, sessionKey string, channelName string) (string, error) {
 	f.subAgentCalls++
 	f.lastSubAgent = name
+	f.lastSubSessionKey = sessionKey
 	return "subagent reply", nil
 }
 
@@ -83,8 +85,8 @@ func TestA2APipelineRoutesGeekNewsProfileToPromptProfile(t *testing.T) {
 	if agent.lastProfile.Name != "geek-news" || agent.lastProfile.ChannelName != "a2a" || !agent.lastProfile.AllowTools {
 		t.Fatalf("lastProfile = %#v, want geek-news profile with tools", agent.lastProfile)
 	}
-	if agent.lastProfile.SessionKey != "a2a:partner_a:cyeam_web" {
-		t.Fatalf("SessionKey = %q, want a2a session key", agent.lastProfile.SessionKey)
+	if agent.lastProfile.SessionKey != "a2a:partner_a:cyeam_web" || !agent.lastProfile.DisableHistory {
+		t.Fatalf("profile session = %q disable_history=%v, want traced session with disabled history", agent.lastProfile.SessionKey, agent.lastProfile.DisableHistory)
 	}
 	if agent.lastProfile.UserText != `{"date":"2026-06-28"}` {
 		t.Fatalf("UserText = %q, want compact date JSON", agent.lastProfile.UserText)
@@ -141,8 +143,9 @@ func TestA2APipelineRoutesPlainTextToPublicAssistant(t *testing.T) {
 	pipeline := newA2APipeline(agent, nil)
 
 	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{
-		Channel: "a2a",
-		Text:    "北京天气",
+		Channel:        "a2a",
+		ConversationID: "a2a:partner_a:cyeam_web",
+		Text:           "北京天气",
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -155,6 +158,9 @@ func TestA2APipelineRoutesPlainTextToPublicAssistant(t *testing.T) {
 	}
 	if agent.lastSubAgent != "a2a_public_assistant" {
 		t.Fatalf("lastSubAgent = %q, want a2a_public_assistant", agent.lastSubAgent)
+	}
+	if agent.lastSubSessionKey != "a2a:partner_a:cyeam_web" {
+		t.Fatalf("lastSubSessionKey = %q, want session key kept for A2A tracing", agent.lastSubSessionKey)
 	}
 }
 
@@ -182,6 +188,9 @@ func TestA2APipelineStreamsOnlyArchitectProfile(t *testing.T) {
 	}
 	if agent.profileStreamCalls != 1 || agent.profileCalls != 0 || agent.subAgentCalls != 0 {
 		t.Fatalf("calls stream=%d profile=%d subagent=%d, want stream only", agent.profileStreamCalls, agent.profileCalls, agent.subAgentCalls)
+	}
+	if !agent.lastProfile.DisableHistory {
+		t.Fatalf("DisableHistory = false, want A2A stream profile without memory")
 	}
 }
 
