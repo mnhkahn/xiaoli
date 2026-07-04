@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	agentevent "github.com/mnhkahn/xiaoli/internal/event"
 )
 
 func TestLayoutUsesBottomStatusBar(t *testing.T) {
@@ -149,10 +151,14 @@ func TestStartGitSyncFeedbackOnlyUpdatesFooter(t *testing.T) {
 	}
 }
 
-func TestStatusBarShowsMouseFreeCopyHint(t *testing.T) {
-	got := stripTestANSI(renderStatusBar(model{cwd: "/tmp/repo", gitStatus: "main ✓", copyMode: true, status: "copy mode"}, 80))
-	if !strings.Contains(got, "copy mode") || !strings.Contains(got, "esc back") {
-		t.Fatalf("renderStatusBar(copy mode) = %q, want copy mode hints", got)
+func TestStatusBarShowsCopyFriendlyMouseHint(t *testing.T) {
+	got := stripTestANSI(renderStatusBar(model{cwd: "/tmp/repo", gitStatus: "main ✓", status: "idle"}, 80))
+	if !strings.Contains(got, "drag copy") || !strings.Contains(got, "⌃O mouse") {
+		t.Fatalf("renderStatusBar(idle) = %q, want copy-friendly mouse hint", got)
+	}
+	got = stripTestANSI(renderStatusBar(model{cwd: "/tmp/repo", gitStatus: "main ✓", copyMode: true, status: "mouse mode"}, 80))
+	if !strings.Contains(got, "mouse mode") || !strings.Contains(got, "esc copy") {
+		t.Fatalf("renderStatusBar(mouse mode) = %q, want mouse mode hints", got)
 	}
 }
 
@@ -185,24 +191,122 @@ func TestCtrlTOpensTreeExplorer(t *testing.T) {
 	}
 }
 
-func TestCtrlOTogglesCopyMode(t *testing.T) {
+func TestCtrlOTogglesMouseMode(t *testing.T) {
 	input := textinput.New()
 	m := model{input: input, mouseEnabled: false, status: "idle"}
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
 	got := next.(model)
 	if cmd != nil {
-		t.Fatalf("Ctrl-O returned command, want nil when mouse is already terminal-owned")
+		t.Fatalf("Ctrl-O returned command, want nil")
 	}
-	if !got.copyMode || got.mouseEnabled || got.status != "copy mode" {
-		t.Fatalf("copy enter = copyMode:%v mouse:%v status:%q", got.copyMode, got.mouseEnabled, got.status)
+	if !got.copyMode || !got.mouseEnabled || got.status != "mouse mode" {
+		t.Fatalf("mouse enter = copyMode:%v mouse:%v status:%q", got.copyMode, got.mouseEnabled, got.status)
 	}
 	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	got = next.(model)
 	if cmd != nil {
-		t.Fatalf("Esc returned command, want nil when leaving copy mode")
+		t.Fatalf("Esc returned command, want nil when leaving mouse mode")
 	}
 	if got.copyMode || got.mouseEnabled || got.status != "idle" {
-		t.Fatalf("copy exit = copyMode:%v mouse:%v status:%q", got.copyMode, got.mouseEnabled, got.status)
+		t.Fatalf("mouse exit = copyMode:%v mouse:%v status:%q", got.copyMode, got.mouseEnabled, got.status)
+	}
+}
+
+func TestPendingOptionsUseUpDownBeforeViewportScroll(t *testing.T) {
+	input := textinput.New()
+	m := model{
+		input:          input,
+		pendingOptions: []string{"允许一次", "本会话允许", "拒绝"},
+		pendingChoice:  0,
+		width:          80,
+		height:         24,
+		viewport:       viewport.New(80, 5),
+	}
+	m.viewport.SetContent(strings.Repeat("line\n", 40))
+	m.viewport.GotoBottom()
+	before := m.viewport.YOffset
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("Down returned command, want nil")
+	}
+	if got.pendingChoice != 1 {
+		t.Fatalf("pendingChoice after Down = %d, want 1", got.pendingChoice)
+	}
+	if got.viewport.YOffset != before {
+		t.Fatalf("viewport offset changed from %d to %d", before, got.viewport.YOffset)
+	}
+
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyUp})
+	got = next.(model)
+	if cmd != nil {
+		t.Fatalf("Up returned command, want nil")
+	}
+	if got.pendingChoice != 0 {
+		t.Fatalf("pendingChoice after Up = %d, want 0", got.pendingChoice)
+	}
+	if got.viewport.YOffset != before {
+		t.Fatalf("viewport offset changed after Up from %d to %d", before, got.viewport.YOffset)
+	}
+}
+
+func TestRunEventsRenderGradientStatusRows(t *testing.T) {
+	start := eventTranscriptItem(agentevent.Event{Type: agentevent.TypeAgentRunStarted})
+	done := eventTranscriptItem(agentevent.Event{Type: agentevent.TypeAgentRunCompleted})
+	if start.role != "run-active" || done.role != "run-done" {
+		t.Fatalf("event roles = %q/%q, want run-active/run-done", start.role, done.role)
+	}
+	got := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start, done}, 80, 2))
+	if !strings.Contains(got, "Aligning") || !strings.Contains(got, "Delivered") {
+		t.Fatalf("render run events = %q, want run labels", got)
+	}
+	if !strings.Contains(got, "[l  i]") || !strings.Contains(got, "[ok  ]") {
+		t.Fatalf("render run events = %q, want Xiaoli ASCII glyphs", got)
+	}
+	if !strings.Contains(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 1), "\x1b[") {
+		t.Fatalf("render run event missing ANSI shimmer")
+	}
+	first := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 0))
+	second := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 1))
+	if first == second {
+		t.Fatalf("loading frame did not change: %q", first)
+	}
+	if !strings.Contains(first, "[li  ]") || !strings.Contains(second, "[l i ]") {
+		t.Fatalf("loading frames = %q / %q, want moving i glyph", first, second)
+	}
+	later := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 12))
+	if !strings.Contains(later, "Syncing context") {
+		t.Fatalf("status phrase did not rotate: %q", later)
+	}
+}
+
+func TestToolEventsRenderWorkplaceStatusRows(t *testing.T) {
+	start := eventTranscriptItem(agentevent.Event{
+		Type: agentevent.TypeAgentToolStarted,
+		Data: map[string]any{"name": "bash"},
+	})
+	done := eventTranscriptItem(agentevent.Event{
+		Type: agentevent.TypeAgentToolFinished,
+		Data: map[string]any{"name": "bash"},
+	})
+	failed := eventTranscriptItem(agentevent.Event{
+		Type: agentevent.TypeAgentToolFinished,
+		Data: map[string]any{"name": "bash", "error": "exit status 1"},
+	})
+	if start.role != "tool-active" || done.role != "tool-done" || failed.role != "tool-failed" {
+		t.Fatalf("tool event roles = %q/%q/%q", start.role, done.role, failed.role)
+	}
+	got := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start, done, failed}, 100, 3))
+	for _, want := range []string{"Tracing bash", "Validated bash", "Blocked bash"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("tool render = %q, missing %q", got, want)
+		}
+	}
+	for _, want := range []string{"[run ]", "[ok  ]", "[x   ]"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("tool render = %q, missing glyph %q", got, want)
+		}
 	}
 }
 
@@ -623,6 +727,69 @@ func TestRenderPendingOptionsMarksSelected(t *testing.T) {
 	}
 	if !strings.Contains(got, "不执行") {
 		t.Fatalf("renderPendingAskPanel() = %q, want description", got)
+	}
+}
+
+func TestRenderPendingAskPanelSummarizesPythonCommands(t *testing.T) {
+	command := "python3 - <<'PY'\n" +
+		"import os\n" +
+		"print('secret implementation detail that should not fill the approval panel')\n" +
+		"for item in range(100):\n" +
+		"    print(item)\n" +
+		"PY"
+	got := renderPendingAskPanel("是否允许执行命令："+command, []string{
+		"允许一次::" + command,
+		"拒绝::不执行",
+	}, 0, 80)
+	if !strings.Contains(got, "python 输出结果") {
+		t.Fatalf("renderPendingAskPanel() = %q, want python action summary", got)
+	}
+	if strings.Contains(got, "secret implementation detail") || strings.Contains(got, "range(100)") {
+		t.Fatalf("renderPendingAskPanel() leaked full script: %q", got)
+	}
+}
+
+func TestSummarizeCommandForDisplayShowsPythonScriptPath(t *testing.T) {
+	got := summarizeCommandForDisplay("python3 scripts/deploy.py --env prod --verbose")
+	if got != "python 执行脚本 scripts/deploy.py" {
+		t.Fatalf("summarizeCommandForDisplay() = %q", got)
+	}
+}
+
+func TestSummarizeCommandForDisplayDescribesPythonInlineActions(t *testing.T) {
+	command := "python3 - <<'PY'\n" +
+		"import json\n" +
+		"from pathlib import Path\n" +
+		"data = json.loads(Path('input.json').read_text())\n" +
+		"Path('out.json').write_text(json.dumps(data))\n" +
+		"PY"
+	got := summarizeCommandForDisplay(command)
+	for _, want := range []string{"python", "写入文件", "读取文件", "处理 JSON", "input.json", "out.json"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("summarizeCommandForDisplay() = %q, missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "5 行") || strings.Contains(got, "内联脚本") {
+		t.Fatalf("summarizeCommandForDisplay() = %q, want action summary instead of line-count summary", got)
+	}
+}
+
+func TestRenderPendingAskPanelKeepsCommandSummarySingleLine(t *testing.T) {
+	command := "python3 - <<'PY'\n" +
+		"import json\n" +
+		"from pathlib import Path\n" +
+		"data = json.loads(Path('input.json').read_text())\n" +
+		"Path('out.json').write_text(json.dumps(data))\n" +
+		"PY"
+	got := stripTestANSI(renderPendingAskPanel("是否允许执行命令："+command, []string{
+		"允许一次::" + command,
+		"拒绝::不执行",
+	}, 0, 96))
+	if !strings.Contains(got, "文件 input.json、out.json") {
+		t.Fatalf("renderPendingAskPanel() = %q, want file detail on summary line", got)
+	}
+	if strings.Count(got, "允许一次") != 1 {
+		t.Fatalf("renderPendingAskPanel() = %q, want selected option rendered once", got)
 	}
 }
 

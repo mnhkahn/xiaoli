@@ -69,6 +69,8 @@ type eventMsg struct {
 	event agentevent.Event
 }
 
+type runPulseTickMsg struct{}
+
 type gitSyncTickMsg struct{}
 
 type gitSyncDoneMsg struct {
@@ -145,6 +147,8 @@ type model struct {
 	logPath            string
 	updateInfo         updateInfo
 	contextUsage       *agentruntime.ContextUsage
+	runPulseFrame      int
+	runPulseActive     bool
 	scroll             int
 	viewport           viewport.Model
 	streamingIndex     int
@@ -170,7 +174,7 @@ var (
 	userStyle       = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("75"))
 	agentStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("114"))
 	shellStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))
-	eventStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	eventStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	errStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	hintStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	boxStyle        = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
@@ -240,6 +244,7 @@ func main() {
 		return
 	}
 
+	defer disableBasicMouseReporting()
 	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen())
 	finalModel, err := p.Run()
 	if err != nil {
@@ -408,6 +413,19 @@ func renderFigletLogo() string {
 	return strings.Join(out, "\n")
 }
 
+const (
+	enableBasicMouseSeq  = "\x1b[?1000h\x1b[?1006h"
+	disableBasicMouseSeq = "\x1b[?1000l\x1b[?1006l"
+)
+
+func enableBasicMouseReporting() {
+	_, _ = fmt.Fprint(os.Stdout, enableBasicMouseSeq)
+}
+
+func disableBasicMouseReporting() {
+	_, _ = fmt.Fprint(os.Stdout, disableBasicMouseSeq)
+}
+
 func figletLogoLines() []string {
 	return []string{
 		"  ___ _   _  ___  __ _ _ __ ___      ___ ___  _ __ ___",
@@ -479,6 +497,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.copyMode = false
 				m.mouseEnabled = false
 				m.status = "idle"
+				disableBasicMouseReporting()
 				return m, nil
 			default:
 				return m, nil
@@ -525,8 +544,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "ctrl+o":
 			m.copyMode = true
-			m.mouseEnabled = false
-			m.status = "copy mode"
+			m.mouseEnabled = true
+			m.status = "mouse mode"
+			enableBasicMouseReporting()
 			return m, nil
 		case "ctrl+k":
 			if m.busy || m.hasPendingOptions() {
@@ -570,26 +590,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 			return m, nil
 		case "up":
+			if m.movePendingChoice(-1) {
+				return m, nil
+			}
 			if m.navigateInputHistory(-1) {
 				return m, nil
 			}
 		case "down":
+			if m.movePendingChoice(1) {
+				return m, nil
+			}
 			if m.navigateInputHistory(1) {
 				return m, nil
 			}
 		case "left", "shift+tab":
-			if m.hasPendingOptions() {
-				m.pendingChoice = (m.pendingChoice + len(m.pendingOptions) - 1) % len(m.pendingOptions)
+			if m.movePendingChoice(-1) {
 				return m, nil
 			}
 		case "right":
-			if m.hasPendingOptions() {
-				m.pendingChoice = (m.pendingChoice + 1) % len(m.pendingOptions)
+			if m.movePendingChoice(1) {
 				return m, nil
 			}
 		case "tab":
-			if m.hasPendingOptions() {
-				m.pendingChoice = (m.pendingChoice + 1) % len(m.pendingOptions)
+			if m.movePendingChoice(1) {
 				return m, nil
 			}
 			if m.consumeDoubleTab() {
@@ -951,8 +974,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateInfo = msg.info
 		m.syncViewport(false)
 		return m, nil
+	case runPulseTickMsg:
+		if !m.runPulseActive {
+			return m, nil
+		}
+		m.runPulseFrame++
+		m.syncViewport(false)
+		return m, tickRunPulse()
 	case eventMsg:
-		m.items = append(m.items, transcriptItem{role: "event", text: eventSummary(msg.event)})
+		item := eventTranscriptItem(msg.event)
+		switch item.role {
+		case "run-active":
+			m.runPulseActive = true
+			m.runPulseFrame = 0
+			m.items = append(m.items, item)
+			m.refreshContextUsage()
+			m.syncViewport(true)
+			return m, tea.Batch(waitForEvent(m.events), tickRunPulse())
+		case "run-done", "run-failed":
+			m.runPulseActive = false
+		}
+		m.items = append(m.items, item)
 		m.refreshContextUsage()
 		m.syncViewport(true)
 		return m, waitForEvent(m.events)
@@ -1049,15 +1091,20 @@ func (m model) renderTranscriptItems(width int) string {
 	if len(m.items) == 1 && m.items[0].role == "banner" {
 		return renderWelcomeBanner(m, width)
 	}
-	return renderTranscriptContent(m.items, width)
+	return renderTranscriptContentWithFrame(m.items, width, m.runPulseFrame)
 }
 
 func renderTranscriptContent(items []transcriptItem, width int) string {
+	return renderTranscriptContentWithFrame(items, width, 0)
+}
+
+func renderTranscriptContentWithFrame(items []transcriptItem, width int, frame int) string {
 	lines := make([]string, 0, len(items)*2)
 	textWidth := max(20, width-2)
 	for _, item := range items {
 		var plain string
 		style := eventStyle
+		custom := false
 		switch item.role {
 		case "user":
 			plain = wrapWithPrefix("› ", item.text, textWidth)
@@ -1071,6 +1118,24 @@ func renderTranscriptContent(items []transcriptItem, width int) string {
 		case "event":
 			plain = wrapWithPrefix("· ", item.text, textWidth)
 			style = eventStyle
+		case "run-active":
+			plain = renderRunEventLine(activeRunStatus(frame), width, frame, runEventActive)
+			custom = true
+		case "run-done":
+			plain = renderRunEventLine("Delivered", width, frame, runEventDone)
+			custom = true
+		case "run-failed":
+			plain = renderRunEventLine("Blocked", width, frame, runEventFailed)
+			custom = true
+		case "tool-active":
+			plain = renderRunEventLine(item.text, width, frame, runEventToolActive)
+			custom = true
+		case "tool-done":
+			plain = renderRunEventLine(item.text, width, frame, runEventToolDone)
+			custom = true
+		case "tool-failed":
+			plain = renderRunEventLine(item.text, width, frame, runEventToolFailed)
+			custom = true
 		case "error":
 			plain = wrapWithPrefix("error: ", item.text, textWidth)
 			style = errStyle
@@ -1079,7 +1144,11 @@ func renderTranscriptContent(items []transcriptItem, width int) string {
 			style = eventStyle
 		}
 		for _, line := range strings.Split(plain, "\n") {
-			lines = append(lines, style.Render(fitDisplay(line, width)))
+			if custom {
+				lines = append(lines, fitDisplay(line, width))
+			} else {
+				lines = append(lines, style.Render(fitDisplay(line, width)))
+			}
 		}
 		lines = append(lines, "")
 	}
@@ -1087,6 +1156,125 @@ func renderTranscriptContent(items []transcriptItem, width int) string {
 		lines = lines[:len(lines)-1]
 	}
 	return strings.Join(lines, "\n")
+}
+
+type runEventState int
+
+const (
+	runEventActive runEventState = iota
+	runEventDone
+	runEventFailed
+	runEventToolActive
+	runEventToolDone
+	runEventToolFailed
+)
+
+var runLoadingFrames = []string{"[li  ]", "[l i ]", "[l  i]", "[l i ]"}
+
+var runStatusPhrases = []string{
+	"Aligning",
+	"Syncing context",
+	"Scoping",
+	"Mapping",
+	"Structuring",
+	"Reasoning",
+	"Synthesizing",
+	"Prioritizing",
+	"Calibrating",
+	"Reconciling",
+	"Consolidating",
+	"Distilling",
+	"Driving alignment",
+	"Closing the loop",
+	"Moving the needle",
+	"Sharpening scope",
+	"Managing context",
+	"Unblocking path",
+	"De-risking delivery",
+	"Pressure testing",
+	"Deep diving",
+	"Landing decisions",
+	"Operationalizing",
+	"RCA tracing",
+	"SLA checking",
+	"PRD parsing",
+	"RFC shaping",
+	"WIP reducing",
+}
+
+func activeRunStatus(frame int) string {
+	if len(runStatusPhrases) == 0 {
+		return "Working"
+	}
+	return runStatusPhrases[positiveMod(frame/12, len(runStatusPhrases))]
+}
+
+func renderRunEventLine(label string, width int, frame int, state runEventState) string {
+	prefix := "[li  ]"
+	colors := []lipgloss.Color{"208", "214", "220", "226", "221", "215", "209"}
+	switch state {
+	case runEventActive:
+		if len(runLoadingFrames) > 0 {
+			prefix = runLoadingFrames[positiveMod(frame, len(runLoadingFrames))]
+		}
+	case runEventDone:
+		prefix = "[ok  ]"
+		colors = []lipgloss.Color{"76", "82", "118", "154", "190"}
+	case runEventFailed:
+		prefix = "[x   ]"
+		colors = []lipgloss.Color{"196", "203", "209", "215", "209"}
+	case runEventToolActive:
+		prefix = "[run ]"
+		colors = []lipgloss.Color{"37", "43", "79", "115", "151", "115", "79"}
+	case runEventToolDone:
+		prefix = "[ok  ]"
+		colors = []lipgloss.Color{"70", "76", "112", "148", "184"}
+	case runEventToolFailed:
+		prefix = "[x   ]"
+		colors = []lipgloss.Color{"197", "203", "209", "215", "203"}
+	default:
+		prefix = runLoadingFrames[positiveMod(frame, len(runLoadingFrames))]
+	}
+	return shimmerText(fitDisplay(prefix+" "+label, width), colors, frame)
+}
+
+func positiveMod(value, base int) int {
+	if base <= 0 {
+		return 0
+	}
+	value %= base
+	if value < 0 {
+		value += base
+	}
+	return value
+}
+
+func shimmerText(text string, colors []lipgloss.Color, offset int) string {
+	if len(colors) == 0 {
+		return text
+	}
+	var b strings.Builder
+	runes := []rune(text)
+	span := len(colors)
+	lead := positiveMod(offset, len(runes)+span)
+	for i, r := range runes {
+		if r == ' ' {
+			b.WriteRune(r)
+			continue
+		}
+		distance := absInt(i - lead)
+		colorIndex := max(0, span-1-distance)
+		color := colors[colorIndex]
+		b.WriteString(lipgloss.NewStyle().Foreground(color).Bold(true).Render(string(r)))
+	}
+	return b.String()
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func renderTranscript(items []transcriptItem, width, height int, scroll int) string {
@@ -1102,6 +1290,18 @@ func renderTranscript(items []transcriptItem, width, height int, scroll int) str
 			lines = append(lines, shellStyle.Render(wrapText(item.text, textWidth)))
 		case "event":
 			lines = append(lines, eventStyle.Render(wrapWithPrefix("· ", item.text, textWidth)))
+		case "run-active":
+			lines = append(lines, renderRunEventLine(activeRunStatus(0), width, 0, runEventActive))
+		case "run-done":
+			lines = append(lines, renderRunEventLine("Delivered", width, 0, runEventDone))
+		case "run-failed":
+			lines = append(lines, renderRunEventLine("Blocked", width, 0, runEventFailed))
+		case "tool-active":
+			lines = append(lines, renderRunEventLine(item.text, width, 0, runEventToolActive))
+		case "tool-done":
+			lines = append(lines, renderRunEventLine(item.text, width, 0, runEventToolDone))
+		case "tool-failed":
+			lines = append(lines, renderRunEventLine(item.text, width, 0, runEventToolFailed))
 		case "error":
 			lines = append(lines, errStyle.Render(wrapWithPrefix("error: ", item.text, textWidth)))
 		default:
@@ -1255,9 +1455,9 @@ func renderStatusBar(m model, width int) string {
 	}
 	actionParts := []string{}
 	if m.copyMode {
-		actionParts = append(actionParts, "copy mode", "esc back", "⌃C quit")
+		actionParts = append(actionParts, "mouse mode", "wheel scroll", "esc copy", "⌃C quit")
 	} else {
-		actionParts = append(actionParts, "Tab Tab projects", "⌃S sync", "⌃T tree", "⌃K diff", "⌃Y copy", "/cd", "/upgrade", "⌃C quit")
+		actionParts = append(actionParts, "drag copy", "⌃O mouse", "Tab Tab projects", "⌃S sync", "⌃T tree", "⌃K diff", "/cd", "/upgrade", "⌃C quit")
 	}
 	lines := []string{
 		hintStyle.Render(fitDisplay(strings.Join(stateParts, " · "), bodyWidth)),
@@ -1802,12 +2002,14 @@ func sidebarFooterLines(m model, width int) []string {
 	m.gitStatus = git
 	lines = append(lines, truncateDisplay(gitSyncButtonLabel(m), width))
 	if m.copyMode {
-		lines = append(lines, "copy mode")
-		lines = append(lines, "drag select")
+		lines = append(lines, "mouse mode")
+		lines = append(lines, "wheel scroll")
 		lines = append(lines, "esc back")
 		lines = append(lines, "⌃C quit")
 		return lines
 	}
+	lines = append(lines, "drag copy")
+	lines = append(lines, "⌃O mouse")
 	lines = append(lines, "⌃S sync")
 	lines = append(lines, "⌃T tree")
 	lines = append(lines, "⌃K diff")
@@ -1889,9 +2091,9 @@ func sidebarMiddleLines(m model, width int, budget int) []string {
 	var sections [][]string
 	if m.pendingQuestion != "" {
 		section := []string{"", "pending"}
-		section = append(section, limitLines(wrapText(m.pendingQuestion, width), 2)...)
+		section = append(section, limitLines(wrapText(pendingQuestionDisplay(m.pendingQuestion), width), 2)...)
 		if len(m.pendingOptions) > 0 {
-			section = append(section, limitLines(wrapText("choose: "+strings.Join(m.pendingOptions, " / "), width), 2)...)
+			section = append(section, limitLines(wrapText("choose: "+pendingOptionsDisplay(m.pendingOptions), width), 2)...)
 		}
 		sections = append(sections, section)
 	}
@@ -2063,16 +2265,13 @@ func renderPendingAskPanel(question string, options []string, selected int, widt
 	if selected < 0 || selected >= len(options) {
 		selected = 0
 	}
-	textWidth := max(20, width-4)
 	var lines []string
 	if question != "" {
-		for _, line := range strings.Split(wrapText(question, textWidth), "\n") {
-			lines = append(lines, titleStyle.Render(fitDisplay(line, width)))
-		}
+		lines = append(lines, titleStyle.Render(fitDisplay(pendingQuestionDisplay(question), width)))
 		lines = append(lines, "")
 	}
 	for i, opt := range options {
-		title, desc := splitPendingOption(opt)
+		title, desc := splitPendingOptionDisplay(opt)
 		prefix := "  "
 		if i == selected {
 			prefix = "› "
@@ -2085,15 +2284,46 @@ func renderPendingAskPanel(question string, options []string, selected int, widt
 		lines = append(lines, style.Render(fitDisplay(line, width)))
 		if desc != "" {
 			descPrefix := strings.Repeat(" ", lipgloss.Width(prefix)+3)
-			for _, descLine := range strings.Split(wrapText(desc, max(8, width-lipgloss.Width(descPrefix))), "\n") {
-				lines = append(lines, hintStyle.Render(fitDisplay(descPrefix+descLine, width)))
-			}
+			lines = append(lines, hintStyle.Render(fitDisplay(descPrefix+desc, width)))
 		}
 	}
 	if len(options) == 0 && len(lines) > 0 && strings.TrimSpace(question) != "" {
 		lines = lines[:len(lines)-1]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func pendingQuestionDisplay(question string) string {
+	question = strings.TrimSpace(question)
+	const bashPrefix = "是否允许执行命令："
+	if strings.HasPrefix(question, bashPrefix) {
+		command := strings.TrimSpace(strings.TrimPrefix(question, bashPrefix))
+		if command != "" {
+			return bashPrefix + summarizeCommandForDisplay(command)
+		}
+	}
+	return summarizeLongText(question)
+}
+
+func pendingOptionsDisplay(options []string) string {
+	parts := make([]string, 0, len(options))
+	for _, opt := range options {
+		title, desc := splitPendingOptionDisplay(opt)
+		if desc != "" {
+			parts = append(parts, title+" :: "+desc)
+		} else {
+			parts = append(parts, title)
+		}
+	}
+	return strings.Join(parts, " / ")
+}
+
+func splitPendingOptionDisplay(option string) (string, string) {
+	title, desc := splitPendingOption(option)
+	if desc != "" {
+		desc = summarizeCommandForDisplay(desc)
+	}
+	return title, desc
 }
 
 func splitPendingOption(option string) (string, string) {
@@ -2110,8 +2340,343 @@ func splitPendingOption(option string) (string, string) {
 	return option, ""
 }
 
+func summarizeCommandForDisplay(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return ""
+	}
+	lines := nonEmptyLines(command)
+	lower := strings.ToLower(command)
+	first := strings.TrimSpace(lines[0])
+	if isPythonCommand(first) {
+		if script := pythonScriptPath(first); script != "" {
+			return "python 执行脚本 " + script
+		}
+		if strings.Contains(first, " -c ") || strings.Contains(first, " -c=") || strings.HasSuffix(first, " -c") {
+			return pythonInlineSummary(command)
+		}
+		if len(lines) > 1 || strings.Contains(lower, "<<") {
+			return pythonInlineSummary(command)
+		}
+		return summarizeLongText(first)
+	}
+	if len(lines) > 1 {
+		return fmt.Sprintf("%s（共 %d 行）", summarizeLongText(first), len(lines))
+	}
+	return summarizeLongText(command)
+}
+
+func nonEmptyLines(text string) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	if len(out) == 0 {
+		return []string{strings.TrimSpace(text)}
+	}
+	return out
+}
+
+func isPythonCommand(command string) bool {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	name := fields[0]
+	if strings.Contains(name, "/") {
+		parts := strings.Split(name, "/")
+		name = parts[len(parts)-1]
+	}
+	return name == "python" || name == "python3" || strings.HasPrefix(name, "python3.")
+}
+
+func pythonScriptPath(command string) string {
+	fields := strings.Fields(command)
+	for i := 1; i < len(fields); i++ {
+		field := strings.Trim(fields[i], `"'`)
+		if field == "" || strings.HasPrefix(field, "-") {
+			if field == "-m" {
+				i++
+			}
+			continue
+		}
+		if strings.HasSuffix(field, ".py") {
+			return field
+		}
+		break
+	}
+	return ""
+}
+
+func pythonInlineSummary(command string) string {
+	body := extractPythonInlineBody(command)
+	actions := pythonInlineActions(body)
+	if len(actions) == 0 {
+		return "python 执行内联脚本"
+	}
+	parts := []string{"python " + strings.Join(actions, "、")}
+	if details := pythonInlineDetails(body); len(details) > 0 {
+		parts = append(parts, details...)
+	}
+	return summarizeLongText(strings.Join(parts, " · "))
+}
+
+func extractPythonInlineBody(command string) string {
+	command = strings.TrimSpace(command)
+	lines := strings.Split(command, "\n")
+	if len(lines) > 1 {
+		body := strings.Join(lines[1:], "\n")
+		bodyLines := strings.Split(body, "\n")
+		if len(bodyLines) > 0 {
+			last := strings.TrimSpace(bodyLines[len(bodyLines)-1])
+			if isShellHereDocTerminator(last) {
+				bodyLines = bodyLines[:len(bodyLines)-1]
+			}
+		}
+		return strings.Join(bodyLines, "\n")
+	}
+	if idx := strings.Index(command, " -c "); idx >= 0 {
+		return strings.Trim(strings.TrimSpace(command[idx+4:]), `"'`)
+	}
+	if idx := strings.Index(command, " -c="); idx >= 0 {
+		return strings.Trim(strings.TrimSpace(command[idx+4:]), `"'`)
+	}
+	return ""
+}
+
+func isShellHereDocTerminator(line string) bool {
+	if line == "" || strings.ContainsAny(line, " \t") {
+		return false
+	}
+	for _, r := range line {
+		if !(r == '_' || r == '-' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func pythonInlineActions(body string) []string {
+	lower := strings.ToLower(body)
+	var actions []string
+	add := func(action string) {
+		for _, existing := range actions {
+			if existing == action {
+				return
+			}
+		}
+		actions = append(actions, action)
+	}
+	if strings.Contains(lower, "subprocess.") || strings.Contains(lower, "os.system(") || strings.Contains(lower, "exec(") {
+		add("调用子进程")
+	}
+	if strings.Contains(lower, "requests.") || strings.Contains(lower, "urllib.") || strings.Contains(lower, "httpx.") {
+		add("请求网络")
+	}
+	if strings.Contains(lower, ".write_text(") || strings.Contains(lower, ".write_bytes(") || strings.Contains(lower, "open(") && hasAny(lower, `"w"`, `'w'`, `"a"`, `'a'`) {
+		add("写入文件")
+	}
+	if strings.Contains(lower, ".read_text(") || strings.Contains(lower, ".read_bytes(") || strings.Contains(lower, "open(") && hasAny(lower, `"r"`, `'r'`) {
+		add("读取文件")
+	}
+	if strings.Contains(lower, "json.") {
+		add("处理 JSON")
+	}
+	if strings.Contains(lower, "csv.") {
+		add("处理 CSV")
+	}
+	if strings.Contains(lower, "sqlite3") {
+		add("操作 SQLite")
+	}
+	if strings.Contains(lower, "print(") {
+		add("输出结果")
+	}
+	if len(actions) == 0 {
+		if imports := pythonImportedModules(body); len(imports) > 0 {
+			add("使用 " + strings.Join(imports, "/"))
+		}
+	}
+	if len(actions) > 3 {
+		actions = actions[:3]
+	}
+	return actions
+}
+
+func pythonInlineDetails(body string) []string {
+	var details []string
+	if files := pythonFileLiterals(body); len(files) > 0 {
+		details = append(details, "文件 "+strings.Join(limitStrings(files, 3), "、"))
+	}
+	if urls := pythonURLLiterals(body); len(urls) > 0 {
+		details = append(details, "URL "+strings.Join(limitStrings(urls, 2), "、"))
+	}
+	if cmds := pythonCommandLiterals(body); len(cmds) > 0 {
+		details = append(details, "命令 "+strings.Join(limitStrings(cmds, 2), "、"))
+	}
+	if len(details) > 2 {
+		return details[:2]
+	}
+	return details
+}
+
+func pythonFileLiterals(body string) []string {
+	var out []string
+	for _, value := range quotedStringLiterals(body) {
+		if looksLikeFileLiteral(value) {
+			out = appendUniqueString(out, value)
+		}
+	}
+	return out
+}
+
+func pythonURLLiterals(body string) []string {
+	var out []string
+	for _, value := range quotedStringLiterals(body) {
+		lower := strings.ToLower(value)
+		if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+			out = appendUniqueString(out, value)
+		}
+	}
+	return out
+}
+
+func pythonCommandLiterals(body string) []string {
+	lower := strings.ToLower(body)
+	if !strings.Contains(lower, "subprocess.") && !strings.Contains(lower, "os.system(") {
+		return nil
+	}
+	var out []string
+	for _, value := range quotedStringLiterals(body) {
+		if value == "" || looksLikeFileLiteral(value) || strings.HasPrefix(strings.ToLower(value), "http") {
+			continue
+		}
+		if strings.ContainsAny(value, " \t") || strings.Contains(value, "/") {
+			out = appendUniqueString(out, summarizeLongText(value))
+		}
+	}
+	return out
+}
+
+func quotedStringLiterals(body string) []string {
+	var out []string
+	for i := 0; i < len(body); i++ {
+		quote := body[i]
+		if quote != '\'' && quote != '"' {
+			continue
+		}
+		start := i + 1
+		escaped := false
+		for j := start; j < len(body); j++ {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if body[j] == '\\' {
+				escaped = true
+				continue
+			}
+			if body[j] == quote {
+				value := strings.TrimSpace(body[start:j])
+				if value != "" {
+					out = append(out, value)
+				}
+				i = j
+				break
+			}
+		}
+	}
+	return out
+}
+
+func looksLikeFileLiteral(value string) bool {
+	if value == "" || strings.ContainsAny(value, "\n\r\t") || strings.Contains(value, " ") {
+		return false
+	}
+	lower := strings.ToLower(value)
+	for _, suffix := range []string{".go", ".py", ".js", ".ts", ".json", ".yaml", ".yml", ".toml", ".md", ".txt", ".csv", ".html", ".css", ".sql", ".sh", ".log"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return strings.Contains(value, "/") || strings.HasPrefix(value, ".")
+}
+
+func appendUniqueString(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func limitStrings(values []string, maxItems int) []string {
+	if len(values) <= maxItems {
+		return values
+	}
+	out := append([]string(nil), values[:maxItems]...)
+	out = append(out, fmt.Sprintf("+%d", len(values)-maxItems))
+	return out
+}
+
+func hasAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func pythonImportedModules(body string) []string {
+	seen := map[string]bool{}
+	var modules []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		var name string
+		if strings.HasPrefix(line, "import ") {
+			name = strings.Fields(strings.TrimPrefix(line, "import "))[0]
+		} else if strings.HasPrefix(line, "from ") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				name = fields[1]
+			}
+		}
+		name = strings.Trim(strings.Split(name, ".")[0], ",")
+		if name != "" && !seen[name] {
+			seen[name] = true
+			modules = append(modules, name)
+		}
+		if len(modules) >= 3 {
+			break
+		}
+	}
+	return modules
+}
+
+func summarizeLongText(text string) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	const maxRunes = 96
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes-1]) + "…"
+}
+
 func (m model) hasPendingOptions() bool {
 	return len(m.pendingOptions) > 0
+}
+
+func (m *model) movePendingChoice(delta int) bool {
+	if m == nil || !m.hasPendingOptions() || delta == 0 {
+		return false
+	}
+	m.pendingChoice = (m.pendingChoice + delta + len(m.pendingOptions)) % len(m.pendingOptions)
+	return true
 }
 
 func (m model) pendingOptionByInput(text string) (string, bool) {
@@ -2514,30 +3079,71 @@ func waitForEvent(ch <-chan agentevent.Event) tea.Cmd {
 	}
 }
 
+func tickRunPulse() tea.Cmd {
+	return tea.Tick(140*time.Millisecond, func(time.Time) tea.Msg {
+		return runPulseTickMsg{}
+	})
+}
+
+func eventTranscriptItem(e agentevent.Event) transcriptItem {
+	switch e.Type {
+	case agentevent.TypeAgentRunStarted:
+		return transcriptItem{role: "run-active", text: "Aligning"}
+	case agentevent.TypeAgentRunCompleted:
+		return transcriptItem{role: "run-done", text: "Delivered"}
+	case agentevent.TypeAgentRunFailed:
+		return transcriptItem{role: "run-failed", text: "Blocked"}
+	case agentevent.TypeAgentToolStarted:
+		return transcriptItem{role: "tool-active", text: toolEventText(e, "Tracing")}
+	case agentevent.TypeAgentToolFinished:
+		if toolEventError(e) != "" {
+			return transcriptItem{role: "tool-failed", text: toolEventText(e, "Blocked")}
+		}
+		return transcriptItem{role: "tool-done", text: toolEventText(e, "Validated")}
+	default:
+		return transcriptItem{role: "event", text: eventSummary(e)}
+	}
+}
+
 func eventSummary(e agentevent.Event) string {
 	switch e.Type {
 	case agentevent.TypeAgentRunStarted:
-		return "run started"
+		return "Aligning"
 	case agentevent.TypeAgentRunCompleted:
-		return "run completed"
+		return "Delivered"
 	case agentevent.TypeAgentRunFailed:
-		return "run failed"
+		return "Blocked"
 	case agentevent.TypeAgentToolStarted:
-		if data, ok := e.Data.(map[string]any); ok {
-			return fmt.Sprintf("tool started: %v", data["name"])
-		}
-		return "tool started"
+		return toolEventText(e, "Tracing")
 	case agentevent.TypeAgentToolFinished:
-		if data, ok := e.Data.(map[string]any); ok {
-			if errText, ok := data["error"].(string); ok && errText != "" {
-				return fmt.Sprintf("tool failed: %v: %s", data["name"], errText)
-			}
-			return fmt.Sprintf("tool finished: %v", data["name"])
+		if errText := toolEventError(e); errText != "" {
+			return fmt.Sprintf("%s: %s", toolEventText(e, "Blocked"), errText)
 		}
-		return "tool finished"
+		return toolEventText(e, "Validated")
 	default:
 		return e.Type
 	}
+}
+
+func toolEventText(e agentevent.Event, verb string) string {
+	name := "tool"
+	if data, ok := e.Data.(map[string]any); ok {
+		if value, ok := data["name"].(string); ok && strings.TrimSpace(value) != "" {
+			name = value
+		} else if value := fmt.Sprint(data["name"]); strings.TrimSpace(value) != "" && value != "<nil>" {
+			name = value
+		}
+	}
+	return fmt.Sprintf("%s %s", verb, name)
+}
+
+func toolEventError(e agentevent.Event) string {
+	if data, ok := e.Data.(map[string]any); ok {
+		if errText, ok := data["error"].(string); ok {
+			return strings.TrimSpace(errText)
+		}
+	}
+	return ""
 }
 
 func max(a, b int) int {
