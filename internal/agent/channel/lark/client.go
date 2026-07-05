@@ -300,6 +300,33 @@ func (c *Client) DownloadImage(ctx context.Context, messageID string, imageKey s
 	return contentType, raw, nil
 }
 
+func (c *Client) DownloadFile(ctx context.Context, messageID string, fileKey string) (string, []byte, error) {
+	token, err := c.tenantAccessToken(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	endpoint := "https://open.larksuite.com/open-apis/im/v1/messages/" + url.PathEscape(messageID) + "/resources/" + url.PathEscape(fileKey) + "?type=file"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 20*1024*1024))
+	if resp.StatusCode >= 400 {
+		return "", nil, fmt.Errorf("lark file download failed: %d %s", resp.StatusCode, string(raw))
+	}
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	return contentType, raw, nil
+}
+
 func (c *Client) AddReaction(ctx context.Context, messageID, emojiType string) (string, error) {
 	token, err := c.tenantAccessToken(ctx)
 	if err != nil {

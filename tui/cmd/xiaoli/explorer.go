@@ -46,6 +46,7 @@ type tuiExplorer struct {
 	previewCode bool
 	editor      *miniEditor
 	focusRight  bool
+	selection   transcriptSelection
 	err         string
 }
 
@@ -198,24 +199,123 @@ func (e *tuiExplorer) handleMouse(msg tea.MouseMsg) bool {
 		}
 		return true
 	case tea.MouseLeft:
-		if msg.Action != tea.MouseActionPress || !left {
+		if left {
+			if msg.Action != tea.MouseActionPress {
+				return true
+			}
+			row := msg.Y - 3
+			if row < 0 || row >= e.listHeight() {
+				return true
+			}
+			idx := e.leftScroll + row
+			if idx < 0 || idx >= len(e.entries) {
+				return true
+			}
+			e.selected = idx
+			e.ensureSelectionVisible()
+			e.selection = transcriptSelection{}
+			e.activateSelected()
 			return true
 		}
-		row := msg.Y - 3
-		if row < 0 || row >= e.listHeight() {
+		return e.handlePreviewSelectionMouse(msg)
+	case tea.MouseRelease:
+		return e.handlePreviewSelectionMouse(msg)
+	default:
+		if msg.Action == tea.MouseActionMotion {
+			return e.handlePreviewSelectionMouse(msg)
+		}
+		return false
+	}
+}
+
+func (e *tuiExplorer) handlePreviewSelectionMouse(msg tea.MouseMsg) bool {
+	if e == nil || e.mode == explorerTree && e.editor != nil {
+		return false
+	}
+	point, ok := e.previewMousePoint(msg)
+	if msg.Action == tea.MouseActionRelease || msg.Type == tea.MouseRelease {
+		if !e.selection.dragging {
+			return false
+		}
+		if ok {
+			e.selection.focus = point
+		}
+		e.selection.dragging = false
+		text := selectedTranscriptText(e.previewLines(), e.selection)
+		e.selection.text = text
+		if strings.TrimSpace(text) == "" {
+			e.selection = transcriptSelection{}
+			e.err = ""
 			return true
 		}
-		idx := e.leftScroll + row
-		if idx < 0 || idx >= len(e.entries) {
+		e.selection.active = true
+		if err := copyTextToClipboard(text); err != nil {
+			e.err = "复制失败：" + err.Error()
+		} else {
+			e.err = "已复制选中内容"
+		}
+		return true
+	}
+	if !ok {
+		if e.selection.dragging && msg.Action == tea.MouseActionMotion {
+			e.selection.focus = point
+			e.selection.active = true
 			return true
 		}
-		e.selected = idx
-		e.ensureSelectionVisible()
-		e.activateSelected()
+		return false
+	}
+	switch msg.Action {
+	case tea.MouseActionPress:
+		if msg.Button != tea.MouseButtonLeft && msg.Type != tea.MouseLeft {
+			return false
+		}
+		e.focusRight = true
+		e.selection = transcriptSelection{dragging: true, anchor: point, focus: point}
+		e.err = "选择中"
+		return true
+	case tea.MouseActionMotion:
+		if !e.selection.dragging {
+			return false
+		}
+		e.selection.focus = point
+		if point != e.selection.anchor {
+			e.selection.active = true
+		}
 		return true
 	default:
 		return false
 	}
+}
+
+func (e *tuiExplorer) previewMousePoint(msg tea.MouseMsg) (selectionPoint, bool) {
+	rightTotalWidth := max(20, e.width-e.leftWidth)
+	rightContentWidth := max(12, rightTotalWidth-boxStyle.GetHorizontalFrameSize())
+	previewHeight := max(0, max(4, e.height-5-boxStyle.GetVerticalFrameSize())-3)
+	x := msg.X - e.leftWidth - 2
+	y := msg.Y - 4
+	point := selectionPoint{x: x, y: e.rightScroll + y}
+	if x < 0 {
+		point.x = 0
+	}
+	if y < 0 {
+		point.y = e.rightScroll
+	}
+	if point.x > rightContentWidth-1 {
+		point.x = max(0, rightContentWidth-1)
+	}
+	maxLine := len(e.previewLines()) - 1
+	if maxLine < 0 {
+		maxLine = 0
+	}
+	if point.y > maxLine {
+		point.y = maxLine
+	}
+	ok := msg.X >= e.leftWidth+2 &&
+		msg.X < e.leftWidth+2+rightContentWidth &&
+		msg.Y >= 4 &&
+		msg.Y < 4+previewHeight &&
+		len(e.previewLines()) > 0
+	return point, ok
 }
 
 func (e *tuiExplorer) View() string {
@@ -312,12 +412,21 @@ func (e *tuiExplorer) renderRight(width, height int) string {
 	if e.mode == explorerTree && e.editor != nil {
 		return e.editor.render(width, height)
 	}
-	for _, line := range visibleLines(e.previewLines(), e.rightScroll, max(0, height-3)) {
+	allLines := e.previewLines()
+	start := clamp(e.rightScroll, 0, len(allLines))
+	end := min(len(allLines), start+max(0, height-3))
+	for y := start; y < end; y++ {
+		line := allLines[y]
 		if e.mode == explorerDiff {
-			lines = append(lines, styleDiffLine(line, width))
+			line = styleDiffLine(line, width)
 		} else {
-			lines = append(lines, stylePreviewLine(line, width))
+			line = stylePreviewLine(line, width)
 		}
+		if e.selection.active || e.selection.dragging {
+			startSel, endSel := normalizedSelection(e.selection)
+			line = renderSelectionOverlayLine(line, y, startSel, endSel, width)
+		}
+		lines = append(lines, line)
 	}
 	if e.previewPath != "" {
 		lines = append(lines, hintStyle.Render(fitDisplay("file: "+e.previewPath, width)))
@@ -464,6 +573,7 @@ func (e *tuiExplorer) toggleSelectedStage(entry explorerEntry) error {
 
 func (e *tuiExplorer) refreshPreview() {
 	e.rightScroll = 0
+	e.selection = transcriptSelection{}
 	e.preview = ""
 	e.previewRaw = ""
 	e.previewCode = false

@@ -59,8 +59,9 @@ type transcriptItem struct {
 type slashSuggestion = slash.Suggestion
 
 type chatDoneMsg struct {
-	reply string
-	err   error
+	reply     string
+	err       error
+	reviewFix bool
 }
 
 const defaultChatTimeout = 10 * time.Minute
@@ -86,6 +87,11 @@ type gitSyncDoneMsg struct {
 type selectionCopyDoneMsg struct {
 	text string
 	err  error
+}
+
+type linkOpenDoneMsg struct {
+	url string
+	err error
 }
 
 type clipboardImageDoneMsg struct {
@@ -123,6 +129,13 @@ type transcriptSelection struct {
 	text     string
 }
 
+type transcriptLink struct {
+	URL string
+	x0  int
+	x1  int
+	y   int
+}
+
 type updateCheckDoneMsg struct {
 	info updateInfo
 }
@@ -132,6 +145,8 @@ type bashApprovalDoneMsg struct {
 	output    string
 	err       error
 	sessionID string
+	toolUseID string
+	reviewFix bool
 }
 
 type gitSyncState struct {
@@ -166,53 +181,66 @@ func (i updateInfo) Available() bool {
 	return !isDevVersion(i.Current) && i.Latest != "" && compareVersions(i.Current, i.Latest) < 0
 }
 
+type focusArea int
+
+const (
+	focusInput focusArea = iota
+	focusTranscript
+)
+
 type model struct {
-	app                *localapp.App
-	events             chan agentevent.Event
-	chatMsgs           chan tea.Msg
-	activeCancel       context.CancelFunc
-	chatCanceled       bool
-	input              textinput.Model
-	inputHistory       []string
-	historyIndex       int
-	historyDraft       string
-	pastedContents     map[int]pastedContent
-	nextPasteID        int
-	shellHistory       []string
-	shellHistIndex     int
-	shellHistDraft     string
-	items              []transcriptItem
-	sessionID          string
-	cwd                string
-	workspaceStatePath string
-	workspacePicker    *workspacePicker
-	lastTabAt          time.Time
-	gitStatus          string
-	gitSync            gitSyncState
-	gitSyncFeedback    gitSyncFeedback
-	logPath            string
-	updateInfo         updateInfo
-	contextUsage       *agentruntime.ContextUsage
-	runPulseFrame      int
-	runPulseActive     bool
-	scroll             int
-	viewport           viewport.Model
-	streamingIndex     int
-	hadChatInput       bool
-	width              int
-	height             int
-	busy               bool
-	status             string
-	lastError          string
-	pendingBashHash    string
-	pendingQuestion    string
-	pendingOptions     []string
-	pendingChoice      int
-	pendingGitCmsg     gitCmsgPending
-	explorer           *tuiExplorer
-	mouseEnabled       bool
-	selection          transcriptSelection
-	quitting           bool
+	app                  *localapp.App
+	events               chan agentevent.Event
+	chatMsgs             chan tea.Msg
+	activeCancel         context.CancelFunc
+	chatCanceled         bool
+	input                textinput.Model
+	inputHistory         []string
+	historyIndex         int
+	historyDraft         string
+	pastedContents       map[int]pastedContent
+	nextPasteID          int
+	shellHistory         []string
+	shellHistIndex       int
+	shellHistDraft       string
+	items                []transcriptItem
+	sessionID            string
+	cwd                  string
+	workspaceStatePath   string
+	workspacePicker      *workspacePicker
+	lastTabAt            time.Time
+	gitStatus            string
+	gitSync              gitSyncState
+	gitSyncFeedback      gitSyncFeedback
+	logPath              string
+	updateInfo           updateInfo
+	contextUsage         *agentruntime.ContextUsage
+	runPulseFrame        int
+	runPulseActive       bool
+	scroll               int
+	viewport             viewport.Model
+	streamingIndex       int
+	hadChatInput         bool
+	planMode             bool
+	width                int
+	height               int
+	busy                 bool
+	status               string
+	lastError            string
+	pendingBashHash      string
+	pendingBashToolUseID string
+	pendingBashReviewFix bool
+	pendingQuestion      string
+	pendingOptions       []string
+	pendingChoice        int
+	pendingGitCmsg       gitCmsgPending
+	reviewLoop           codexReviewLoop
+	explorer             *tuiExplorer
+	mouseEnabled         bool
+	focus                focusArea
+	selection            transcriptSelection
+	transcriptLinks      []transcriptLink
+	quitting             bool
 }
 
 var (
@@ -222,6 +250,7 @@ var (
 	shellStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("110"))
 	eventStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	errStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+	linkStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Underline(true)
 	hintStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	boxStyle           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
 	sideStyle          = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
@@ -235,6 +264,8 @@ var (
 	gitFailedStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("203")).Bold(true)
 	ansiEscapeRE       = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 	mouseSGRFragmentRE = regexp.MustCompile(`(?:\x1b)?\[<\d+;\d+;\d+[Mm]`)
+	markdownLinkRE     = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^)\s]+)\)`)
+	bareURLRE          = regexp.MustCompile(`https?://[^\s\]\)]+`)
 )
 
 const (
@@ -499,9 +530,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.mouseEnabled {
 			return m, nil
 		}
+		if m.mouseInInputArea(msg) {
+			m.focus = focusInput
+		} else if m.mouseInMainViewport(msg) {
+			m.focus = focusTranscript
+		}
 		if m.explorer != nil {
 			m.explorer.handleMouse(msg)
 			return m, nil
+		}
+		if url, ok := m.transcriptLinkAt(msg); ok {
+			m.status = "opening link"
+			return m, openURLCmd(url)
 		}
 		if handled, cmd := m.handleTranscriptSelectionMouse(msg); handled {
 			return m, cmd
@@ -512,6 +552,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !isMouseWheel(msg) || !m.mouseInMainViewport(msg) {
 			return m, nil
 		}
+		m.focus = focusTranscript
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		return m, vpCmd
@@ -526,6 +567,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.explorer != nil && msg.String() == "tab" {
+			if m.consumeDoubleTab() {
+				m.explorer = nil
+				m.refreshGitSync()
+				m.openWorkspacePicker()
+				return m, nil
+			}
+			m.markTab()
+		}
 		if m.explorer != nil {
 			next, cmd, handled := m.explorer.handleKey(msg)
 			if handled {
@@ -534,6 +584,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.refreshGitSync()
 				}
 				return m, cmd
+			}
+			if msg.String() == "tab" {
+				return m, nil
 			}
 		}
 		if handled, cmd := m.handlePasteKey(msg); handled {
@@ -607,19 +660,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 			return m, nil
 		case "up":
-			if m.movePendingChoice(-1) {
-				return m, nil
-			}
-			if m.navigateInputHistory(-1) {
-				return m, nil
-			}
+			return m.handleVerticalKey(-1)
 		case "down":
-			if m.movePendingChoice(1) {
-				return m, nil
-			}
-			if m.navigateInputHistory(1) {
-				return m, nil
-			}
+			return m.handleVerticalKey(1)
 		case "left", "shift+tab":
 			if m.movePendingChoice(-1) {
 				return m, nil
@@ -650,6 +693,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "enter":
+			m.focus = focusInput
 			text := strings.TrimSpace(m.expandInputAttachments(m.input.Value()))
 			if text == "" && m.hasPendingOptions() {
 				text = pendingOptionValue(m.pendingOptions[m.pendingChoice])
@@ -692,6 +736,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.syncViewport(true)
 				return m, nil
 			}
+			planRequest := false
+			if plan, ok := parsePlanCommand(text); ok {
+				switch plan.Action {
+				case planCommandEnter:
+					m.planMode = true
+					m.input.SetValue("")
+					m.items = append(m.items, transcriptItem{role: "system", text: "已进入计划模式。后续请求只会要求模型输出计划，不会要求改代码。用 /plan off 退出。"})
+					m.status = "plan"
+					m.syncViewport(true)
+					return m, nil
+				case planCommandExit:
+					m.planMode = false
+					m.input.SetValue("")
+					m.items = append(m.items, transcriptItem{role: "system", text: "已退出计划模式。"})
+					m.status = "idle"
+					m.syncViewport(true)
+					return m, nil
+				case planCommandStart:
+					text = planPrompt(plan.Prompt)
+					planRequest = true
+				}
+			} else if m.planMode && !strings.HasPrefix(strings.TrimSpace(text), "/") {
+				text = planPrompt(text)
+				planRequest = true
+			}
 			if m.handleLocalCommand(text) {
 				m.input.SetValue("")
 				m.status = "idle"
@@ -699,46 +768,55 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.syncViewport(true)
 				return m, nil
 			}
+			if m.shouldBlockStaleBashContinuation(text) {
+				m.input.SetValue("")
+				m.status = "idle"
+				m.items = append(m.items, transcriptItem{role: "system", text: "没有正在等待确认的命令。请重新描述任务，或让模型重新发起需要审批的命令。"})
+				m.syncViewport(true)
+				return m, nil
+			}
 			m.lastError = ""
 			m.items = append(m.items, transcriptItem{role: "user", text: m.inputDisplayText()})
 			if m.pendingBashHash != "" {
 				if isReject(text) {
-					agentbuiltin.ClearBashApproval(m.activeSessionID())
-					m.pendingBashHash = ""
-					m.pendingQuestion = ""
-					m.pendingOptions = nil
-					m.pendingChoice = 0
+					m.clearPendingBashState(m.activeSessionID(), true)
 					m.input.SetValue("")
 					m.items = append(m.items, transcriptItem{role: "system", text: "已拒绝执行命令。"})
 					return m, nil
 				}
 				if isApprove(text) || isBashApprovalChoice(text) {
 					sessionID := m.activeSessionID()
-					command, ok := agentbuiltin.PendingBashCommand(sessionID, m.pendingBashHash)
-					if ok {
-						if err := agentbuiltin.StoreBashApprovalChoice(sessionID, m.pendingBashHash, normalizeBashApprovalChoice(text)); err != nil {
-							agentbuiltin.ClearBashApproval(sessionID)
-							m.pendingBashHash = ""
-							m.pendingQuestion = ""
-							m.pendingOptions = nil
-							m.pendingChoice = 0
-							m.input.SetValue("")
-							m.items = append(m.items, transcriptItem{role: "error", text: "保存 Bash 权限失败：" + err.Error()})
-							m.syncViewport(true)
-							return m, nil
-						}
+					reviewFix := m.pendingBashReviewFix
+					command, toolUseID, expired, ok := agentbuiltin.PendingBashApproval(sessionID, m.pendingBashHash)
+					if strings.TrimSpace(toolUseID) == "" {
+						toolUseID = m.pendingBashToolUseID
 					}
-					agentbuiltin.ClearBashApproval(sessionID)
-					m.pendingBashHash = ""
-					m.pendingQuestion = ""
-					m.pendingOptions = nil
-					m.pendingChoice = 0
 					m.input.SetValue("")
 					if !ok {
+						m.clearPendingBashState(sessionID, true)
 						m.items = append(m.items, transcriptItem{role: "error", text: "待审批命令已失效，请重新发起。"})
 						m.syncViewport(true)
 						return m, nil
 					}
+					if expired {
+						m.clearPendingBashState(sessionID, true)
+						m.busy = true
+						m.status = "running"
+						m.items = append(m.items, transcriptItem{role: "error", text: "待审批命令已过期，已通知模型重新发起。"})
+						m.syncViewport(true)
+						prompt := formatExpiredBashFollowup(toolUseID, command)
+						chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
+						m.activeCancel = cancel
+						m.chatCanceled = false
+						return m, tea.Batch(m.startBashFollowupChat(chatCtx, sessionID, prompt, reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events))
+					}
+					if err := agentbuiltin.StoreBashApprovalChoice(sessionID, m.pendingBashHash, normalizeBashApprovalChoice(text)); err != nil {
+						m.clearPendingBashState(sessionID, true)
+						m.items = append(m.items, transcriptItem{role: "error", text: "保存 Bash 权限失败：" + err.Error()})
+						m.syncViewport(true)
+						return m, nil
+					}
+					m.clearPendingBashState(sessionID, true)
 					m.busy = true
 					m.status = "bash running"
 					m.items = append(m.items, transcriptItem{role: "event", text: "approved bash: " + command})
@@ -746,7 +824,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 					m.activeCancel = cancel
 					m.chatCanceled = false
-					return m, startApprovedBashCommand(runCtx, m.cwd, command, sessionID)
+					return m, startApprovedBashCommand(runCtx, m.cwd, command, sessionID, toolUseID, reviewFix)
 				}
 			}
 			if m.pendingGitCmsg.Active {
@@ -763,6 +841,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.busy = true
 				m.status = "commit"
 				m.appendRunActiveEvent("Preparing commit")
+				m.syncViewport(true)
+				return m, tea.Batch(cmd, tickRunPulse())
+			}
+			if cmd := m.startCodexReviewSlash(text); cmd != nil {
+				m.input.SetValue("")
+				m.busy = true
+				m.status = "review"
+				m.appendRunActiveEvent(m.reviewLoop.reviewLabel())
 				m.syncViewport(true)
 				return m, tea.Batch(cmd, tickRunPulse())
 			}
@@ -798,7 +884,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
 			m.activeCancel = cancel
 			m.chatCanceled = false
-			return m, tea.Batch(startChat(chatCtx, m.app.Agent, m.chatMsgs, m.sessionID, text), waitForChat(m.chatMsgs), waitForEvent(m.events))
+			return m, tea.Batch(startChatCmd(chatCtx, m.app.Agent, m.chatMsgs, m.sessionID, m.cwd, text, disabledToolsForPlanMode(m.planMode || planRequest)), waitForChat(m.chatMsgs), waitForEvent(m.events))
 		}
 	case chatDeltaMsg:
 		if m.chatCanceled {
@@ -816,6 +902,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshContextUsage()
 		return m, waitForChat(m.chatMsgs)
 	case chatDoneMsg:
+		if msg.reviewFix {
+			return m.handleCodexReviewFixDone(msg)
+		}
 		m.busy = false
 		m.status = "idle"
 		if m.activeCancel != nil {
@@ -852,8 +941,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingQuestion = ask.Question
 			m.pendingOptions = append([]string(nil), ask.Options...)
 			m.pendingChoice = 0
+			logger.Infof("tui pending ask loaded: bash=%v question_len=%d options=%d", ask.BashHash != "", len(ask.Question), len(ask.Options))
 			if ask.BashHash != "" {
 				m.pendingBashHash = ask.BashHash
+				m.pendingBashToolUseID = ask.BashToolUseID
+				m.pendingBashReviewFix = msg.reviewFix
 				m.status = "waiting approval"
 			} else if len(m.pendingOptions) > 0 {
 				m.status = "waiting input"
@@ -909,11 +1001,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "running"
 		m.items = append(m.items, bashApprovalTranscriptItem(msg))
 		m.syncViewport(true)
-		prompt := formatApprovedBashFollowup(msg.command, msg.output, msg.err)
+		prompt := formatApprovedBashFollowup(msg.toolUseID, msg.command, msg.output, msg.err)
 		chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
 		m.activeCancel = cancel
 		m.chatCanceled = false
-		return m, tea.Batch(startChat(chatCtx, m.app.Agent, m.chatMsgs, msg.sessionID, prompt), waitForChat(m.chatMsgs), waitForEvent(m.events))
+		return m, tea.Batch(m.startBashFollowupChat(chatCtx, msg.sessionID, prompt, msg.reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events))
 	case gitCmsgPrepareMsg:
 		m.busy = false
 		m.status = "idle"
@@ -977,6 +1069,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.syncViewport(true)
 		return m, nil
+	case codexReviewDoneMsg:
+		return m.handleCodexReviewDone(msg)
 	case gitSyncDoneMsg:
 		m.busy = false
 		m.status = "idle"
@@ -1016,6 +1110,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("copied %d chars", len([]rune(msg.text)))
 		}
 		return m, nil
+	case linkOpenDoneMsg:
+		if msg.err != nil {
+			m.status = "open failed"
+			m.lastError = msg.err.Error()
+			return m, nil
+		}
+		m.status = "link opened"
+		return m, nil
 	case updateCheckDoneMsg:
 		m.updateInfo = msg.info
 		m.syncViewport(false)
@@ -1050,10 +1152,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var vpCmd tea.Cmd
 	m.viewport, vpCmd = m.viewport.Update(msg)
+	oldInput := m.input.Value()
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	if cleaned := stripMouseSGRFragments(m.input.Value()); cleaned != m.input.Value() {
 		m.input.SetValue(cleaned)
+	}
+	if m.input.Value() != oldInput {
+		m.focus = focusInput
 	}
 	m.pruneUnreferencedPastedContents()
 	return m, tea.Batch(vpCmd, cmd)
@@ -1124,14 +1230,16 @@ func (m *model) syncViewport(gotoBottom bool) {
 	atBottom := m.viewport.AtBottom()
 	m.viewport.Width = mainW
 	m.viewport.Height = bodyH
-	m.viewport.SetContent(m.renderTranscriptContent(mainW))
+	content, links := m.renderTranscriptContentWithLinks(mainW)
+	m.transcriptLinks = links
+	m.viewport.SetContent(content)
 	if gotoBottom || atBottom {
 		m.viewport.GotoBottom()
 	}
 }
 
 func (m model) renderTranscriptContent(width int) string {
-	content := m.renderTranscriptItems(width)
+	content, _ := m.renderTranscriptItemsWithLinks(width)
 	if m.hasPendingOptions() || strings.TrimSpace(m.pendingQuestion) != "" {
 		panel := renderPendingAskPanel(m.pendingQuestion, m.pendingOptions, m.pendingChoice, width)
 		if strings.TrimSpace(content) == "" {
@@ -1142,11 +1250,29 @@ func (m model) renderTranscriptContent(width int) string {
 	return content
 }
 
-func (m model) renderTranscriptItems(width int) string {
-	if len(m.items) == 1 && m.items[0].role == "banner" {
-		return renderWelcomeBanner(m, width)
+func (m model) renderTranscriptContentWithLinks(width int) (string, []transcriptLink) {
+	content, links := m.renderTranscriptItemsWithLinks(width)
+	if m.hasPendingOptions() || strings.TrimSpace(m.pendingQuestion) != "" {
+		panel := renderPendingAskPanel(m.pendingQuestion, m.pendingOptions, m.pendingChoice, width)
+		if strings.TrimSpace(content) == "" {
+			return panel, nil
+		}
+		return content + "\n\n" + panel, links
 	}
-	return renderTranscriptContentWithFrame(m.items, width, m.runPulseFrame)
+	return content, links
+}
+
+func (m model) renderTranscriptItems(width int) string {
+	content, _ := m.renderTranscriptItemsWithLinks(width)
+	return content
+}
+
+func (m model) renderTranscriptItemsWithLinks(width int) (string, []transcriptLink) {
+	if len(m.items) == 1 && m.items[0].role == "banner" {
+		return renderWelcomeBanner(m, width), nil
+	}
+	rendered := renderTranscriptContentWithFrameAndLinks(m.items, width, m.runPulseFrame)
+	return rendered.content, rendered.links
 }
 
 func renderTranscriptContent(items []transcriptItem, width int) string {
@@ -1154,29 +1280,54 @@ func renderTranscriptContent(items []transcriptItem, width int) string {
 }
 
 func renderTranscriptContentWithFrame(items []transcriptItem, width int, frame int) string {
+	return renderTranscriptContentWithFrameAndLinks(items, width, frame).content
+}
+
+type renderedTranscriptContent struct {
+	content string
+	links   []transcriptLink
+}
+
+type linkedLine struct {
+	text  string
+	links []transcriptLink
+}
+
+type linkedTextResult struct {
+	lines []linkedLine
+}
+
+func renderTranscriptContentWithFrameAndLinks(items []transcriptItem, width int, frame int) renderedTranscriptContent {
 	lines := make([]string, 0, len(items)*2)
+	links := make([]transcriptLink, 0)
 	textWidth := max(20, width-2)
 	latestActive := latestActiveEventIndex(items)
 	for i, item := range items {
 		var plain string
+		var linked linkedTextResult
 		style := eventStyle
 		custom := false
+		hasLinks := false
 		itemFrame := item.frame
 		if i == latestActive {
 			itemFrame = frame
 		}
 		switch item.role {
 		case "user":
-			plain = wrapWithPrefix("› ", item.text, textWidth)
+			linked = renderLinkedText(item.text, textWidth, "› ")
+			hasLinks = true
 			style = userStyle
 		case "assistant":
-			plain = wrapText(item.text, textWidth)
+			linked = renderLinkedText(item.text, textWidth, "")
+			hasLinks = true
 			style = agentStyle
 		case "shell":
-			plain = wrapText(item.text, textWidth)
+			linked = renderLinkedText(item.text, textWidth, "")
+			hasLinks = true
 			style = shellStyle
 		case "event":
-			plain = wrapWithPrefix("· ", item.text, textWidth)
+			linked = renderLinkedText(item.text, textWidth, "· ")
+			hasLinks = true
 			style = eventStyle
 		case "run-active":
 			label := item.text
@@ -1209,11 +1360,25 @@ func renderTranscriptContentWithFrame(items []transcriptItem, width int, frame i
 			plain = renderRunEventLine(item.text, width, itemFrame, runEventToolFailed)
 			custom = true
 		case "error":
-			plain = wrapWithPrefix("error: ", item.text, textWidth)
+			linked = renderLinkedText(item.text, textWidth, "error: ")
+			hasLinks = true
 			style = errStyle
 		default:
-			plain = wrapText(item.text, textWidth)
+			linked = renderLinkedText(item.text, textWidth, "")
+			hasLinks = true
 			style = eventStyle
+		}
+		if hasLinks {
+			for _, line := range linked.lines {
+				row := len(lines)
+				for _, link := range line.links {
+					link.y += row
+					links = append(links, link)
+				}
+				lines = append(lines, renderStyledLinkedLine(line, style, width))
+			}
+			lines = append(lines, "")
+			continue
 		}
 		for _, line := range strings.Split(plain, "\n") {
 			if custom {
@@ -1227,7 +1392,7 @@ func renderTranscriptContentWithFrame(items []transcriptItem, width int, frame i
 	if len(lines) > 0 {
 		lines = lines[:len(lines)-1]
 	}
-	return strings.Join(lines, "\n")
+	return renderedTranscriptContent{content: strings.Join(lines, "\n"), links: links}
 }
 
 func latestActiveEventIndex(items []transcriptItem) int {
@@ -1288,16 +1453,19 @@ func activeRunStatus(frame int) string {
 	if len(runStatusPhrases) == 0 {
 		return "Working"
 	}
-	return runStatusPhrases[positiveMod(frame/32, len(runStatusPhrases))]
+	return runStatusPhrases[0]
 }
 
 func renderRunEventLine(label string, width int, frame int, state runEventState) string {
 	prefix := "(^_^)"
 	colors := []lipgloss.Color{
-		lipgloss.Color("#d77757"),
-		lipgloss.Color("#eb9f7f"),
-		lipgloss.Color("#ffc107"),
-		lipgloss.Color("#eb9f7f"),
+		lipgloss.Color("208"),
+		lipgloss.Color("214"),
+		lipgloss.Color("220"),
+		lipgloss.Color("226"),
+		lipgloss.Color("221"),
+		lipgloss.Color("215"),
+		lipgloss.Color("209"),
 	}
 	switch state {
 	case runEventActive:
@@ -1314,9 +1482,11 @@ func renderRunEventLine(label string, width int, frame int, state runEventState)
 	case runEventFailed:
 		prefix = "(>_<)"
 		colors = []lipgloss.Color{
-			lipgloss.Color("#ff6b80"),
-			lipgloss.Color("#ff9aa8"),
-			lipgloss.Color("#d77757"),
+			lipgloss.Color("197"),
+			lipgloss.Color("203"),
+			lipgloss.Color("209"),
+			lipgloss.Color("215"),
+			lipgloss.Color("203"),
 		}
 	case runEventToolActive:
 		prefix = "(._.)"
@@ -1479,6 +1649,148 @@ func wrapWithPrefix(prefix, text string, width int) string {
 		}
 	}
 	return strings.Join(wrapped, "\n")
+}
+
+type inlineTextPart struct {
+	text string
+	url  string
+}
+
+func renderLinkedText(text string, width int, prefix string) linkedTextResult {
+	parts := parseInlineTextLinks(text)
+	var plain strings.Builder
+	linkDisplays := make([]inlineTextPart, 0)
+	for _, part := range parts {
+		if part.url != "" && part.text != "" {
+			linkDisplays = append(linkDisplays, inlineTextPart{text: part.text, url: part.url})
+		}
+		plain.WriteString(part.text)
+	}
+	wrapped := wrapText(plain.String(), width)
+	if prefix != "" {
+		wrapped = wrapWithPrefix(prefix, plain.String(), width)
+	}
+	rawLines := strings.Split(wrapped, "\n")
+	lines := make([]linkedLine, len(rawLines))
+	for i, line := range rawLines {
+		lines[i] = linkedLine{text: line}
+	}
+	for _, link := range linkDisplays {
+		markFirstLinkMatch(lines, link.text, link.url)
+	}
+	return linkedTextResult{lines: lines}
+}
+
+func parseInlineTextLinks(text string) []inlineTextPart {
+	parts := make([]inlineTextPart, 0)
+	last := 0
+	for _, loc := range markdownLinkRE.FindAllStringSubmatchIndex(text, -1) {
+		if loc[0] > last {
+			parts = append(parts, parseBareURLLinks(text[last:loc[0]])...)
+		}
+		label := text[loc[2]:loc[3]]
+		url := text[loc[4]:loc[5]]
+		if strings.TrimSpace(label) == "" {
+			label = url
+		}
+		parts = append(parts, inlineTextPart{text: label, url: url})
+		last = loc[1]
+	}
+	if last < len(text) {
+		parts = append(parts, parseBareURLLinks(text[last:])...)
+	}
+	return parts
+}
+
+func parseBareURLLinks(text string) []inlineTextPart {
+	parts := make([]inlineTextPart, 0)
+	last := 0
+	for _, loc := range bareURLRE.FindAllStringIndex(text, -1) {
+		if loc[0] > last {
+			parts = append(parts, inlineTextPart{text: text[last:loc[0]]})
+		}
+		raw := text[loc[0]:loc[1]]
+		url, suffix := trimBareURL(raw)
+		if url != "" {
+			parts = append(parts, inlineTextPart{text: url, url: url})
+		}
+		if suffix != "" {
+			parts = append(parts, inlineTextPart{text: suffix})
+		}
+		last = loc[1]
+	}
+	if last < len(text) {
+		parts = append(parts, inlineTextPart{text: text[last:]})
+	}
+	return parts
+}
+
+func trimBareURL(raw string) (string, string) {
+	url := raw
+	for url != "" {
+		r, size := utf8.DecodeLastRuneInString(url)
+		if !strings.ContainsRune(".,;:!?，。；：！？", r) {
+			break
+		}
+		url = url[:len(url)-size]
+	}
+	return url, raw[len(url):]
+}
+
+func markFirstLinkMatch(lines []linkedLine, display, url string) {
+	if display == "" || url == "" {
+		return
+	}
+	for i := range lines {
+		start := strings.Index(lines[i].text, display)
+		if start < 0 {
+			continue
+		}
+		x0 := lipgloss.Width(lines[i].text[:start])
+		x1 := x0 + lipgloss.Width(display)
+		lines[i].links = append(lines[i].links, transcriptLink{URL: url, x0: x0, x1: x1, y: i})
+		return
+	}
+}
+
+func renderStyledLinkedLine(line linkedLine, base lipgloss.Style, width int) string {
+	text := fitDisplay(line.text, width)
+	if len(line.links) == 0 {
+		return base.Render(text)
+	}
+	runes := []rune(text)
+	var b strings.Builder
+	cursor := 0
+	for _, link := range line.links {
+		start := runeIndexAtDisplayColumn(text, link.x0)
+		end := runeIndexAtDisplayColumn(text, link.x1)
+		if start > cursor {
+			b.WriteString(base.Render(string(runes[cursor:start])))
+		}
+		if end > start {
+			b.WriteString(linkStyle.Render(string(runes[start:end])))
+		}
+		cursor = end
+	}
+	if cursor < len(runes) {
+		b.WriteString(base.Render(string(runes[cursor:])))
+	}
+	return b.String()
+}
+
+func runeIndexAtDisplayColumn(text string, column int) int {
+	if column <= 0 {
+		return 0
+	}
+	width := 0
+	for i, r := range []rune(text) {
+		next := width + lipgloss.Width(string(r))
+		if next > column {
+			return i
+		}
+		width = next
+	}
+	return utf8.RuneCountInString(text)
 }
 
 func renderScrollGutter(lines []string, width, height, totalLines, scroll int) string {
@@ -1698,6 +2010,7 @@ func renderWelcomeCommands(width int) string {
 		{Key: "/tree", Text: "browse project"},
 		{Key: "/diff", Text: "review changes"},
 		{Key: "/commit", Text: "generate commit"},
+		{Key: "/review", Text: "codex review"},
 		{Key: "/upgrade", Text: "show upgrade command"},
 		{Key: "Ctrl+S", Text: "git sync"},
 		{Key: "Ctrl+T", Text: "open tree"},
@@ -2148,6 +2461,11 @@ func (m model) mouseInMainViewport(msg tea.MouseMsg) bool {
 	return msg.X >= 0 && msg.X < mainW && msg.Y >= 0 && msg.Y < bodyH
 }
 
+func (m model) mouseInInputArea(msg tea.MouseMsg) bool {
+	_, _, bodyH, promptW, statusH := layoutSizes(m.width, m.height)
+	return msg.X >= 0 && msg.X < promptW && msg.Y >= bodyH && msg.Y < m.height-statusH
+}
+
 func (m *model) handleTranscriptSelectionMouse(msg tea.MouseMsg) (bool, tea.Cmd) {
 	if isMouseWheel(msg) {
 		return false, nil
@@ -2222,7 +2540,55 @@ func (m model) transcriptMousePoint(msg tea.MouseMsg) (selectionPoint, bool) {
 	if point.y > maxY {
 		point.y = maxY
 	}
-	return point, msg.X >= 2 && msg.X < mainW-1 && msg.Y >= 1 && msg.Y < bodyH-1
+	return point, msg.X >= 2 && msg.X < mainW-1 && msg.Y >= 1 && msg.Y < bodyH
+}
+
+func (m model) transcriptLinkAt(msg tea.MouseMsg) (string, bool) {
+	if msg.Action != tea.MouseActionPress && msg.Type != tea.MouseLeft {
+		return "", false
+	}
+	if msg.Button != tea.MouseButtonLeft && msg.Type != tea.MouseLeft {
+		return "", false
+	}
+	point, ok := m.transcriptMousePoint(msg)
+	if !ok {
+		return "", false
+	}
+	fullY := m.viewport.YOffset + point.y
+	for _, link := range m.transcriptLinks {
+		if link.y == fullY && point.x >= link.x0 && point.x < link.x1 {
+			return link.URL, true
+		}
+	}
+	return "", false
+}
+
+func openURLCmd(url string) tea.Cmd {
+	return func() tea.Msg {
+		return linkOpenDoneMsg{url: url, err: openURLFunc(url)}
+	}
+}
+
+var openURLFunc = openURL
+
+func openURL(url string) error {
+	if strings.TrimSpace(url) == "" {
+		return fmt.Errorf("链接为空")
+	}
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		if path, err := exec.LookPath("xdg-open"); err == nil {
+			cmd = exec.Command(path, url)
+		} else {
+			return fmt.Errorf("未找到可用打开链接程序（xdg-open）")
+		}
+	}
+	return cmd.Start()
 }
 
 func copySelectionCmd(text string) tea.Cmd {
@@ -2598,6 +2964,8 @@ func appendLocalSuggestions(value string, suggestions []slashSuggestion) []slash
 		{Name: "tree", Description: "打开项目目录树", Kind: "tui"},
 		{Name: "diff", Description: "查看当前 Git 变更", Kind: "tui"},
 		{Name: "commit", Description: "生成并提交当前变更", Kind: "tui"},
+		{Name: "review", Description: "用 Codex 审查当前变更", Kind: "tui"},
+		{Name: "plan", Description: "进入计划模式或为请求生成计划", Kind: "tui"},
 		{Name: "version", Description: "查看 TUI 版本", Kind: "tui"},
 		{Name: "upgrade", Description: "查看升级命令", Kind: "tui"},
 	}
@@ -3061,12 +3429,76 @@ func (m model) hasPendingOptions() bool {
 	return len(m.pendingOptions) > 0
 }
 
+func (m *model) clearPendingBashState(sessionID string, clearApproval bool) {
+	if clearApproval && strings.TrimSpace(sessionID) != "" {
+		agentbuiltin.ClearBashApproval(sessionID)
+	}
+	m.pendingBashHash = ""
+	m.pendingBashToolUseID = ""
+	m.pendingBashReviewFix = false
+	m.pendingQuestion = ""
+	m.pendingOptions = nil
+	m.pendingChoice = 0
+}
+
+func (m model) startBashFollowupChat(ctx context.Context, sessionID, prompt string, reviewFix bool) tea.Cmd {
+	if reviewFix {
+		return startReviewFixChatCmd(ctx, m.appAgent(), m.chatMsgs, sessionID, m.cwd, prompt, disabledToolsForPlanMode(m.planMode))
+	}
+	return startChatCmd(ctx, m.appAgent(), m.chatMsgs, sessionID, m.cwd, prompt, disabledToolsForPlanMode(m.planMode))
+}
+
+func (m model) shouldBlockStaleBashContinuation(text string) bool {
+	if strings.TrimSpace(m.pendingBashHash) != "" || !isContinuationText(text) {
+		return false
+	}
+	for i := len(m.items) - 1; i >= 0; i-- {
+		if m.items[i].role != "assistant" {
+			continue
+		}
+		return strings.Contains(m.items[i].text, "等待你确认命令")
+	}
+	return false
+}
+
+func isContinuationText(text string) bool {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "go on", "continue", "继续", "继续吧", "接着", "接着做", "继续干", "继续做":
+		return true
+	default:
+		return false
+	}
+}
+
 func (m *model) movePendingChoice(delta int) bool {
 	if m == nil || !m.hasPendingOptions() || delta == 0 {
 		return false
 	}
 	m.pendingChoice = (m.pendingChoice + delta + len(m.pendingOptions)) % len(m.pendingOptions)
 	return true
+}
+
+func (m model) handleVerticalKey(direction int) (tea.Model, tea.Cmd) {
+	if m.movePendingChoice(direction) {
+		return m, nil
+	}
+	if m.shouldNavigateInputHistory() {
+		m.navigateInputHistory(direction)
+		return m, nil
+	}
+	if m.focus == focusTranscript {
+		if direction < 0 {
+			m.viewport.LineUp(1)
+		} else {
+			m.viewport.LineDown(1)
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m model) shouldNavigateInputHistory() bool {
+	return m.focus != focusTranscript || m.input.Focused() || strings.TrimSpace(m.input.Value()) != ""
 }
 
 func (m model) pendingOptionByInput(text string) (string, bool) {
@@ -3520,6 +3952,55 @@ func (m *model) handleLocalCommand(text string) bool {
 	}
 }
 
+type planCommandAction int
+
+const (
+	planCommandNone planCommandAction = iota
+	planCommandEnter
+	planCommandExit
+	planCommandStart
+)
+
+type planCommand struct {
+	Action planCommandAction
+	Prompt string
+}
+
+func parsePlanCommand(text string) (planCommand, bool) {
+	args := strings.Fields(strings.TrimSpace(text))
+	if len(args) == 0 || strings.ToLower(args[0]) != "/plan" {
+		return planCommand{}, false
+	}
+	if len(args) == 1 {
+		return planCommand{Action: planCommandEnter}, true
+	}
+	rest := strings.TrimSpace(strings.Join(args[1:], " "))
+	switch strings.ToLower(rest) {
+	case "off", "exit", "quit", "cancel":
+		return planCommand{Action: planCommandExit}, true
+	default:
+		return planCommand{Action: planCommandStart, Prompt: rest}, true
+	}
+}
+
+func planPrompt(prompt string) string {
+	prompt = strings.TrimSpace(prompt)
+	return "进入计划模式处理下面的请求。\n\n" +
+		"要求：\n" +
+		"- 只输出计划、风险和需要用户确认的问题。\n" +
+		"- 不要修改文件。\n" +
+		"- 不要执行会改变状态的命令。\n" +
+		"- 如果必须查看代码，只能使用只读工具或只读命令。\n\n" +
+		"请求：\n" + prompt
+}
+
+func disabledToolsForPlanMode(planMode bool) []string {
+	if !planMode {
+		return nil
+	}
+	return []string{"edit_file", "file_write", "bash", "channel_send"}
+}
+
 func resolveCDPath(cwd, raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -3568,7 +4049,22 @@ func (m *model) consumeDoubleTab() bool {
 
 func (m *model) openWorkspacePicker() {
 	items := loadWorkspaceSessions(m.workspaceStatePath)
+	m.enrichWorkspaceSessionTitles(items)
 	m.workspacePicker = newWorkspacePicker(items, m.cwd, m.width, m.height)
+}
+
+func (m *model) enrichWorkspaceSessionTitles(items []workspaceItem) {
+	if m == nil || m.app == nil || m.app.Agent == nil {
+		return
+	}
+	for i := range items {
+		if !isDefaultSessionTitle(items[i].Title) {
+			continue
+		}
+		if title := firstUserPromptTitle(m.app.Agent, items[i].SessionID); title != "" {
+			items[i].Title = title
+		}
+	}
 }
 
 func (m *model) switchWorkspace(item workspaceItem) {
@@ -3576,6 +4072,7 @@ func (m *model) switchWorkspace(item workspaceItem) {
 	if target == "" {
 		return
 	}
+	oldSessionID := m.activeSessionID()
 	if err := m.setCWD(target); err != nil {
 		if m.workspacePicker != nil {
 			m.workspacePicker.err = "Project unavailable: " + target
@@ -3583,11 +4080,17 @@ func (m *model) switchWorkspace(item workspaceItem) {
 		return
 	}
 	nextSessionID := strings.TrimSpace(item.SessionID)
+	if nextSessionID == "" {
+		nextSessionID = m.createProjectSession()
+	}
 	m.sessionID = nextSessionID
+	m.syncChannelSession()
+	m.syncAgentRoots()
 	m.lastError = ""
 	m.pendingQuestion = ""
 	m.pendingOptions = nil
 	m.pendingChoice = 0
+	m.clearPendingBashState(oldSessionID, true)
 	if m.sessionID != "" {
 		var agent *agentruntime.Agent
 		if m.app != nil {
@@ -3599,6 +4102,7 @@ func (m *model) switchWorkspace(item workspaceItem) {
 	}
 	m.items = append(m.items, transcriptItem{role: "system", text: "Switched to " + target})
 	m.refreshContextUsage()
+	m.recordCurrentSession()
 	m.syncViewport(true)
 }
 
@@ -3629,6 +4133,7 @@ func (m *model) setCWD(target string) error {
 	m.gitSync = gitSyncStateForCWD(m.cwd)
 	m.gitStatus = m.gitSync.Format()
 	m.gitSyncFeedback = gitSyncFeedback{}
+	m.syncAgentRoots()
 	return nil
 }
 
@@ -3660,6 +4165,23 @@ func (m *model) createProjectSession() string {
 	return sessionID
 }
 
+func (m *model) syncChannelSession() {
+	if m == nil || m.app == nil || m.app.Agent == nil || m.app.Agent.SessionManager() == nil {
+		return
+	}
+	m.app.Agent.SessionManager().SetChannelSession(context.Background(), channelName, channelUser, strings.TrimSpace(m.sessionID))
+}
+
+func (m *model) syncAgentRoots() {
+	if m == nil || m.app == nil || m.app.Agent == nil {
+		return
+	}
+	if strings.TrimSpace(m.cwd) == "" {
+		return
+	}
+	m.app.Agent.SetAgentFileRoots([]string{m.cwd})
+}
+
 func currentModelName(app *localapp.App) string {
 	if app == nil || app.Agent == nil {
 		return ""
@@ -3670,7 +4192,12 @@ func currentModelName(app *localapp.App) string {
 func workspaceTitle(app *localapp.App, sessionID, cwd string) string {
 	if app != nil && app.Agent != nil && app.Agent.SessionManager() != nil && strings.TrimSpace(sessionID) != "" {
 		if info, err := app.Agent.SessionManager().Get(context.Background(), sessionID); err == nil && strings.TrimSpace(info.Title) != "" {
-			return info.Title
+			if !isDefaultSessionTitle(info.Title) {
+				return info.Title
+			}
+		}
+		if title := firstUserPromptTitle(app.Agent, sessionID); title != "" {
+			return title
 		}
 	}
 	base := cwdDisplayName(cwd)
@@ -3678,6 +4205,38 @@ func workspaceTitle(app *localapp.App, sessionID, cwd string) string {
 		return strings.TrimSpace(sessionID)
 	}
 	return base
+}
+
+func isDefaultSessionTitle(title string) bool {
+	switch strings.TrimSpace(title) {
+	case "", "新会话":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstUserPromptTitle(agent *agentruntime.Agent, sessionID string) string {
+	if agent == nil || agent.MemoryReader() == nil || strings.TrimSpace(sessionID) == "" {
+		return ""
+	}
+	raw, err := agent.MemoryReader().LoadRaw(context.Background(), sessionID)
+	if err != nil {
+		return ""
+	}
+	var msgs []*schema.Message
+	if err := json.Unmarshal(raw.Raw, &msgs); err != nil {
+		return ""
+	}
+	for _, msg := range msgs {
+		if msg == nil || msg.Role != schema.User {
+			continue
+		}
+		if text := strings.TrimSpace(msg.Content); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func (m model) handleSlash(text string) slashResult {
@@ -3753,12 +4312,24 @@ func restoreTranscript(agent *agentruntime.Agent, sessionID string) []transcript
 	return items
 }
 
-func startChat(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, text string) tea.Cmd {
+var startChatCmd = func(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, cwd, text string, disabledTools []string) tea.Cmd {
+	return startChat(ctx, agent, out, sessionID, cwd, text, disabledTools, false)
+}
+
+var startReviewFixChatCmd = func(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, cwd, text string, disabledTools []string) tea.Cmd {
+	return startChat(ctx, agent, out, sessionID, cwd, text, disabledTools, true)
+}
+
+func startChat(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, cwd, text string, disabledTools []string, reviewFix bool) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
+			if strings.TrimSpace(cwd) != "" {
+				agent.SetAgentFileRoots([]string{cwd})
+			}
 			reply, err := agent.ChatWithContextOptions(ctx, channelUser, channelUser, text, agentruntime.ChatOptions{
-				Channel:   channelName,
-				SessionID: sessionID,
+				Channel:       channelName,
+				SessionID:     sessionID,
+				DisabledTools: disabledTools,
 				Stream: func(delta string) bool {
 					select {
 					case out <- chatDeltaMsg{delta: delta}:
@@ -3768,7 +4339,7 @@ func startChat(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Ms
 					}
 				},
 			})
-			out <- chatDoneMsg{reply: reply, err: err}
+			out <- chatDoneMsg{reply: reply, err: err, reviewFix: reviewFix}
 		}()
 		return nil
 	}
@@ -3841,14 +4412,88 @@ func eventSummary(e agentevent.Event) string {
 
 func toolEventText(e agentevent.Event, verb string) string {
 	name := "tool"
+	detail := ""
 	if data, ok := e.Data.(map[string]any); ok {
 		if value, ok := data["name"].(string); ok && strings.TrimSpace(value) != "" {
 			name = value
 		} else if value := fmt.Sprint(data["name"]); strings.TrimSpace(value) != "" && value != "<nil>" {
 			name = value
 		}
+		detail = toolEventDetail(name, data)
+	}
+	if detail != "" {
+		return fmt.Sprintf("%s %s: %s", verb, name, truncateRunEventDetail(detail, 96))
 	}
 	return fmt.Sprintf("%s %s", verb, name)
+}
+
+func toolEventDetail(name string, data map[string]any) string {
+	raw, ok := data["arguments"].(string)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return ""
+	}
+	args := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return ""
+	}
+	switch name {
+	case "bash":
+		return argString(args, "command")
+	case "read_file", "edit_file":
+		return argString(args, "path")
+	case "glob":
+		return argString(args, "pattern")
+	case "grep":
+		pattern := argString(args, "pattern")
+		if pattern == "" {
+			return ""
+		}
+		scope := firstNonEmptyArg(argString(args, "glob"), argString(args, "path"))
+		if scope != "" {
+			return fmt.Sprintf("%q in %s", pattern, scope)
+		}
+		return fmt.Sprintf("%q", pattern)
+	case "file_write":
+		return firstNonEmptyArg(argString(args, "file_path"), argString(args, "filename"))
+	case "channel_send":
+		return firstNonEmptyArg(argString(args, "file_path"), argString(args, "target"))
+	default:
+		return ""
+	}
+}
+
+func argString(args map[string]any, key string) string {
+	value, ok := args[key]
+	if !ok || value == nil {
+		return ""
+	}
+	text, ok := value.(string)
+	if ok {
+		return strings.TrimSpace(text)
+	}
+	text = fmt.Sprint(value)
+	if text == "<nil>" {
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+func firstNonEmptyArg(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func truncateRunEventDetail(text string, maxRunes int) string {
+	text = strings.TrimSpace(text)
+	runes := []rune(text)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes-1]) + "…"
 }
 
 func toolEventError(e agentevent.Event) string {

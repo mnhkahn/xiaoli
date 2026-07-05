@@ -238,6 +238,50 @@ func TestDownloadImagePrefersImageAESKeyHex(t *testing.T) {
 	}
 }
 
+func TestDownloadFileUsesBotPathAndDecryptsMedia(t *testing.T) {
+	key := []byte("0123456789abcdef")
+	plaintext := []byte("docx-bytes")
+	encrypted := encryptAesECBPKCS7ForTest(t, plaintext, key)
+
+	c := NewClient(ClientConfig{
+		BaseURL: "https://wechat.test",
+		Token:   "token",
+		HTTPDo: func(req *http.Request) (*http.Response, error) {
+			if req.Method != http.MethodGet {
+				t.Fatalf("request method = %s, want GET", req.Method)
+			}
+			if req.URL.String() != "https://wechat.test/wechat-file/1" {
+				t.Fatalf("request URL = %s, want bot file path", req.URL.String())
+			}
+			if got := req.Header.Get("Authorization"); got != "Bearer token" {
+				t.Fatalf("Authorization = %q, want bot token", got)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(encrypted)),
+				Header:     http.Header{"Content-Type": []string{"application/vnd.openxmlformats-officedocument.wordprocessingml.document"}},
+			}, nil
+		},
+	})
+
+	contentType, body, err := c.DownloadFile(context.Background(), &FileItem{
+		FileName: "contract.docx",
+		Media: &CDNMedia{
+			EncryptQueryParam: "/wechat-file/1",
+			AESKey:            base64.StdEncoding.EncodeToString(key),
+		},
+	})
+	if err != nil {
+		t.Fatalf("DownloadFile() error = %v", err)
+	}
+	if contentType != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
+		t.Fatalf("contentType = %q, want docx content type", contentType)
+	}
+	if string(body) != string(plaintext) {
+		t.Fatalf("body = %q, want decrypted plaintext %q", string(body), string(plaintext))
+	}
+}
+
 func TestSendImageAttachmentUploadsToCDNAndSendsImageMessage(t *testing.T) {
 	dir := t.TempDir()
 	imagePath := filepath.Join(dir, "photo.png")

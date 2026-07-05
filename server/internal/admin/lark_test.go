@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -486,6 +487,97 @@ func TestLarkImageEventRunsPipelineWithVisionSummary(t *testing.T) {
 	replyBody := <-replyBodies
 	if !strings.Contains(replyBody, "基于图片回答") {
 		t.Fatalf("reply body = %s, want pipeline reply", replyBody)
+	}
+}
+
+func TestLarkFileEventDownloadsExtractsAndRunsPipeline(t *testing.T) {
+	cfg := testConfig()
+	cfg.LarkAppID = "cli_test"
+	cfg.LarkAppToken = "token_test"
+	cfg.DataDir = t.TempDir()
+	srv := NewServer(cfg)
+	srv.documentExtractor = documentTextExtractorFunc(func(ctx context.Context, path, fileName string) (string, error) {
+		if fileName != "report.pdf" {
+			t.Fatalf("extract fileName = %q, want report.pdf", fileName)
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read downloaded file: %v", err)
+		}
+		if string(body) != "pdf-bytes" {
+			t.Fatalf("downloaded body = %q, want pdf-bytes", string(body))
+		}
+		return "第一章：项目进展良好。第二章：需要跟进风险。", nil
+	})
+
+	turns := make(chan ConversationTurn, 1)
+	srv.conversation = &ConversationPipeline{
+		chat: conversationChatFunc(func(ctx context.Context, turn ConversationTurn) (string, error) {
+			turns <- turn
+			return "文件总结：进展良好，需要跟进风险。", nil
+		}),
+	}
+
+	replyBodies := make(chan string, 1)
+	srv.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "tenant_access_token": "tenant-token"}), nil
+		case "/open-apis/im/v1/messages/om_file/resources/file_key_1":
+			if req.Method != http.MethodGet {
+				t.Fatalf("download method = %s, want GET", req.Method)
+			}
+			if req.URL.Query().Get("type") != "file" {
+				t.Fatalf("download type = %q, want file", req.URL.Query().Get("type"))
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/pdf"}},
+				Body:       io.NopCloser(strings.NewReader("pdf-bytes")),
+			}, nil
+		case "/open-apis/im/v1/messages/om_file/reply":
+			raw, _ := io.ReadAll(req.Body)
+			replyBodies <- string(raw)
+			return jsonResponse(http.StatusOK, map[string]any{"code": 0, "data": map[string]any{"message_id": "reply_file"}}), nil
+		default:
+			t.Fatalf("unexpected Lark request path: %s", req.URL.Path)
+			return nil, nil
+		}
+	})}
+
+	req := httptest.NewRequest(http.MethodPost, "/lark/events", strings.NewReader(`{
+		"schema":"2.0",
+		"header":{"event_id":"evt_file","event_type":"im.message.receive_v1","app_id":"cli_test","tenant_key":"tenant_1"},
+		"event":{
+			"sender":{"sender_type":"user","sender_id":{"open_id":"ou_user"}},
+			"message":{
+				"message_id":"om_file",
+				"chat_id":"oc_chat",
+				"message_type":"file",
+				"content":"{\"file_key\":\"file_key_1\",\"file_name\":\"report.pdf\"}"
+			}
+		}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+	turn := <-turns
+	if turn.ConversationID != "lark:oc_chat:ou_user" {
+		t.Fatalf("turn.ConversationID = %q, want lark:oc_chat:ou_user", turn.ConversationID)
+	}
+	for _, want := range []string{"用户发来一个文件", "文件名：report.pdf", "文件内容摘录：", "项目进展良好"} {
+		if !strings.Contains(turn.Text, want) {
+			t.Fatalf("turn.Text = %q, want it to contain %q", turn.Text, want)
+		}
+	}
+	replyBody := <-replyBodies
+	if !strings.Contains(replyBody, "文件总结") {
+		t.Fatalf("reply body = %s, want pipeline file summary", replyBody)
 	}
 }
 

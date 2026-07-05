@@ -65,11 +65,12 @@ type Agent struct {
 	eventBus        agentevent.Publisher
 	channelSendTool tool.InvokableTool
 	fileWriteRoots  []string
+	agentFileRoots  []string
 	visionAnalyzer  agentbuiltin.VisionAnalyzer
 	recentImages    agentbuiltin.RecentImageStore
 }
 
-const defaultAgentMaxIterations = 10
+const defaultAgentMaxIterations = 200
 
 // noopEventPublisher is a no-op event publisher for backward compatibility
 type noopEventPublisher struct{}
@@ -482,6 +483,11 @@ func (a *Agent) SetFileWriteRoots(roots []string) {
 	a.fileWriteRoots = append([]string(nil), roots...)
 }
 
+// SetAgentFileRoots enables structured code file tools for trusted workspace roots.
+func (a *Agent) SetAgentFileRoots(roots []string) {
+	a.agentFileRoots = append([]string(nil), roots...)
+}
+
 func (a *Agent) Chat(ctx context.Context, deviceID string, userText string) (string, error) {
 	return a.ChatWithContext(ctx, deviceID, deviceID, userText)
 }
@@ -494,6 +500,7 @@ func (a *Agent) storeAskData(conversationID string, d *agentbuiltin.AskData) {
 	if d == nil {
 		return
 	}
+	logger.Infof("ask data stored: conversation=%s bash=%v question_len=%d options=%d", conversationID, d.BashHash != "", len(d.Question), len(d.Options))
 	a.askDataMu.Lock()
 	defer a.askDataMu.Unlock()
 	if a.askData == nil {
@@ -507,7 +514,37 @@ func (a *Agent) ConsumeAskData(conversationID string) *agentbuiltin.AskData {
 	defer a.askDataMu.Unlock()
 	d := a.askData[conversationID]
 	delete(a.askData, conversationID)
+	if d != nil {
+		logger.Infof("ask data consumed: conversation=%s bash=%v question_len=%d options=%d", conversationID, d.BashHash != "", len(d.Question), len(d.Options))
+	}
 	return d
+}
+
+func assistantResultAfterRun(result *schema.Message, streamed string, ask *agentbuiltin.AskData) *schema.Message {
+	if streamed != "" {
+		return schema.AssistantMessage(streamed, nil)
+	}
+	if result != nil && result.Content != "" {
+		return result
+	}
+	if ask != nil {
+		return schema.AssistantMessage(askPendingContent(ask), nil)
+	}
+	return schema.AssistantMessage("命令或工具已执行完成，但模型没有生成后续回复。你可以继续输入下一步，或查看上面的工具结果。", nil)
+}
+
+func askPendingContent(ask *agentbuiltin.AskData) string {
+	if ask == nil {
+		return ""
+	}
+	if ask.BashHash != "" {
+		return "等待你确认命令。"
+	}
+	question := strings.TrimSpace(ask.Question)
+	if question == "" {
+		return "等待你的选择。"
+	}
+	return "等待你的选择：" + question
 }
 
 func (a *Agent) CompressSession(ctx context.Context, memoryID string) (string, error) {
@@ -571,6 +608,7 @@ type ChatOptions struct {
 	SessionID     string
 	Stream        func(delta string) bool
 	SendTarget    agentchannel.SendTarget
+	DisabledTools []string
 }
 
 func (a *Agent) ChatWithContext(ctx context.Context, conversationID string, deviceID string, userText string) (string, error) {
@@ -672,7 +710,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		ctx = agentchannel.WithSendTarget(ctx, opts.SendTarget)
 	}
 
-	einoTools := a.toolsForChat(ctx, memoryID, deviceID, channelName)
+	einoTools := filterDisabledTools(ctx, a.toolsForChat(ctx, memoryID, deviceID, channelName), opts.DisabledTools)
 
 	chatModel, modelID, err := a.chatModel(ctx)
 	if err != nil {
@@ -833,12 +871,8 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 			result = mv.Message
 		}
 	}
-	if streamed.Len() > 0 {
-		result = schema.AssistantMessage(streamed.String(), nil)
-	}
-	if result == nil || result.Content == "" {
-		result = schema.AssistantMessage("命令或工具已执行完成，但模型没有生成后续回复。你可以继续输入下一步，或查看上面的工具结果。", nil)
-	}
+	ask := askHolder.Get()
+	result = assistantResultAfterRun(result, streamed.String(), ask)
 
 	updated := append(history,
 		schema.UserMessage(userText),
@@ -854,7 +888,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		a.sessionMgr.UpdateAfterChat(ctx, memoryID, len(updated))
 	}
 
-	if ask := askHolder.Get(); ask != nil {
+	if ask != nil {
 		a.storeAskData(conversationID, ask)
 	}
 
@@ -1023,7 +1057,7 @@ func (a *Agent) Generate(ctx context.Context, system, user string) (string, erro
 	cfg := &adk.ChatModelAgentConfig{
 		Name:             "xiaoli",
 		Model:            chatModel,
-		MaxIterations:    10,
+		MaxIterations:    defaultAgentMaxIterations,
 		ModelRetryConfig: newLLMRetryConfig(),
 	}
 	if a.skillMW != nil {
@@ -1839,6 +1873,10 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 		filter |= agentbuiltin.ToolFileWrite
 		opts.FileWriteRoots = a.fileWriteRoots
 	}
+	if len(a.agentFileRoots) > 0 {
+		filter |= agentbuiltin.ToolCodeFiles
+		opts.FileRoots = a.agentFileRoots
+	}
 	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, opts))
 	if a.taskTool != nil {
 		einoTools = append(einoTools, a.WrapTool(a.taskTool, "builtin"))
@@ -1892,4 +1930,29 @@ func (a *Agent) wrapBuiltinTools(tools []tool.BaseTool) []tool.BaseTool {
 		wrapped = append(wrapped, a.WrapTool(t, "builtin"))
 	}
 	return wrapped
+}
+
+func filterDisabledTools(ctx context.Context, tools []tool.BaseTool, disabled []string) []tool.BaseTool {
+	if len(tools) == 0 || len(disabled) == 0 {
+		return tools
+	}
+	blocked := make(map[string]bool, len(disabled))
+	for _, name := range disabled {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			blocked[name] = true
+		}
+	}
+	if len(blocked) == 0 {
+		return tools
+	}
+	filtered := make([]tool.BaseTool, 0, len(tools))
+	for _, t := range tools {
+		info, err := t.Info(ctx)
+		if err != nil || info == nil || blocked[info.Name] {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	return filtered
 }

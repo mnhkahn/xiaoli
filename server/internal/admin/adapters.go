@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -530,7 +531,7 @@ func DefinitionChatReact(agent agentworkflow.AgentSpec) agentworkflow.Definition
 		agent.Mode = "react"
 	}
 	if agent.MaxSteps <= 0 {
-		agent.MaxSteps = 8
+		agent.MaxSteps = 200
 	}
 	if agent.Timeout <= 0 {
 		agent.Timeout = time.Duration(defaultAgentRunTimeoutSeconds) * time.Second
@@ -729,6 +730,9 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 	}
 	if event.Message.MessageType == "image" {
 		return s.handleLarkImageMessage(ctx, callback, event, senderID)
+	}
+	if event.Message.MessageType == "file" {
+		return s.handleLarkFileMessage(ctx, callback, event, senderID)
 	}
 	if event.Message.MessageType != "text" {
 		logger.Infof("[lark] message ignored event_id=%s reason=non_text message=%s message_type=%s", callback.Header.EventID, event.Message.MessageID, event.Message.MessageType)
@@ -993,6 +997,55 @@ func (s *AdminServer) handleLarkImageMessage(ctx context.Context, callback larkC
 	return nil
 }
 
+func (s *AdminServer) handleLarkFileMessage(ctx context.Context, callback larkCallback, event larkMessageEvent, senderID string) error {
+	if event.Message.ChatID == "" || senderID == "" || event.Message.MessageID == "" {
+		return fmt.Errorf("file message event missing chat, sender, or message id")
+	}
+	fileKey, fileName := event.File()
+	if fileKey == "" || fileName == "" {
+		logger.Infof("[lark] file message ignored event_id=%s reason=missing_file_key_or_name message=%s", callback.Header.EventID, event.Message.MessageID)
+		return nil
+	}
+	if supportedDocumentExt(fileName) == "" {
+		logger.Infof("[lark] file message ignored event_id=%s reason=unsupported_file file_name=%q message=%s", callback.Header.EventID, fileName, event.Message.MessageID)
+		return nil
+	}
+	if s.conversation == nil {
+		return fmt.Errorf("conversation pipeline is not configured")
+	}
+	if s.documentExtractor == nil {
+		return fmt.Errorf("document extractor is not configured")
+	}
+	lc := s.newLarkClient()
+	formatter := agentlark.NewReplyFormatter(lc, event.Message.MessageID, "")
+	_, body, err := lc.DownloadFile(ctx, event.Message.MessageID, fileKey)
+	if err != nil {
+		return err
+	}
+	path, err := s.storeInboundFile("lark", fileName, body)
+	if err != nil {
+		return err
+	}
+	text, err := s.documentExtractor.ExtractText(ctx, path, fileName)
+	if err != nil {
+		return err
+	}
+	turn := LarkTextFactory{}.Build(event.Message.ChatID, senderID, documentConversationTurnText(fileName, "", text), event.Message.MessageID)
+	turn.Formatter = formatter
+	reply, err := s.conversation.Run(ctx, turn)
+	if err != nil {
+		logger.Infof("[lark] file conversation error: %v", err)
+	}
+	if reply.Text == "" {
+		reply = ConversationReply{Text: "我已收到文件，但暂时无法总结。"}
+	}
+	if err := formatter.Send(ctx, reply.Text); err != nil {
+		return err
+	}
+	logger.Infof("[lark] file reply sent event_id=%s message=%s chat=%s file_name=%q bytes=%d", callback.Header.EventID, event.Message.MessageID, event.Message.ChatID, fileName, len(body))
+	return nil
+}
+
 func imageConversationTurnText(question string, summary string) string {
 	question = strings.TrimSpace(question)
 	summary = strings.TrimSpace(summary)
@@ -1008,6 +1061,51 @@ func imageConversationTurnText(question string, summary string) string {
 	}
 	b.WriteString("\n请基于图片识别结果回答用户；如果用户后续追问图片细节，可使用 inspect_recent_image 工具重新查看最近图片。")
 	return b.String()
+}
+
+func documentConversationTurnText(fileName string, note string, text string) string {
+	fileName = strings.TrimSpace(fileName)
+	note = strings.TrimSpace(note)
+	text = truncateDocumentText(text)
+	var b strings.Builder
+	b.WriteString("用户发来一个文件。")
+	if fileName != "" {
+		b.WriteString("\n文件名：")
+		b.WriteString(fileName)
+	}
+	if note != "" {
+		b.WriteString("\n用户附言：")
+		b.WriteString(note)
+	}
+	if text != "" {
+		b.WriteString("\n文件内容摘录：")
+		b.WriteString(text)
+	}
+	b.WriteString("\n请基于文件内容回答用户；如果用户没有明确要求，请总结主要内容、关键结论和待办事项。")
+	return b.String()
+}
+
+func (s *AdminServer) storeInboundFile(channel string, fileName string, body []byte) (string, error) {
+	base := filepath.Base(strings.TrimSpace(fileName))
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		base = "attachment"
+	}
+	if supportedDocumentExt(base) == "" {
+		return "", fmt.Errorf("unsupported document type: %s", fileName)
+	}
+	root := s.cfg.DataDir
+	if root == "" {
+		root = os.TempDir()
+	}
+	dir := filepath.Join(root, "inbox", channel, s.cfg.now().Format("20060102"))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, fmt.Sprintf("%d-%s", s.cfg.now().UnixNano(), base))
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func (s *AdminServer) larkEventSeen(eventID string) bool {
@@ -1171,7 +1269,8 @@ func (s *AdminServer) startWechatPolling(ctx context.Context) {
 func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, msg *wechatMessage) {
 	text := strings.TrimSpace(msg.Text())
 	images := msg.Images()
-	if text == "" && len(images) == 0 {
+	files := msg.Files()
+	if text == "" && len(images) == 0 && len(files) == 0 {
 		return
 	}
 	logger.Infof("[wechat] message from=%s text=%q", msg.FromUserID, text)
@@ -1196,6 +1295,8 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 	var imageContentType string
 	var imageBody []byte
 	var imageSummary string
+	var fileName string
+	var fileText string
 	if len(images) > 0 {
 		if s.deviceHub == nil || s.deviceHub.vision == nil {
 			logger.Infof("[wechat] image ignored: vision model is not configured")
@@ -1228,6 +1329,36 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 				}
 			}
 		}
+	} else if file := firstSupportedWechatFile(files); file != nil {
+		fileName = strings.TrimSpace(file.FileName)
+		contentType, body, err := c.DownloadFile(ctx, file)
+		_ = contentType
+		if err != nil {
+			logger.Infof("[wechat] file download error: %v file_name=%q", err, fileName)
+			if text == "" {
+				formatter := agentwechat.NewReplyFormatter(c, msg.ToUserID, msg.FromUserID, msg.ContextToken)
+				_ = formatter.Send(ctx, "我现在还无法读取这个微信文件。")
+				return
+			}
+		} else {
+			path, err := s.storeInboundFile("wechat", fileName, body)
+			if err != nil {
+				logger.Infof("[wechat] file store error: %v file_name=%q", err, fileName)
+			} else if s.documentExtractor == nil {
+				logger.Infof("[wechat] file ignored: document extractor is not configured")
+			} else if extracted, err := s.documentExtractor.ExtractText(ctx, path, fileName); err != nil {
+				logger.Infof("[wechat] file extract error: %v file_name=%q", err, fileName)
+				if text == "" {
+					formatter := agentwechat.NewReplyFormatter(c, msg.ToUserID, msg.FromUserID, msg.ContextToken)
+					_ = formatter.Send(ctx, "我已收到文件，但暂时无法读取其中的文字。")
+					return
+				}
+			} else {
+				fileText = strings.TrimSpace(extracted)
+			}
+		}
+	} else if len(files) > 0 {
+		logger.Infof("[wechat] file ignored: unsupported file type")
 	}
 
 	if s.conversation == nil {
@@ -1249,6 +1380,8 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 			question = "请描述这张图片里的内容。"
 		}
 		turnText = imageConversationTurnText(question, imageSummary)
+	} else if fileText != "" {
+		turnText = documentConversationTurnText(fileName, text, fileText)
 	}
 	turn := WechatTextFactory{}.Build(msg.ContextToken, msg.FromUserID, turnText)
 	turn.Formatter = formatter
@@ -1281,6 +1414,15 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 	} else {
 		logger.Infof("[wechat] send ok to=%s text=%q", msg.FromUserID, reply.Text)
 	}
+}
+
+func firstSupportedWechatFile(files []*agentwechat.FileItem) *agentwechat.FileItem {
+	for _, file := range files {
+		if file != nil && supportedDocumentExt(file.FileName) != "" {
+			return file
+		}
+	}
+	return nil
 }
 
 func wechatSendTyping(ctx context.Context, c *wechatClient, fromUserID, toUserID, contextToken string) error {

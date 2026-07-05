@@ -32,6 +32,51 @@ type modelIDKeyType struct{}
 var modelIDKey = modelIDKeyType{}
 
 type modelStartTimeKey struct{}
+type toolDuplicateGuardKey struct{}
+
+type toolDuplicateGuard struct {
+	mu        sync.Mutex
+	lastName  string
+	lastArgs  string
+	lastValid bool
+}
+
+func withToolDuplicateGuard(ctx context.Context) context.Context {
+	return context.WithValue(ctx, toolDuplicateGuardKey{}, &toolDuplicateGuard{})
+}
+
+func toolDuplicateGuardFromContext(ctx context.Context) *toolDuplicateGuard {
+	guard, _ := ctx.Value(toolDuplicateGuardKey{}).(*toolDuplicateGuard)
+	return guard
+}
+
+func canonicalToolArgs(args string) string {
+	var v any
+	if err := json.Unmarshal([]byte(args), &v); err != nil {
+		return args
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return args
+	}
+	return string(b)
+}
+
+func (g *toolDuplicateGuard) mark(name, args string) bool {
+	if g == nil {
+		return false
+	}
+	canonicalArgs := canonicalToolArgs(args)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.lastValid && g.lastName == name && g.lastArgs == canonicalArgs {
+		return true
+	}
+	g.lastName = name
+	g.lastArgs = canonicalArgs
+	g.lastValid = true
+	return false
+}
 
 type Recorder struct {
 	mu      sync.Mutex
@@ -80,7 +125,8 @@ func GlobalRecorder() *Recorder {
 }
 
 func (r *Recorder) WithContext(ctx context.Context, modelID string) context.Context {
-	return context.WithValue(ctx, modelIDKey, modelID)
+	ctx = context.WithValue(ctx, modelIDKey, modelID)
+	return withToolDuplicateGuard(ctx)
 }
 
 func (r *Recorder) buildHandler() callbacks.Handler {
@@ -444,7 +490,15 @@ func (w *toolCounter) InvokableRun(ctx context.Context, argumentsInJSON string, 
 		step = st.nextToolStep()
 		logTraceToolStart(ctx, step, w.toolName, w.category, argumentsInJSON)
 	}
-	result, err := w.inner.InvokableRun(ctx, argumentsInJSON, opts...)
+	duplicate := toolDuplicateGuardFromContext(ctx).mark(w.toolName, argumentsInJSON)
+	result := ""
+	var err error
+	if duplicate {
+		result = fmt.Sprintf("[skipped duplicate tool call] %s was requested again with identical arguments. Reuse the previous result or choose a different next step.", w.toolName)
+		logger.Infof("skip duplicate tool call: name=%s args=%s", w.toolName, traceTruncate(argumentsInJSON, 300))
+	} else {
+		result, err = w.inner.InvokableRun(ctx, argumentsInJSON, opts...)
+	}
 	if err != nil {
 		w.recorder.RecordToolError(w.toolName)
 	}
@@ -456,6 +510,9 @@ func (w *toolCounter) InvokableRun(ctx context.Context, argumentsInJSON string, 
 		"category":   w.category,
 		"elapsed_ms": time.Since(start).Milliseconds(),
 		"result_len": len(result),
+	}
+	if duplicate {
+		data["duplicate_skipped"] = true
 	}
 	if err != nil {
 		data["error"] = err.Error()

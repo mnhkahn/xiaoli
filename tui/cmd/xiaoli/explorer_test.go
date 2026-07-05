@@ -153,6 +153,77 @@ func TestDiffExplorerHandlesSpaceForStageToggle(t *testing.T) {
 	}
 }
 
+func TestDiffExplorerPreviewDragSelectsRightPane(t *testing.T) {
+	ex := &tuiExplorer{
+		mode:       explorerDiff,
+		width:      100,
+		height:     30,
+		leftWidth:  explorerLeftWidth(100),
+		preview:    "diff --git a/a.go b/a.go\n+added line\n-removed line",
+		previewRaw: "diff --git a/a.go b/a.go\n+added line\n-removed line",
+	}
+	press := tea.MouseMsg{Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: ex.leftWidth + 2, Y: 5}
+	motion := tea.MouseMsg{Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: ex.leftWidth + 8, Y: 5}
+
+	if !ex.handleMouse(press) || !ex.selection.dragging {
+		t.Fatalf("press did not start right pane selection: %#v", ex.selection)
+	}
+	if !ex.handleMouse(motion) || !ex.selection.active {
+		t.Fatalf("motion did not activate right pane selection: %#v", ex.selection)
+	}
+	if ex.selection.anchor.y != 1 || ex.selection.focus.y != 1 {
+		t.Fatalf("selection y = %d/%d, want preview line 1", ex.selection.anchor.y, ex.selection.focus.y)
+	}
+}
+
+func TestDiffExplorerRenderRightShowsSelectionOverlay(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	ex := &tuiExplorer{
+		mode:       explorerDiff,
+		width:      100,
+		height:     30,
+		leftWidth:  explorerLeftWidth(100),
+		preview:    "diff --git a/a.go b/a.go\n+added line\n-removed line",
+		previewRaw: "diff --git a/a.go b/a.go\n+added line\n-removed line",
+		selection: transcriptSelection{
+			active: true,
+			anchor: selectionPoint{
+				x: 0,
+				y: 1,
+			},
+			focus: selectionPoint{
+				x: 5,
+				y: 1,
+			},
+		},
+	}
+
+	got := ex.renderRight(60, 10)
+
+	if !strings.Contains(got, selectionStartSeq) || !strings.Contains(got, selectionEndSeq) {
+		t.Fatalf("renderRight() = %q, want selection overlay", got)
+	}
+	if plain := stripTestANSI(got); !strings.Contains(plain, "+added line") {
+		t.Fatalf("plain renderRight() = %q, want diff content unchanged", plain)
+	}
+}
+
+func TestExplorerRefreshPreviewClearsSelection(t *testing.T) {
+	ex := &tuiExplorer{
+		mode:      explorerDiff,
+		cwd:       t.TempDir(),
+		entries:   []explorerEntry{{Path: "missing.go", Status: " M"}},
+		selected:  0,
+		selection: transcriptSelection{active: true, anchor: selectionPoint{x: 0, y: 0}, focus: selectionPoint{x: 3, y: 0}},
+	}
+
+	ex.refreshPreview()
+
+	if ex.selection.active || ex.selection.dragging {
+		t.Fatalf("selection = %#v, want cleared", ex.selection)
+	}
+}
+
 func keyRunes(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }

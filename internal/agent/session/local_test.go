@@ -36,3 +36,27 @@ func TestLocalManagerPersistsSessionsAndChannels(t *testing.T) {
 		t.Fatalf("session info = %#v, want persisted title/count", info)
 	}
 }
+
+func TestLocalManagerSetChannelSession(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	m := NewLocalManager(dir)
+
+	first, _, err := m.Create(ctx, "tui", "local", "model-a")
+	if err != nil {
+		t.Fatalf("Create(first) error = %v", err)
+	}
+	second, _, err := m.Create(ctx, "tui", "local", "model-a")
+	if err != nil {
+		t.Fatalf("Create(second) error = %v", err)
+	}
+	m.SetChannelSession(ctx, "tui", "local", first)
+	if got := m.GetChannelSession(ctx, "tui", "local"); got != first {
+		t.Fatalf("channel session = %q, want first %q", got, first)
+	}
+	m.SetChannelSession(ctx, "tui", "local", second)
+	reloaded := NewLocalManager(dir)
+	if got := reloaded.GetChannelSession(ctx, "tui", "local"); got != second {
+		t.Fatalf("reloaded channel session = %q, want second %q", got, second)
+	}
+}

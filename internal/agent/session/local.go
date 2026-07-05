@@ -203,6 +203,23 @@ func (m *LocalManager) GetChannelSession(_ context.Context, channelName, channel
 	return m.state.Channels[m.channelKey(channelName, channelUser)]
 }
 
+func (m *LocalManager) SetChannelSession(_ context.Context, channelName, channelUser, sessionID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := m.channelKey(channelName, channelUser)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		delete(m.state.Channels, key)
+		_ = m.save()
+		return
+	}
+	if _, ok := m.state.Sessions[sessionID]; !ok {
+		return
+	}
+	m.state.Channels[key] = sessionID
+	_ = m.save()
+}
+
 func (m *LocalManager) Get(_ context.Context, sessionID string) (Info, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

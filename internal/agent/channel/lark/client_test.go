@@ -53,6 +53,47 @@ func TestDownloadImageUsesMessageResourceAPI(t *testing.T) {
 	}
 }
 
+func TestDownloadFileUsesMessageResourceAPI(t *testing.T) {
+	var sawResource bool
+	c := NewClient(ClientConfig{
+		AppID:    "app-id",
+		AppToken: "app-token",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			switch req.URL.Path {
+			case "/open-apis/auth/v3/tenant_access_token/internal":
+				return jsonResponse(http.StatusOK, map[string]any{"code": 0, "tenant_access_token": "tenant-token"}), nil
+			case "/open-apis/im/v1/messages/om_1/resources/file_1":
+				sawResource = true
+				if req.URL.Query().Get("type") != "file" {
+					t.Fatalf("query type = %q, want file", req.URL.Query().Get("type"))
+				}
+				if got := req.Header.Get("Authorization"); got != "Bearer tenant-token" {
+					t.Fatalf("Authorization = %q, want bearer token", got)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/pdf"}},
+					Body:       io.NopCloser(strings.NewReader("pdf-bytes")),
+				}, nil
+			default:
+				t.Fatalf("unexpected path = %s", req.URL.Path)
+				return nil, nil
+			}
+		})},
+	})
+
+	contentType, body, err := c.DownloadFile(context.Background(), "om_1", "file_1")
+	if err != nil {
+		t.Fatalf("DownloadFile() error = %v", err)
+	}
+	if !sawResource {
+		t.Fatal("resource endpoint was not called")
+	}
+	if contentType != "application/pdf" || string(body) != "pdf-bytes" {
+		t.Fatalf("contentType/body = %q/%q, want application/pdf bytes", contentType, string(body))
+	}
+}
+
 func TestReplyPostSendsLarkPostMessage(t *testing.T) {
 	var reply map[string]any
 	c := NewClient(ClientConfig{

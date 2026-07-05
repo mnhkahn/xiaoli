@@ -36,9 +36,12 @@ var (
 	bashApproved   = map[string]approvedInfo{}
 )
 
+const bashApprovalTTL = 30 * time.Minute
+
 type pendingInfo struct {
 	Command    string
 	Hash       string
+	ToolUseID  string
 	PolicyPath string
 	ExpiresAt  time.Time
 }
@@ -71,9 +74,21 @@ func StoreBashApprovalChoice(convID, hash, choice string) error {
 		return err
 	}
 	bashApprovedMu.Lock()
-	bashApproved[convID] = approvedInfo{Hash: p.Hash, ExpiresAt: time.Now().Add(5 * time.Minute)}
+	bashApproved[convID] = approvedInfo{Hash: p.Hash, ExpiresAt: time.Now().Add(bashApprovalTTL)}
 	bashApprovedMu.Unlock()
 	return nil
+}
+
+// PendingBashApproval returns the current pending approval even if it has
+// expired, so callers can send a precise tool result back to the model.
+func PendingBashApproval(convID, hash string) (command, toolUseID string, expired, ok bool) {
+	bashPendingMu.Lock()
+	defer bashPendingMu.Unlock()
+	p, ok := bashPending[convID]
+	if !ok || p.Hash != hash {
+		return "", "", false, false
+	}
+	return p.Command, p.ToolUseID, time.Now().After(p.ExpiresAt), true
 }
 
 // PendingBashCommand returns the exact command currently waiting for approval.
@@ -85,6 +100,17 @@ func PendingBashCommand(convID, hash string) (string, bool) {
 		return "", false
 	}
 	return p.Command, true
+}
+
+// PendingBashToolUseID returns the tool call id for the pending approval.
+func PendingBashToolUseID(convID, hash string) (string, bool) {
+	bashPendingMu.Lock()
+	defer bashPendingMu.Unlock()
+	p, ok := bashPending[convID]
+	if !ok || time.Now().After(p.ExpiresAt) || p.Hash != hash {
+		return "", false
+	}
+	return p.ToolUseID, true
 }
 
 // ClearBashApproval removes any pending/approved state for a conversation
@@ -153,13 +179,15 @@ func (t *ShellTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 
 	// 2. No approval found — store pending and ask user
 	cmdHash := hashCommand(cmd)
+	toolUseID := newBashToolUseID(cmdHash)
 	if convID != "" {
 		bashPendingMu.Lock()
 		bashPending[convID] = pendingInfo{
 			Command:    cmd,
 			Hash:       cmdHash,
+			ToolUseID:  toolUseID,
 			PolicyPath: t.config.PolicyPath,
-			ExpiresAt:  time.Now().Add(5 * time.Minute),
+			ExpiresAt:  time.Now().Add(bashApprovalTTL),
 		}
 		bashPendingMu.Unlock()
 	}
@@ -167,9 +195,10 @@ func (t *ShellTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 	question := fmt.Sprintf("是否允许执行命令：%s", cmd)
 	if holder, ok := ctx.Value(AskDataKey).(*AskDataHolder); ok {
 		holder.Set(&AskData{
-			Question: question,
-			Options:  bashApprovalOptions(cmd, t.config.PolicyPath),
-			BashHash: cmdHash,
+			Question:      question,
+			Options:       bashApprovalOptions(cmd, t.config.PolicyPath),
+			BashHash:      cmdHash,
+			BashToolUseID: toolUseID,
 		})
 	}
 
@@ -256,4 +285,11 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 func hashCommand(cmd string) string {
 	h := sha256.Sum256([]byte(cmd))
 	return fmt.Sprintf("%x", h[:8])
+}
+
+func newBashToolUseID(cmdHash string) string {
+	if len(cmdHash) > 12 {
+		cmdHash = cmdHash[:12]
+	}
+	return fmt.Sprintf("toolu_bash_%s_%d", cmdHash, time.Now().UnixNano())
 }

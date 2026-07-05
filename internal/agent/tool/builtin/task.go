@@ -120,14 +120,14 @@ func DefaultSubAgents() map[string]SubAgentSpec {
 			Name:         "explore",
 			Description:  "快速探索代码库、搜索文件内容和理解项目结构",
 			SystemPrompt: "你是一个代码探索者。快速浏览文件和目录，理解代码结构和功能。回答要简洁直接。",
-			MaxSteps:     5,
+			MaxSteps:     200,
 			AllowTools:   false,
 		},
 		"general": {
 			Name:         "general",
 			Description:  "通用多步骤任务执行，适合实现功能、重构或修复",
 			SystemPrompt: "你是一个通用任务执行者。按步骤完成任务，提供清晰的输出。如果需要修改代码，请直接输出修改后的代码内容。",
-			MaxSteps:     15,
+			MaxSteps:     200,
 			AllowTools:   true,
 		},
 	}

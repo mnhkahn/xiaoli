@@ -95,7 +95,7 @@ RUN set -eux; \
 FROM debian:bookworm-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates fontconfig fonts-arphic-gbsn00lp fonts-noto-cjk git libopus0 libopusfile0 libstdc++6 \
+    && apt-get install -y --no-install-recommends ca-certificates fontconfig fonts-arphic-gbsn00lp fonts-noto-cjk git libopus0 libopusfile0 libstdc++6 poppler-utils antiword \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \

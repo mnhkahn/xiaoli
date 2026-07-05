@@ -89,6 +89,13 @@ func (e MessageEvent) ImageKey() string {
 	return ExtractImageKey(e.Message.Content)
 }
 
+func (e MessageEvent) File() (string, string) {
+	if e.Message.MessageType != "file" {
+		return "", ""
+	}
+	return ExtractFile(e.Message.Content)
+}
+
 type TextContent struct {
 	Text string `json:"text"`
 }
@@ -125,6 +132,24 @@ func ExtractImageText(content string) string {
 		return text
 	}
 	return strings.TrimSpace(payload.Caption)
+}
+
+type FileContent struct {
+	FileKey  string `json:"file_key"`
+	FileName string `json:"file_name"`
+	Name     string `json:"name"`
+}
+
+func ExtractFile(content string) (string, string) {
+	var payload FileContent
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return "", ""
+	}
+	fileName := strings.TrimSpace(payload.FileName)
+	if fileName == "" {
+		fileName = strings.TrimSpace(payload.Name)
+	}
+	return strings.TrimSpace(payload.FileKey), fileName
 }
 
 type CardActionEvent struct {

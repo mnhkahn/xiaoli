@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -183,6 +184,70 @@ func TestWechatImageMessageRunsPipelineWithVisionSummary(t *testing.T) {
 	}
 	if sent.Msg == nil || len(sent.Msg.ItemList) == 0 || sent.Msg.ItemList[0].TextItem == nil || !strings.Contains(sent.Msg.ItemList[0].TextItem.Text, "这题先看第一问") {
 		t.Fatalf("sent = %#v, want pipeline reply", sent.Msg)
+	}
+}
+
+func TestWechatFileMessageDownloadsExtractsAndRunsPipeline(t *testing.T) {
+	cfg := testConfig()
+	cfg.WeChatEnabled = true
+	cfg.WeChatBotToken = "wechat-token"
+	cfg.DataDir = t.TempDir()
+	srv := NewServer(cfg)
+	srv.documentExtractor = documentTextExtractorFunc(func(ctx context.Context, path, fileName string) (string, error) {
+		if fileName != "contract.docx" {
+			t.Fatalf("extract fileName = %q, want contract.docx", fileName)
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read downloaded file: %v", err)
+		}
+		if string(body) != "docx-bytes" {
+			t.Fatalf("downloaded body = %q, want docx-bytes", string(body))
+		}
+		return "合同金额为 10 万元，交付日期为 7 月 30 日。", nil
+	})
+
+	turns := make(chan ConversationTurn, 1)
+	srv.conversation = &ConversationPipeline{
+		chat: conversationChatFunc(func(ctx context.Context, turn ConversationTurn) (string, error) {
+			turns <- turn
+			return "文件总结：合同金额 10 万元，7 月 30 日交付。", nil
+		}),
+	}
+
+	var sent agentwechat.SendMessageRequest
+	c, _ := fakeWechatClientSequence(t, &sent,
+		fakeWechatResponse{path: "/wechat-file/1", status: http.StatusOK, body: "docx-bytes", contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+		fakeWechatResponse{path: "/ilink/bot/getconfig", status: http.StatusOK, body: `{"ret":0,"typing_ticket":"ticket-123"}`},
+		fakeWechatResponse{path: "/ilink/bot/sendtyping", status: http.StatusOK, body: `{"ret":0}`},
+		fakeWechatResponse{path: "/ilink/bot/sendmessage", status: http.StatusOK, body: `{"ret":0}`},
+	)
+
+	srv.handleWechatMessage(context.Background(), c, &agentwechat.Message{
+		FromUserID:   "user-1",
+		ToUserID:     "bot-1",
+		ContextToken: "ctx-1",
+		MessageType:  agentwechat.MsgUser,
+		ItemList: []agentwechat.MsgItem{
+			{Type: agentwechat.ItemText, TextItem: &agentwechat.TextItem{Text: "帮我看重点"}},
+			{Type: agentwechat.ItemFile, FileItem: &agentwechat.FileItem{
+				FileName: "contract.docx",
+				Media:    &agentwechat.CDNMedia{EncryptQueryParam: "/wechat-file/1"},
+			}},
+		},
+	})
+
+	turn := <-turns
+	if turn.ConversationID != "wechat:ctx-1:user-1" {
+		t.Fatalf("turn.ConversationID = %q, want wechat:ctx-1:user-1", turn.ConversationID)
+	}
+	for _, want := range []string{"用户发来一个文件", "文件名：contract.docx", "用户附言：帮我看重点", "合同金额为 10 万元"} {
+		if !strings.Contains(turn.Text, want) {
+			t.Fatalf("turn.Text = %q, want it to contain %q", turn.Text, want)
+		}
+	}
+	if sent.Msg == nil || len(sent.Msg.ItemList) == 0 || sent.Msg.ItemList[0].TextItem == nil || !strings.Contains(sent.Msg.ItemList[0].TextItem.Text, "文件总结") {
+		t.Fatalf("sent = %#v, want pipeline file reply", sent.Msg)
 	}
 }
 

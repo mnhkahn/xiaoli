@@ -67,7 +67,7 @@ func (r *AgentRegistry) registerBuiltin() {
 		Kind:         AgentNormal,
 		Source:       "hardcoded",
 		SystemPrompt: "你是一个通用任务执行者。按步骤完成任务，提供清晰的输出。如果需要修改代码，请直接输出修改后的代码内容。",
-		MaxSteps:     15,
+		MaxSteps:     200,
 		AllowTools:   true,
 	}
 	r.agents["fork"] = AgentDefinition{
@@ -75,7 +75,7 @@ func (r *AgentRegistry) registerBuiltin() {
 		Description: "复制当前上下文执行并行任务，适合依赖当前长上下文的验证、多路线推理",
 		Kind:        AgentFork,
 		Source:      "hardcoded",
-		MaxSteps:    10,
+		MaxSteps:    200,
 		AllowTools:  true,
 	}
 	r.alias["general-purpose"] = "general"

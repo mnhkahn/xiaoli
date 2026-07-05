@@ -88,6 +88,16 @@ func (m *Message) Images() []*ImageItem {
 	return images
 }
 
+func (m *Message) Files() []*FileItem {
+	var files []*FileItem
+	for _, item := range m.ItemList {
+		if item.Type == ItemFile && item.FileItem != nil {
+			files = append(files, item.FileItem)
+		}
+	}
+	return files
+}
+
 type MsgItem struct {
 	Type      ItemType   `json:"type"`
 	TextItem  *TextItem  `json:"text_item,omitempty"`
@@ -323,10 +333,29 @@ func (c *Client) DownloadImage(ctx context.Context, image *ImageItem) (string, [
 	if image == nil || image.Media == nil {
 		return "", nil, fmt.Errorf("wechat image missing media URL")
 	}
-	ref := strings.TrimSpace(image.Media.EncryptQueryParam)
-	fullURL := strings.TrimSpace(image.Media.FullURL)
+	key, hasKey, err := imageAESKey(image)
+	if err != nil {
+		return "", nil, err
+	}
+	return c.downloadMedia(ctx, image.Media, "image", "image/jpeg", key, hasKey, 3*1024*1024)
+}
+
+func (c *Client) DownloadFile(ctx context.Context, file *FileItem) (string, []byte, error) {
+	if file == nil || file.Media == nil {
+		return "", nil, fmt.Errorf("wechat file missing media URL")
+	}
+	key, hasKey, err := mediaAESKey(file.Media)
+	if err != nil {
+		return "", nil, err
+	}
+	return c.downloadMedia(ctx, file.Media, "file", "application/octet-stream", key, hasKey, 20*1024*1024)
+}
+
+func (c *Client) downloadMedia(ctx context.Context, media *CDNMedia, label, fallbackContentType string, aesKey []byte, decrypt bool, maxBytes int64) (string, []byte, error) {
+	ref := strings.TrimSpace(media.EncryptQueryParam)
+	fullURL := strings.TrimSpace(media.FullURL)
 	if ref == "" && fullURL == "" {
-		return "", nil, fmt.Errorf("wechat image missing media URL")
+		return "", nil, fmt.Errorf("wechat %s missing media URL", label)
 	}
 	endpoint := ""
 	useBotAuth := false
@@ -341,11 +370,11 @@ func (c *Client) DownloadImage(ctx context.Context, image *ImageItem) (string, [
 	case ref != "":
 		endpoint = strings.TrimRight(DefaultCDNBaseURL, "/") + "/download?encrypted_query_param=" + url.QueryEscape(ref)
 	default:
-		return "", nil, fmt.Errorf("wechat image media format is not supported yet")
+		return "", nil, fmt.Errorf("wechat %s media format is not supported yet", label)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return "", nil, fmt.Errorf("wechat image request: %w", err)
+		return "", nil, fmt.Errorf("wechat %s request: %w", label, err)
 	}
 	if useBotAuth {
 		req.Header.Set("AuthorizationType", "ilink_bot_token")
@@ -356,28 +385,26 @@ func (c *Client) DownloadImage(ctx context.Context, image *ImageItem) (string, [
 	}
 	resp, err := c.HTTPDo(req)
 	if err != nil {
-		return "", nil, fmt.Errorf("wechat image http: %w", err)
+		return "", nil, fmt.Errorf("wechat %s http: %w", label, err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 3*1024*1024))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if err != nil {
-		return "", nil, fmt.Errorf("wechat image read: %w", err)
+		return "", nil, fmt.Errorf("wechat %s read: %w", label, err)
 	}
 	if resp.StatusCode >= 400 {
-		return "", nil, fmt.Errorf("wechat image http %d: %s", resp.StatusCode, string(raw))
+		return "", nil, fmt.Errorf("wechat %s http %d: %s", label, resp.StatusCode, string(raw))
 	}
-	if key, ok, err := imageAESKey(image); err != nil {
-		return "", nil, err
-	} else if ok {
-		decrypted, err := decryptAESECBPKCS7(raw, key)
+	if decrypt {
+		decrypted, err := decryptAESECBPKCS7(raw, aesKey)
 		if err != nil {
-			return "", nil, fmt.Errorf("wechat image decrypt: %w", err)
+			return "", nil, fmt.Errorf("wechat %s decrypt: %w", label, err)
 		}
 		raw = decrypted
 	}
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" {
-		contentType = "image/jpeg"
+		contentType = fallbackContentType
 	}
 	return contentType, raw, nil
 }
@@ -572,9 +599,20 @@ func imageAESKey(image *ImageItem) ([]byte, bool, error) {
 	if keyBase64 == "" {
 		return nil, false, nil
 	}
+	return decodeWechatAESKey(keyBase64, "wechat image aes_key")
+}
+
+func mediaAESKey(media *CDNMedia) ([]byte, bool, error) {
+	if media == nil || strings.TrimSpace(media.AESKey) == "" {
+		return nil, false, nil
+	}
+	return decodeWechatAESKey(strings.TrimSpace(media.AESKey), "wechat media aes_key")
+}
+
+func decodeWechatAESKey(keyBase64, label string) ([]byte, bool, error) {
 	decoded, err := base64.StdEncoding.DecodeString(keyBase64)
 	if err != nil {
-		return nil, false, fmt.Errorf("wechat image aes_key base64: %w", err)
+		return nil, false, fmt.Errorf("%s base64: %w", label, err)
 	}
 	if len(decoded) == aes.BlockSize {
 		return decoded, true, nil
@@ -584,14 +622,14 @@ func imageAESKey(image *ImageItem) ([]byte, bool, error) {
 		if isHexString(hexText) {
 			key, err := hex.DecodeString(hexText)
 			if err != nil {
-				return nil, false, fmt.Errorf("wechat image aes_key hex: %w", err)
+				return nil, false, fmt.Errorf("%s hex: %w", label, err)
 			}
 			if len(key) == aes.BlockSize {
 				return key, true, nil
 			}
 		}
 	}
-	return nil, false, fmt.Errorf("wechat image aes_key decoded length = %d, want 16 raw bytes or 32 hex chars", len(decoded))
+	return nil, false, fmt.Errorf("%s decoded length = %d, want 16 raw bytes or 32 hex chars", label, len(decoded))
 }
 
 func decryptAESECBPKCS7(ciphertext, key []byte) ([]byte, error) {

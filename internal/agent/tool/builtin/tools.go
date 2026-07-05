@@ -21,6 +21,7 @@ const (
 	ToolLog
 	ToolInspectRecentImage
 	ToolFileWrite
+	ToolCodeFiles
 )
 
 type ToolOptions struct {
@@ -33,6 +34,7 @@ type ToolOptions struct {
 	VisionAnalyzer VisionAnalyzer
 	RecentImages   RecentImageStore
 	FileWriteRoots []string
+	FileRoots      []string
 }
 
 type subAgentParentKeyType struct{}

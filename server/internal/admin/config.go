@@ -569,7 +569,7 @@ func parseChatReact(agent settingsWorkflowAgent) agentworkflow.AgentSpec {
 		spec.Mode = "react"
 	}
 	if spec.MaxSteps <= 0 {
-		spec.MaxSteps = 8
+		spec.MaxSteps = 200
 	}
 	if agent.Timeout != "" {
 		if d, err := time.ParseDuration(agent.Timeout); err == nil {

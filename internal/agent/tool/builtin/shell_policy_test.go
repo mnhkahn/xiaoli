@@ -63,8 +63,14 @@ func TestShellToolStoresRichApprovalOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 	ask := holder.Get()
-	if ask == nil || ask.BashHash == "" {
+	if ask == nil || ask.BashHash == "" || ask.BashToolUseID == "" {
 		t.Fatalf("ask data = %#v, want bash approval", ask)
+	}
+	if !strings.HasPrefix(ask.BashToolUseID, "toolu_bash_") {
+		t.Fatalf("BashToolUseID = %q, want toolu_bash_ prefix", ask.BashToolUseID)
+	}
+	if got, ok := PendingBashToolUseID("ses_policy_tool", ask.BashHash); !ok || got != ask.BashToolUseID {
+		t.Fatalf("PendingBashToolUseID() = %q, %v; want %q, true", got, ok, ask.BashToolUseID)
 	}
 	joined := strings.Join(ask.Options, "\n")
 	if !strings.Contains(joined, "本会话允许此命令") || !strings.Contains(joined, "始终允许子命令") {

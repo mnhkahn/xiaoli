@@ -54,33 +54,34 @@ var hopByHopHeaders = map[string]struct{}{
 }
 
 type AdminServer struct {
-	cfg            Config
-	signer         *signer
-	bridge         *BridgeClient
-	httpClient     *http.Client
-	stream         *streamHub
-	audioStore     *audioStore
-	deviceHub      *DeviceHub
-	conversation   *ConversationPipeline
-	memory         memoryReader
-	agent          *EinoAgent
-	artifactStore  *ArtifactStore
-	recentImages   *agentmedia.RecentImageStore
-	imagesMu       sync.Mutex
-	images         map[string]imageRecord
-	imagesByDev    map[string][]string
-	larkMu         sync.Mutex
-	larkEvents     map[string]time.Time
-	larkToken      string
-	larkTokenExp   time.Time
-	larkTokenMu    sync.Mutex
-	reminderOnce   sync.Once
-	reminderSt     *agentworkflow.ReminderStore
-	oidcMu         sync.Mutex
-	oidc           *oidcConfig
-	oidcFetcher    func() (oidcConfig, error)
-	a2aHandler     http.Handler
-	a2aCardHandler http.Handler
+	cfg               Config
+	signer            *signer
+	bridge            *BridgeClient
+	httpClient        *http.Client
+	stream            *streamHub
+	audioStore        *audioStore
+	deviceHub         *DeviceHub
+	conversation      *ConversationPipeline
+	memory            memoryReader
+	agent             *EinoAgent
+	artifactStore     *ArtifactStore
+	recentImages      *agentmedia.RecentImageStore
+	documentExtractor documentTextExtractor
+	imagesMu          sync.Mutex
+	images            map[string]imageRecord
+	imagesByDev       map[string][]string
+	larkMu            sync.Mutex
+	larkEvents        map[string]time.Time
+	larkToken         string
+	larkTokenExp      time.Time
+	larkTokenMu       sync.Mutex
+	reminderOnce      sync.Once
+	reminderSt        *agentworkflow.ReminderStore
+	oidcMu            sync.Mutex
+	oidc              *oidcConfig
+	oidcFetcher       func() (oidcConfig, error)
+	a2aHandler        http.Handler
+	a2aCardHandler    http.Handler
 }
 
 type imageRecord struct {
@@ -168,22 +169,23 @@ func NewServer(cfg Config) *AdminServer {
 		})
 	}
 	s := &AdminServer{
-		cfg:           cfg,
-		signer:        newSigner(cfg.SessionSecret, cfg.now),
-		httpClient:    client,
-		bridge:        NewBridgeClient(cfg.BridgeBaseURL, client),
-		stream:        stream,
-		artifactStore: artifactStore,
-		audioStore:    audioStore,
-		agent:         agent,
-		deviceHub:     deviceHub,
-		conversation:  conversation,
-		memory:        memory,
-		images:        map[string]imageRecord{},
-		imagesByDev:   map[string][]string{},
-		recentImages:  recentImages,
-		larkEvents:    map[string]time.Time{},
-		reminderSt:    reminderStore,
+		cfg:               cfg,
+		signer:            newSigner(cfg.SessionSecret, cfg.now),
+		httpClient:        client,
+		bridge:            NewBridgeClient(cfg.BridgeBaseURL, client),
+		stream:            stream,
+		artifactStore:     artifactStore,
+		audioStore:        audioStore,
+		agent:             agent,
+		deviceHub:         deviceHub,
+		conversation:      conversation,
+		memory:            memory,
+		images:            map[string]imageRecord{},
+		imagesByDev:       map[string][]string{},
+		recentImages:      recentImages,
+		documentExtractor: defaultDocumentTextExtractor{},
+		larkEvents:        map[string]time.Time{},
+		reminderSt:        reminderStore,
 	}
 	s.oidcFetcher = s.fetchOIDCConfig
 	s.setupA2A(agent)

@@ -49,6 +49,7 @@ type Store interface {
 	ListByChannel(ctx context.Context, channelName, channelUser string) ([]Info, error)
 	ListChannels(ctx context.Context) ([]ChannelEntry, error)
 	GetChannelSession(ctx context.Context, channelName, channelUser string) string
+	SetChannelSession(ctx context.Context, channelName, channelUser, sessionID string)
 	Get(ctx context.Context, sessionID string) (Info, error)
 	UpdateAfterChat(ctx context.Context, sessionID string, count int)
 	LoadMessages(ctx context.Context, sessionID string) []*schema.Message
@@ -215,6 +216,16 @@ func (m *Manager) GetChannelSession(ctx context.Context, channelName, channelUse
 		return ""
 	}
 	return sessionID
+}
+
+func (m *Manager) SetChannelSession(ctx context.Context, channelName, channelUser, sessionID string) {
+	key := m.channelKey(channelName, channelUser)
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		m.client.Del(ctx, key)
+		return
+	}
+	m.client.Set(ctx, key, sessionID, sessionTTL)
 }
 
 func (m *Manager) Get(ctx context.Context, sessionID string) (Info, error) {

@@ -163,6 +163,61 @@ func TestWrapToolPerToolName(t *testing.T) {
 	}
 }
 
+func TestWrapToolSkipsConsecutiveDuplicateCalls(t *testing.T) {
+	rec := GlobalRecorder()
+	rec.toolStats = make(map[string]*toolStatsEntry)
+
+	ft := &fakeInvokableTool{name: "repeatable"}
+	agent := &Agent{recorder: rec}
+	inv := agent.WrapTool(ft, "builtin").(tool.InvokableTool)
+	ctx := withToolDuplicateGuard(context.Background())
+
+	first, err := inv.InvokableRun(ctx, `{"b":2,"a":1}`)
+	if err != nil {
+		t.Fatalf("first call error: %v", err)
+	}
+	second, err := inv.InvokableRun(ctx, `{"a":1,"b":2}`)
+	if err != nil {
+		t.Fatalf("duplicate call error: %v", err)
+	}
+
+	if first != "ok" {
+		t.Fatalf("first result = %q, want ok", first)
+	}
+	if !strings.Contains(second, "skipped duplicate tool call") {
+		t.Fatalf("duplicate result = %q, want skipped duplicate message", second)
+	}
+	if ft.callSeq != 1 {
+		t.Fatalf("underlying calls = %d, want 1", ft.callSeq)
+	}
+	if c := toolStatsCalls(rec, "repeatable"); c != 2 {
+		t.Fatalf("tool stats calls = %d, want 2", c)
+	}
+}
+
+func TestWrapToolAllowsSameCallAfterDifferentTool(t *testing.T) {
+	rec := GlobalRecorder()
+	rec.toolStats = make(map[string]*toolStatsEntry)
+
+	alpha := &fakeInvokableTool{name: "alpha"}
+	beta := &fakeInvokableTool{name: "beta"}
+	agent := &Agent{recorder: rec}
+	alphaInv := agent.WrapTool(alpha, "builtin").(tool.InvokableTool)
+	betaInv := agent.WrapTool(beta, "builtin").(tool.InvokableTool)
+	ctx := withToolDuplicateGuard(context.Background())
+
+	alphaInv.InvokableRun(ctx, `{"path":"a.go"}`)
+	betaInv.InvokableRun(ctx, `{}`)
+	alphaInv.InvokableRun(ctx, `{"path":"a.go"}`)
+
+	if alpha.callSeq != 2 {
+		t.Fatalf("alpha underlying calls = %d, want 2", alpha.callSeq)
+	}
+	if beta.callSeq != 1 {
+		t.Fatalf("beta underlying calls = %d, want 1", beta.callSeq)
+	}
+}
+
 func TestTraceTopMessageStatsShowsLargestMessages(t *testing.T) {
 	msgs := []*schema.Message{
 		{Role: schema.User, Content: strings.Repeat("u", 4)},

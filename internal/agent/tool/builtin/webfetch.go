@@ -104,6 +104,15 @@ func NewFilteredTools(filters ToolFilter, opts ToolOptions) []tool.BaseTool {
 	if filters&ToolFileWrite != 0 && len(opts.FileWriteRoots) > 0 {
 		tools = append(tools, NewFileWriteTool(FileWriteConfig{AllowedRoots: opts.FileWriteRoots}))
 	}
+	if filters&ToolCodeFiles != 0 && len(opts.FileRoots) > 0 {
+		cfg := FileToolConfig{AllowedRoots: opts.FileRoots}
+		tools = append(tools,
+			NewGlobTool(cfg),
+			NewReadFileTool(cfg),
+			NewGrepTool(cfg),
+			NewEditFileTool(cfg),
+		)
+	}
 	return tools
 }
 

@@ -12,11 +12,32 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/xiaoli/internal/agent/localapp"
 	"github.com/mnhkahn/xiaoli/internal/agent/localconfig"
+	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 	agentevent "github.com/mnhkahn/xiaoli/internal/event"
 	"github.com/muesli/termenv"
 )
+
+func newTestLocalApp(t *testing.T, dataDir string) *localapp.App {
+	t.Helper()
+	agent := agentruntime.NewAgent(agentruntime.Config{
+		LLMURL:         "https://example.invalid/v1",
+		LLMAPIKey:      "test-key",
+		LLMModel:       "test-model",
+		StorageBackend: "local",
+		LocalDataDir:   dataDir,
+	}, agentevent.NewBus())
+	if agent == nil {
+		t.Fatal("NewAgent() returned nil")
+	}
+	return &localapp.App{
+		Config: localconfig.Config{DataDir: dataDir},
+		Bus:    agentevent.NewBus(),
+		Agent:  agent,
+	}
+}
 
 func TestLayoutUsesBottomStatusBar(t *testing.T) {
 	mainW, sideW, bodyH, promptW, statusH := layoutSizes(120, 30)
@@ -110,6 +131,41 @@ func TestGitSyncButtonLabelHighlightsChangingParts(t *testing.T) {
 	got := gitSyncButtonLabel(m)
 	if plain := stripTestANSI(got); plain != "main ↑1 *2 [push]" {
 		t.Fatalf("plain gitSyncButtonLabel() = %q", plain)
+	}
+}
+
+func TestApprovedBashFollowupCarriesToolUseID(t *testing.T) {
+	got := formatApprovedBashFollowup("toolu_bash_test_123", "echo ok", "ok\n", nil)
+	for _, want := range []string{
+		"[TOOL_RESULT]",
+		"tool=bash",
+		"tool_use_id=toolu_bash_test_123",
+		"status=success",
+		"[/TOOL_RESULT]",
+		"直接调用下一个工具",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatApprovedBashFollowup() = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "用户已批准并执行") {
+		t.Fatalf("formatApprovedBashFollowup() = %q, should not use plain approval wrapper", got)
+	}
+}
+
+func TestExpiredBashFollowupCarriesToolUseID(t *testing.T) {
+	got := formatExpiredBashFollowup("toolu_bash_test_expired", "echo stale")
+	for _, want := range []string{
+		"[TOOL_RESULT]",
+		"tool=bash",
+		"tool_use_id=toolu_bash_test_expired",
+		"status=expired",
+		"echo stale",
+		"重新发起新的 bash 工具调用",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatExpiredBashFollowup() = %q, want %q", got, want)
+		}
 	}
 }
 
@@ -412,6 +468,109 @@ func TestMouseDragSelectsTranscriptAndReleaseCopies(t *testing.T) {
 	}
 }
 
+func TestTranscriptMousePointIncludesLastVisibleLine(t *testing.T) {
+	m := model{width: 80, height: 24}
+	_, _, bodyH, _, _ := layoutSizes(m.width, m.height)
+
+	point, ok := m.transcriptMousePoint(tea.MouseMsg{X: 2, Y: bodyH - 1})
+	if !ok {
+		t.Fatalf("transcriptMousePoint(last visible line) ok = false")
+	}
+	if point.y != bodyH-2 {
+		t.Fatalf("transcriptMousePoint(last visible line).y = %d, want %d", point.y, bodyH-2)
+	}
+}
+
+func TestMarkdownLinkRendersAsUnderlinedTitle(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	got := renderTranscriptContent([]transcriptItem{{
+		role: "assistant",
+		text: "看 [GitHub](https://github.com/mnhkahn/xiaoli) 这里",
+	}}, 80)
+	plain := stripTestANSI(got)
+	if !strings.Contains(plain, "GitHub") {
+		t.Fatalf("rendered link title missing: %q", plain)
+	}
+	if strings.Contains(plain, "[GitHub](") || strings.Contains(plain, "https://github.com/mnhkahn/xiaoli") {
+		t.Fatalf("rendered markdown link leaked raw syntax/url: %q", plain)
+	}
+	if !strings.Contains(got, "\x1b[4;") && !strings.Contains(got, ";4m") {
+		t.Fatalf("rendered link lacks underline style: %q", got)
+	}
+}
+
+func TestTranscriptLinkClickOpensURL(t *testing.T) {
+	input := textinput.New()
+	m := model{
+		input:        input,
+		mouseEnabled: true,
+		width:        80,
+		height:       24,
+		viewport:     viewport.New(80, 5),
+		items: []transcriptItem{{
+			role: "assistant",
+			text: "[GitHub](https://github.com/mnhkahn/xiaoli)",
+		}},
+	}
+	m.syncViewport(true)
+	if len(m.transcriptLinks) != 1 {
+		t.Fatalf("transcript links = %#v, want one link", m.transcriptLinks)
+	}
+	opened := ""
+	oldOpenURL := openURLFunc
+	openURLFunc = func(url string) error {
+		opened = url
+		return nil
+	}
+	defer func() { openURLFunc = oldOpenURL }()
+
+	next, cmd := m.Update(tea.MouseMsg{Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 2, Y: 1})
+	got := next.(model)
+	if cmd == nil {
+		t.Fatalf("link click returned nil command")
+	}
+	if got.selection.dragging {
+		t.Fatalf("link click started text selection: %#v", got.selection)
+	}
+	msg := cmd()
+	done, ok := msg.(linkOpenDoneMsg)
+	if !ok {
+		t.Fatalf("link open command returned %T, want linkOpenDoneMsg", msg)
+	}
+	if done.err != nil {
+		t.Fatalf("link open command error = %v", done.err)
+	}
+	if opened != "https://github.com/mnhkahn/xiaoli" {
+		t.Fatalf("opened URL = %q", opened)
+	}
+}
+
+func TestTranscriptLinkHitboxUsesDisplayWidthAfterChineseText(t *testing.T) {
+	m := model{
+		mouseEnabled: true,
+		width:        80,
+		height:       24,
+		viewport:     viewport.New(80, 5),
+		items: []transcriptItem{{
+			role: "assistant",
+			text: "看 [GitHub](https://github.com/mnhkahn/xiaoli)",
+		}},
+	}
+	m.syncViewport(true)
+	if len(m.transcriptLinks) != 1 {
+		t.Fatalf("transcript links = %#v, want one link", m.transcriptLinks)
+	}
+	if m.transcriptLinks[0].x0 != 3 {
+		t.Fatalf("link x0 = %d, want display column 3 after Chinese prefix", m.transcriptLinks[0].x0)
+	}
+	if _, ok := m.transcriptLinkAt(tea.MouseMsg{Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 4, Y: 1}); ok {
+		t.Fatalf("click before link title hit the link")
+	}
+	if url, ok := m.transcriptLinkAt(tea.MouseMsg{Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 5, Y: 1}); !ok || url != "https://github.com/mnhkahn/xiaoli" {
+		t.Fatalf("click on link title = %q %v", url, ok)
+	}
+}
+
 func TestStripMouseSGRFragmentsFromInput(t *testing.T) {
 	got := stripMouseSGRFragments("hello [<65;96;30M world \x1b[<64;10;5M!")
 	if got != "hello  world !" {
@@ -486,8 +645,8 @@ func TestRunEventsRenderGradientStatusRows(t *testing.T) {
 		t.Fatalf("loading frames = %q / %q, want stable kaomoji glyph", first, laterGlyph)
 	}
 	later := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 32))
-	if !strings.Contains(later, "Syncing context") {
-		t.Fatalf("status phrase did not rotate: %q", later)
+	if later != first {
+		t.Fatalf("status phrase changed within one event: %q / %q", first, later)
 	}
 }
 
@@ -495,8 +654,8 @@ func TestOnlyLatestRunEventAnimates(t *testing.T) {
 	first := transcriptItem{role: "run-active", frame: 0}
 	second := transcriptItem{role: "run-active"}
 	got := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{first, second}, 80, 32))
-	if strings.Count(got, "Aligning") != 1 || strings.Count(got, "Syncing context") != 1 {
-		t.Fatalf("rendered active events = %q, want frozen first and animated latest", got)
+	if strings.Count(got, "Aligning") != 2 {
+		t.Fatalf("rendered active events = %q, want stable labels", got)
 	}
 }
 
@@ -512,14 +671,185 @@ func TestCommitSlashUsesRunEventStart(t *testing.T) {
 	}
 }
 
+func TestCodexReviewArgsDefaultToUncommitted(t *testing.T) {
+	got, err := codexReviewArgs("")
+	if err != nil {
+		t.Fatalf("codexReviewArgs() error = %v", err)
+	}
+	if len(got) != 2 || got[0] != "review" || got[1] != "--uncommitted" {
+		t.Fatalf("codexReviewArgs(empty) = %#v", got)
+	}
+	got, err = codexReviewArgs("重点看看 TUI 复制")
+	if err != nil {
+		t.Fatalf("codexReviewArgs(prompt) error = %v", err)
+	}
+	if len(got) != 2 || got[0] != "review" || !strings.Contains(got[1], "重点看看 TUI 复制") || !strings.Contains(got[1], "请用中文输出") {
+		t.Fatalf("codexReviewArgs(prompt) = %#v", got)
+	}
+}
+
+func TestCodexReviewArgsPreserveExplicitTarget(t *testing.T) {
+	got, err := codexReviewArgs("--base main 重点看看 TUI 复制")
+	if err != nil {
+		t.Fatalf("codexReviewArgs(base) error = %v", err)
+	}
+	if len(got) != 4 || got[0] != "review" || got[1] != "--base" || got[2] != "main" || !strings.Contains(got[3], "重点看看 TUI 复制") || !strings.Contains(got[3], "请用中文输出") {
+		t.Fatalf("codexReviewArgs(base) = %#v", got)
+	}
+	got, err = codexReviewArgs("--commit abc123")
+	if err != nil {
+		t.Fatalf("codexReviewArgs(commit) error = %v", err)
+	}
+	if len(got) != 3 || got[0] != "review" || got[1] != "--commit" || got[2] != "abc123" {
+		t.Fatalf("codexReviewArgs(commit) = %#v", got)
+	}
+}
+
+func TestReviewSlashStartsCodexReviewRunEvent(t *testing.T) {
+	input := textinput.New()
+	input.SetValue("/review")
+	m := model{
+		input:    input,
+		width:    80,
+		height:   24,
+		viewport: viewport.New(80, 5),
+		cwd:      "/tmp/repo",
+	}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(model)
+	if cmd == nil {
+		t.Fatalf("/review returned nil command")
+	}
+	if !got.busy || got.status != "review" || got.input.Value() != "" {
+		t.Fatalf("/review state busy=%v status=%q input=%q", got.busy, got.status, got.input.Value())
+	}
+	if len(got.items) == 0 || got.items[len(got.items)-1].role != "run-active" || got.items[len(got.items)-1].text != "Codex review 1/3" {
+		t.Fatalf("/review items = %#v, want Codex review 1/3 run event", got.items)
+	}
+}
+
+func TestCodexReviewDoneAppendsResult(t *testing.T) {
+	m := model{busy: true, status: "review", runPulseActive: true}
+	next, _ := m.Update(codexReviewDoneMsg{output: "LGTM\n", args: []string{"review", "--uncommitted"}})
+	got := next.(model)
+	if got.busy || got.status != "idle" || got.runPulseActive {
+		t.Fatalf("review done state busy=%v status=%q active=%v", got.busy, got.status, got.runPulseActive)
+	}
+	if len(got.items) != 2 {
+		t.Fatalf("review done items = %#v, want run-done and assistant", got.items)
+	}
+	if got.items[0].role != "run-done" || got.items[1].role != "assistant" || !strings.Contains(got.items[1].text, "LGTM") {
+		t.Fatalf("review done items = %#v", got.items)
+	}
+}
+
+func TestCodexReviewLoopsIntoFixAndNextRound(t *testing.T) {
+	oldStartChat := startReviewFixChatCmd
+	defer func() { startReviewFixChatCmd = oldStartChat }()
+	startReviewFixChatCmd = func(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, cwd, text string, disabledTools []string) tea.Cmd {
+		if !strings.Contains(text, "Fix the following Codex review findings") {
+			t.Fatalf("fix prompt = %q, want review findings", text)
+		}
+		return func() tea.Msg { return chatDoneMsg{reply: "fixed", reviewFix: true} }
+	}
+
+	m := model{
+		busy:           true,
+		status:         "review",
+		runPulseActive: true,
+		reviewLoop:     codexReviewLoop{Active: true, Round: 1, MaxRounds: 3, Args: []string{"review", "--uncommitted"}, CWD: "/tmp/repo"},
+	}
+	next, cmd := m.Update(codexReviewDoneMsg{output: "[P1] fix bug", args: []string{"review", "--uncommitted"}})
+	got := next.(model)
+	if cmd == nil {
+		t.Fatalf("review findings returned nil fix command")
+	}
+	if !got.busy || got.status != "review fix" || got.reviewLoop.Round != 1 {
+		t.Fatalf("review fix state busy=%v status=%q loop=%#v", got.busy, got.status, got.reviewLoop)
+	}
+	if len(got.items) < 2 || got.items[len(got.items)-2].role != "assistant" || !strings.Contains(got.items[len(got.items)-2].text, "第 1 轮审查发现问题") || !strings.Contains(got.items[len(got.items)-2].text, "[P1] fix bug") {
+		t.Fatalf("review findings not printed before fix: %#v", got.items)
+	}
+	msg := cmd()
+	next, cmd = got.Update(msg)
+	got = next.(model)
+	if cmd == nil {
+		t.Fatalf("review fix completion returned nil next review command")
+	}
+	if !got.busy || got.status != "review" || got.reviewLoop.Round != 2 {
+		t.Fatalf("next review state busy=%v status=%q loop=%#v", got.busy, got.status, got.reviewLoop)
+	}
+	if got.items[len(got.items)-1].role != "run-active" || got.items[len(got.items)-1].text != "Codex review 2/3" {
+		t.Fatalf("items = %#v, want round 2 active event", got.items)
+	}
+}
+
+func TestReviewFixBashFollowupKeepsReviewLoop(t *testing.T) {
+	oldStartChat := startReviewFixChatCmd
+	defer func() { startReviewFixChatCmd = oldStartChat }()
+	called := false
+	startReviewFixChatCmd = func(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, cwd, text string, disabledTools []string) tea.Cmd {
+		called = true
+		if !strings.Contains(text, "[TOOL_RESULT]") {
+			t.Fatalf("bash followup prompt = %q, want tool result", text)
+		}
+		return nil
+	}
+
+	m := model{
+		app:        newTestLocalApp(t, t.TempDir()),
+		chatMsgs:   make(chan tea.Msg, 1),
+		busy:       true,
+		status:     "bash running",
+		cwd:        "/tmp/repo",
+		sessionID:  "ses-review",
+		reviewLoop: codexReviewLoop{Active: true, Round: 1, MaxRounds: 3, Args: []string{"review", "--uncommitted", codexReviewChinesePrompt}, CWD: "/tmp/repo"},
+	}
+
+	_, cmd := m.Update(bashApprovalDoneMsg{
+		command:   "grep -n _seo controllers/base_controller.go",
+		output:    "84: if _, exists := m[\"_seo\"]; !exists {",
+		sessionID: "ses-review",
+		toolUseID: "toolu_bash_review",
+		reviewFix: true,
+	})
+	if cmd == nil {
+		t.Fatalf("bash approval done returned nil command")
+	}
+	if !called {
+		t.Fatalf("bash followup did not use review-fix chat path")
+	}
+}
+
+func TestCodexReviewStopsAfterMaxRounds(t *testing.T) {
+	m := model{
+		busy:           true,
+		status:         "review",
+		runPulseActive: true,
+		reviewLoop:     codexReviewLoop{Active: true, Round: 3, MaxRounds: 3, Args: []string{"review", "--uncommitted"}, CWD: "/tmp/repo"},
+	}
+	next, cmd := m.Update(codexReviewDoneMsg{output: "[P1] still broken", args: []string{"review", "--uncommitted"}})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("max review returned command, want nil")
+	}
+	if got.busy || got.status != "idle" || got.reviewLoop.Active {
+		t.Fatalf("max review state busy=%v status=%q loop=%#v", got.busy, got.status, got.reviewLoop)
+	}
+	last := got.items[len(got.items)-1]
+	if last.role != "assistant" || !strings.Contains(last.text, "still broken") {
+		t.Fatalf("last item = %#v, want final review output", last)
+	}
+}
+
 func TestToolEventsRenderWorkplaceStatusRows(t *testing.T) {
 	start := eventTranscriptItem(agentevent.Event{
 		Type: agentevent.TypeAgentToolStarted,
-		Data: map[string]any{"name": "bash"},
+		Data: map[string]any{"name": "bash", "arguments": `{"command":"git status --porcelain=v1"}`},
 	})
 	done := eventTranscriptItem(agentevent.Event{
 		Type: agentevent.TypeAgentToolFinished,
-		Data: map[string]any{"name": "bash"},
+		Data: map[string]any{"name": "bash", "arguments": `{"command":"git status --porcelain=v1"}`},
 	})
 	failed := eventTranscriptItem(agentevent.Event{
 		Type: agentevent.TypeAgentToolFinished,
@@ -529,7 +859,7 @@ func TestToolEventsRenderWorkplaceStatusRows(t *testing.T) {
 		t.Fatalf("tool event roles = %q/%q/%q", start.role, done.role, failed.role)
 	}
 	got := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start, done, failed}, 100, 3))
-	for _, want := range []string{"Tracing bash", "Validated bash", "Blocked bash"} {
+	for _, want := range []string{"Tracing bash: git status --porcelain=v1", "Validated bash: git status --porcelain=v1", "Blocked bash"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("tool render = %q, missing %q", got, want)
 		}
@@ -537,6 +867,30 @@ func TestToolEventsRenderWorkplaceStatusRows(t *testing.T) {
 	for _, want := range []string{"(._.)", "(ok)", "(>_<)"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("tool render = %q, missing glyph %q", got, want)
+		}
+	}
+}
+
+func TestToolEventsRenderFileOperationDetails(t *testing.T) {
+	cases := []struct {
+		name string
+		args string
+		want string
+	}{
+		{name: "read_file", args: `{"path":"tui/cmd/xiaoli/main.go"}`, want: "Tracing read_file: tui/cmd/xiaoli/main.go"},
+		{name: "edit_file", args: `{"path":"internal/agent/runtime/agent.go"}`, want: "Tracing edit_file: internal/agent/runtime/agent.go"},
+		{name: "glob", args: `{"pattern":"**/*.go"}`, want: "Tracing glob: **/*.go"},
+		{name: "grep", args: `{"pattern":"toolEvent","glob":"**/*.go"}`, want: `Tracing grep: "toolEvent" in **/*.go`},
+		{name: "file_write", args: `{"filename":"report.md"}`, want: "Tracing file_write: report.md"},
+	}
+	for _, tc := range cases {
+		item := eventTranscriptItem(agentevent.Event{
+			Type: agentevent.TypeAgentToolStarted,
+			Data: map[string]any{"name": tc.name, "arguments": tc.args},
+		})
+		got := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{item}, 100, 3))
+		if !strings.Contains(got, tc.want) {
+			t.Fatalf("%s render = %q, missing %q", tc.name, got, tc.want)
 		}
 	}
 }
@@ -739,6 +1093,76 @@ func TestWorkspacePickerSwitchDoesNotPersistEmptySession(t *testing.T) {
 	}
 }
 
+func TestWorkspaceTitleFallsBackToFirstUserPrompt(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newTestLocalApp(t, dataDir)
+	sessionID, err := app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	mem := agentruntime.NewLocalMemory(agentruntime.Config{
+		StorageBackend: "local",
+		LocalDataDir:   dataDir,
+	})
+	if err := mem.Save(context.Background(), sessionID, []*schema.Message{
+		schema.AssistantMessage("ready", nil),
+		schema.UserMessage("把默认通道写到配置文件里"),
+		schema.AssistantMessage("ok", nil),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	got := workspaceTitle(app, sessionID, t.TempDir())
+
+	if got != "把默认通道写到配置文件里" {
+		t.Fatalf("workspaceTitle() = %q, want first user prompt", got)
+	}
+}
+
+func TestOpenWorkspacePickerEnrichesDefaultSessionTitle(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newTestLocalApp(t, dataDir)
+	project := t.TempDir()
+	sessionID, err := app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	mem := agentruntime.NewLocalMemory(agentruntime.Config{
+		StorageBackend: "local",
+		LocalDataDir:   dataDir,
+	})
+	if err := mem.Save(context.Background(), sessionID, []*schema.Message{
+		schema.UserMessage("修一下 head.html 的 SEO 字段"),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	statePath := filepath.Join(dataDir, "state", "workspaces.json")
+	if err := recordWorkspaceSession(statePath, workspaceItem{
+		CWD:        project,
+		SessionID:  sessionID,
+		Title:      "新会话",
+		LastOpened: time.Now(),
+	}); err != nil {
+		t.Fatalf("recordWorkspaceSession() error = %v", err)
+	}
+	m := model{
+		app:                app,
+		cwd:                project,
+		width:              120,
+		height:             30,
+		workspaceStatePath: statePath,
+	}
+
+	m.openWorkspacePicker()
+
+	if m.workspacePicker == nil || len(m.workspacePicker.items) != 1 {
+		t.Fatalf("workspacePicker = %#v, want one item", m.workspacePicker)
+	}
+	if got := m.workspacePicker.items[0].Title; got != "修一下 head.html 的 SEO 字段" {
+		t.Fatalf("picker title = %q, want first user prompt", got)
+	}
+}
+
 func TestSwitchWorkspaceRestoresSession(t *testing.T) {
 	dir := t.TempDir()
 	start := t.TempDir()
@@ -754,6 +1178,114 @@ func TestSwitchWorkspaceRestoresSession(t *testing.T) {
 	}
 	if len(m.items) == 0 || !strings.Contains(m.items[len(m.items)-1].text, "Switched to") {
 		t.Fatalf("items = %#v, want switch notice", m.items)
+	}
+}
+
+func TestSwitchWorkspaceUpdatesChannelSession(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newTestLocalApp(t, dataDir)
+	currentDir := t.TempDir()
+	nextDir := t.TempDir()
+	currentSession, err := app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		t.Fatalf("NewSession(current) error = %v", err)
+	}
+	nextSession, err := app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		t.Fatalf("NewSession(next) error = %v", err)
+	}
+	app.Agent.SessionManager().SetChannelSession(context.Background(), channelName, channelUser, currentSession)
+	m := model{
+		app:                app,
+		input:              textinput.New(),
+		cwd:                currentDir,
+		sessionID:          currentSession,
+		width:              100,
+		height:             30,
+		workspaceStatePath: filepath.Join(dataDir, "state", "workspaces.json"),
+	}
+
+	m.switchWorkspace(workspaceItem{CWD: nextDir, SessionID: nextSession, Title: "Next"})
+
+	if !samePath(m.cwd, nextDir) || m.sessionID != nextSession {
+		t.Fatalf("switchWorkspace cwd/session = %q/%q, want %q/%q", m.cwd, m.sessionID, nextDir, nextSession)
+	}
+	if got := app.Agent.SessionManager().GetChannelSession(context.Background(), channelName, channelUser); got != nextSession {
+		t.Fatalf("channel session = %q, want %q", got, nextSession)
+	}
+}
+
+func TestSwitchWorkspaceCreatesSessionWhenMissing(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newTestLocalApp(t, dataDir)
+	nextDir := t.TempDir()
+	m := model{
+		app:                app,
+		input:              textinput.New(),
+		cwd:                t.TempDir(),
+		width:              100,
+		height:             30,
+		workspaceStatePath: filepath.Join(dataDir, "state", "workspaces.json"),
+	}
+
+	m.switchWorkspace(workspaceItem{CWD: nextDir, Title: "Next"})
+
+	if !samePath(m.cwd, nextDir) || strings.TrimSpace(m.sessionID) == "" {
+		t.Fatalf("switchWorkspace cwd/session = %q/%q, want %q/new session", m.cwd, m.sessionID, nextDir)
+	}
+	if got := app.Agent.SessionManager().GetChannelSession(context.Background(), channelName, channelUser); got != m.sessionID {
+		t.Fatalf("channel session = %q, want created %q", got, m.sessionID)
+	}
+	item, ok := findWorkspace(m.workspaceStatePath, nextDir)
+	if !ok || item.SessionID != m.sessionID {
+		t.Fatalf("recorded workspace = %#v, %v; want session %q", item, ok, m.sessionID)
+	}
+}
+
+func TestSwitchWorkspaceClearsPendingBashState(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newTestLocalApp(t, dataDir)
+	nextDir := t.TempDir()
+	m := model{
+		app:                  app,
+		input:                textinput.New(),
+		cwd:                  t.TempDir(),
+		width:                100,
+		height:               30,
+		workspaceStatePath:   filepath.Join(dataDir, "state", "workspaces.json"),
+		pendingBashHash:      "old-hash",
+		pendingBashToolUseID: "old-tool",
+		pendingQuestion:      "是否允许执行命令？",
+		pendingOptions:       []string{"允许一次", "拒绝"},
+		pendingChoice:        1,
+	}
+
+	m.switchWorkspace(workspaceItem{CWD: nextDir, Title: "Next"})
+
+	if m.pendingBashHash != "" || m.pendingBashToolUseID != "" || m.pendingQuestion != "" || len(m.pendingOptions) != 0 || m.pendingChoice != 0 {
+		t.Fatalf("pending bash state not cleared: hash=%q tool=%q question=%q options=%v choice=%d", m.pendingBashHash, m.pendingBashToolUseID, m.pendingQuestion, m.pendingOptions, m.pendingChoice)
+	}
+}
+
+func TestStaleBashContinuationIsBlockedLocally(t *testing.T) {
+	input := textinput.New()
+	input.SetValue("go on")
+	m := model{
+		input: input,
+		items: []transcriptItem{{role: "assistant", text: "等待你确认命令。"}},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(model)
+
+	if cmd != nil {
+		t.Fatalf("Update() cmd = %v, want nil", cmd)
+	}
+	if len(got.items) != 2 || got.items[1].role != "system" || !strings.Contains(got.items[1].text, "没有正在等待确认的命令") {
+		t.Fatalf("items = %#v, want local stale approval warning", got.items)
+	}
+	if got.input.Value() != "" {
+		t.Fatalf("input = %q, want cleared", got.input.Value())
 	}
 }
 
@@ -812,6 +1344,144 @@ func TestInputHistoryNavigation(t *testing.T) {
 	}
 	if !m.navigateInputHistory(1) || m.input.Value() != "draft" {
 		t.Fatalf("second down input = %q", m.input.Value())
+	}
+}
+
+func TestVerticalKeysUseInputHistoryWhenInputFocused(t *testing.T) {
+	input := textinput.New()
+	input.SetValue("draft")
+	m := model{input: input, focus: focusInput}
+	m.recordInputHistory("first")
+	m.recordInputHistory("second")
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("up returned command, want nil")
+	}
+	if got.input.Value() != "second" {
+		t.Fatalf("input after up = %q, want history item", got.input.Value())
+	}
+}
+
+func TestVerticalKeysScrollTranscriptWhenTranscriptFocused(t *testing.T) {
+	input := textinput.New()
+	vp := viewport.New(20, 2)
+	vp.SetContent("one\ntwo\nthree\nfour")
+	vp.GotoBottom()
+	m := model{input: input, viewport: vp, focus: focusTranscript}
+	m.recordInputHistory("history")
+	before := m.viewport.YOffset
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("up returned command, want nil")
+	}
+	if got.viewport.YOffset >= before {
+		t.Fatalf("viewport offset = %d, want less than %d", got.viewport.YOffset, before)
+	}
+	if got.input.Value() != "" {
+		t.Fatalf("input changed to %q, want unchanged", got.input.Value())
+	}
+}
+
+func TestVerticalKeysUseInputHistoryWhenInputActiveAfterTranscriptFocus(t *testing.T) {
+	input := textinput.New()
+	input.Focus()
+	input.SetValue("draft")
+	vp := viewport.New(20, 2)
+	vp.SetContent("one\ntwo\nthree\nfour")
+	vp.GotoBottom()
+	m := model{input: input, viewport: vp, focus: focusTranscript}
+	m.recordInputHistory("history")
+	before := m.viewport.YOffset
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("up returned command, want nil")
+	}
+	if got.input.Value() != "history" {
+		t.Fatalf("input after up = %q, want history", got.input.Value())
+	}
+	if got.viewport.YOffset != before {
+		t.Fatalf("viewport offset = %d, want unchanged %d", got.viewport.YOffset, before)
+	}
+}
+
+func TestVerticalKeysKeepPendingSelectionPriority(t *testing.T) {
+	vp := viewport.New(20, 2)
+	vp.SetContent("one\ntwo\nthree\nfour")
+	vp.GotoBottom()
+	m := model{
+		input:          textinput.New(),
+		viewport:       vp,
+		focus:          focusTranscript,
+		pendingOptions: []string{"允许", "拒绝"},
+	}
+	before := m.viewport.YOffset
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got := next.(model)
+	if got.pendingChoice != 1 {
+		t.Fatalf("pendingChoice = %d, want 1", got.pendingChoice)
+	}
+	if got.viewport.YOffset != before {
+		t.Fatalf("viewport offset = %d, want unchanged %d", got.viewport.YOffset, before)
+	}
+}
+
+func TestDoubleTabExitsExplorerAndOpensWorkspacePicker(t *testing.T) {
+	m := model{
+		input:              textinput.New(),
+		cwd:                t.TempDir(),
+		width:              100,
+		height:             30,
+		explorer:           &tuiExplorer{mode: explorerDiff},
+		workspaceStatePath: filepath.Join(t.TempDir(), "workspaces.json"),
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("first tab returned command, want nil")
+	}
+	if got.explorer == nil {
+		t.Fatalf("first tab closed explorer")
+	}
+	if got.workspacePicker != nil {
+		t.Fatalf("first tab opened workspace picker")
+	}
+
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got = next.(model)
+	if cmd != nil {
+		t.Fatalf("second tab returned command, want nil")
+	}
+	if got.explorer != nil {
+		t.Fatalf("second tab kept explorer open")
+	}
+	if got.workspacePicker == nil {
+		t.Fatalf("second tab did not open workspace picker")
+	}
+}
+
+func TestTypingReturnsFocusToInput(t *testing.T) {
+	input := textinput.New()
+	input.Focus()
+	vp := viewport.New(20, 2)
+	vp.SetContent("one\ntwo\nthree\nfour")
+	vp.GotoBottom()
+	m := model{input: input, viewport: vp, focus: focusTranscript}
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	got := next.(model)
+	if got.focus != focusInput {
+		t.Fatalf("focus = %v, want input", got.focus)
+	}
+	if got.input.Value() != "x" {
+		t.Fatalf("input = %q, want typed rune", got.input.Value())
 	}
 }
 
@@ -1106,6 +1776,30 @@ func TestHandleLocalUpgradeShowsCommand(t *testing.T) {
 	}
 	if len(m.items) == 0 || !strings.Contains(m.items[len(m.items)-1].text, "go install") || !strings.Contains(m.items[len(m.items)-1].text, "releases/tag/v0.2.0") {
 		t.Fatalf("items = %#v, want upgrade command and release URL", m.items)
+	}
+}
+
+func TestParsePlanCommand(t *testing.T) {
+	cmd, ok := parsePlanCommand("/plan fix auth")
+	if !ok || cmd.Action != planCommandStart || cmd.Prompt != "fix auth" {
+		t.Fatalf("parsePlanCommand(/plan fix auth) = %#v/%v", cmd, ok)
+	}
+	cmd, ok = parsePlanCommand("/plan")
+	if !ok || cmd.Action != planCommandEnter {
+		t.Fatalf("parsePlanCommand(/plan) = %#v/%v, want enter", cmd, ok)
+	}
+	cmd, ok = parsePlanCommand("/plan off")
+	if !ok || cmd.Action != planCommandExit {
+		t.Fatalf("parsePlanCommand(/plan off) = %#v/%v, want exit", cmd, ok)
+	}
+}
+
+func TestPlanPromptForbidsModification(t *testing.T) {
+	got := planPrompt("fix auth")
+	for _, want := range []string{"fix auth", "只输出计划", "不要修改文件", "不要执行会改变状态的命令"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("planPrompt() missing %q in %q", want, got)
+		}
 	}
 }
 

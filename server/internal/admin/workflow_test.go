@@ -22,6 +22,20 @@ func TestWorkflowDefinitionsUseConfiguredChatReactAgent(t *testing.T) {
 	}
 }
 
+func TestChatReactDefaultMaxStepsIsLargeEnoughForAgenticTurns(t *testing.T) {
+	cfg := testConfig()
+	cfg.ChatReact = parseChatReact(settingsWorkflowAgent{})
+	srv := NewServer(cfg)
+
+	def := srv.workflowByID("chat_react")
+	if def == nil {
+		t.Fatal("chat_react workflow not found")
+	}
+	if def.Agent.MaxSteps != 200 {
+		t.Fatalf("chat_react max_steps = %d, want 200", def.Agent.MaxSteps)
+	}
+}
+
 func TestLarkMessageTimeoutFollowsChatReactWithMargin(t *testing.T) {
 	cfg := testConfig()
 	cfg.ChatReact = parseChatReact(settingsWorkflowAgent{MaxSteps: 8, Timeout: "120s"})

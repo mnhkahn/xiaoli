@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,25 @@ import (
 
 type testTool struct {
 	name string
+}
+
+func TestAssistantResultUsesAskMessageInsteadOfGenericFallback(t *testing.T) {
+	ask := &agentbuiltin.AskData{
+		Question: "是否允许执行命令：git status",
+		Options:  []string{"允许::执行该命令", "拒绝::不执行"},
+		BashHash: "abc123",
+	}
+
+	msg := assistantResultAfterRun(nil, "", ask)
+	if msg == nil {
+		t.Fatal("assistantResultAfterRun() returned nil")
+	}
+	if strings.Contains(msg.Content, "命令或工具已执行完成") {
+		t.Fatalf("assistantResultAfterRun() content = %q, want ask-specific message", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "确认") {
+		t.Fatalf("assistantResultAfterRun() content = %q, want confirmation prompt", msg.Content)
+	}
 }
 
 func (t testTool) Info(context.Context) (*schema.ToolInfo, error) {
@@ -124,6 +144,28 @@ func TestToolsForChatIncludesFileWriteWithoutChannelSend(t *testing.T) {
 	}
 	if names["channel_send"] {
 		t.Fatalf("toolsForChat should not include channel_send without configured sender: %#v", names)
+	}
+}
+
+func TestToolsForChatIncludesCodeFileToolsWhenConfigured(t *testing.T) {
+	agent := &Agent{cfg: Config{BuiltinWebFetchEnabled: true}}
+	agent.SetAgentFileRoots([]string{t.TempDir()})
+
+	names := toolNames(t, agent.toolsForChat(context.Background(), "", "", "tui"))
+	for _, want := range []string{"glob", "read_file", "grep", "edit_file"} {
+		if !names[want] {
+			t.Fatalf("toolsForChat missing %q: %#v", want, names)
+		}
+	}
+}
+
+func TestFilterDisabledToolsRemovesNamedTools(t *testing.T) {
+	tools := []tool.BaseTool{testTool{name: "glob"}, testTool{name: "edit_file"}, testTool{name: "bash"}}
+	filtered := filterDisabledTools(context.Background(), tools, []string{"edit_file", "bash"})
+
+	names := toolNames(t, filtered)
+	if !names["glob"] || names["edit_file"] || names["bash"] {
+		t.Fatalf("filtered tools = %#v", names)
 	}
 }
 

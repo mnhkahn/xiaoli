@@ -160,6 +160,7 @@ func (d *tuiSlashDeps) ResumeSession(ctx context.Context, id string) string {
 	if info.ChannelName != channelName || info.ChannelUser != channelUser {
 		return "无权访问该会话。"
 	}
+	sm.SetChannelSession(ctx, channelName, channelUser, id)
 	d.setActiveSession(id)
 	return fmt.Sprintf("已切换到会话：%s  %s", info.ID, info.Title)
 }
