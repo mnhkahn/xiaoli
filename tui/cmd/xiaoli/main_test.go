@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/mnhkahn/xiaoli/internal/agent/localapp"
 	"github.com/mnhkahn/xiaoli/internal/agent/localconfig"
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
+	agentbuiltin "github.com/mnhkahn/xiaoli/internal/agent/tool/builtin"
 	agentevent "github.com/mnhkahn/xiaoli/internal/event"
 	"github.com/muesli/termenv"
 )
@@ -52,6 +54,107 @@ func TestLayoutUsesBottomStatusBar(t *testing.T) {
 	}
 }
 
+func TestChatDeltaFlushesViewportOnThrottleTick(t *testing.T) {
+	m := model{
+		width:          100,
+		height:         30,
+		viewport:       viewport.New(0, 0),
+		chatRunID:      7,
+		chatMsgs:       make(chan tea.Msg),
+		streamingIndex: -1,
+	}
+	m.viewport.SetContent("before")
+
+	next, cmd := m.Update(chatDeltaMsg{delta: "slow stream"})
+	got := next.(model)
+	if cmd == nil {
+		t.Fatalf("chat delta returned nil command, want wait + throttled flush")
+	}
+	if !got.streamFlushPending {
+		t.Fatalf("streamFlushPending = false, want true")
+	}
+	if view := got.View(); strings.Contains(stripTestANSI(view), "slow stream") {
+		t.Fatalf("View synced transcript before flush: %q", stripTestANSI(view))
+	}
+
+	next, _ = got.Update(streamFlushMsg{runID: 7})
+	got = next.(model)
+	if got.streamFlushPending {
+		t.Fatalf("streamFlushPending = true after flush, want false")
+	}
+	if view := stripTestANSI(got.viewport.View()); !strings.Contains(view, "slow stream") {
+		t.Fatalf("viewport after flush = %q, want streamed text", view)
+	}
+}
+
+func TestStreamDeltaBatcherCombinesDeltasBeforeSending(t *testing.T) {
+	ctx := context.Background()
+	out := make(chan tea.Msg, 3)
+	batcher := newStreamDeltaBatcher(ctx, out)
+
+	if !batcher.Append("a") || !batcher.Append("b") || !batcher.Append("c") {
+		t.Fatalf("Append returned false, want true")
+	}
+	if len(out) != 0 {
+		t.Fatalf("out len = %d, want no per-token messages before flush", len(out))
+	}
+
+	if !batcher.Flush() {
+		t.Fatalf("Flush returned false, want true")
+	}
+	msg, ok := (<-out).(chatDeltaMsg)
+	if !ok {
+		t.Fatalf("flushed msg type = %T, want chatDeltaMsg", msg)
+	}
+	if msg.delta != "abc" {
+		t.Fatalf("flushed delta = %q, want %q", msg.delta, "abc")
+	}
+	if !msg.flushNow {
+		t.Fatalf("flushed msg flushNow = false, want true")
+	}
+	if len(out) != 0 {
+		t.Fatalf("out len = %d after flush, want 0", len(out))
+	}
+}
+
+func TestBatchedChatDeltaFlushesViewportImmediately(t *testing.T) {
+	m := model{
+		width:          100,
+		height:         30,
+		viewport:       viewport.New(0, 0),
+		chatRunID:      7,
+		chatMsgs:       make(chan tea.Msg),
+		streamingIndex: -1,
+	}
+	m.viewport.SetContent("before")
+
+	next, cmd := m.Update(chatDeltaMsg{delta: "batched stream", flushNow: true})
+	got := next.(model)
+	if cmd == nil {
+		t.Fatalf("batched chat delta returned nil command, want waitForChat")
+	}
+	if got.streamFlushPending {
+		t.Fatalf("streamFlushPending = true, want false for batched flush")
+	}
+	if view := stripTestANSI(got.viewport.View()); !strings.Contains(view, "batched stream") {
+		t.Fatalf("viewport after batched delta = %q, want streamed text", view)
+	}
+}
+
+func TestWaitForClosedChannelsStopsWaiting(t *testing.T) {
+	chatCh := make(chan tea.Msg)
+	close(chatCh)
+	if _, ok := waitForChat(chatCh)().(chatStreamClosedMsg); !ok {
+		t.Fatalf("waitForChat(closed) did not return chatStreamClosedMsg")
+	}
+
+	eventCh := make(chan agentevent.Event)
+	close(eventCh)
+	if _, ok := waitForEvent(eventCh)().(eventStreamClosedMsg); !ok {
+		t.Fatalf("waitForEvent(closed) did not return eventStreamClosedMsg")
+	}
+}
+
 func TestStatusBarShowsTwoRowsWithStateAndActions(t *testing.T) {
 	got := stripTestANSI(renderStatusBar(model{cwd: "/tmp/work/repo", gitStatus: "main ↑2", status: "idle"}, 80))
 	lines := strings.Split(got, "\n")
@@ -65,6 +168,37 @@ func TestStatusBarShowsTwoRowsWithStateAndActions(t *testing.T) {
 	}
 	if strings.Contains(lines[0], "⌃S sync") || !strings.Contains(lines[1], "⌃S sync") {
 		t.Fatalf("renderStatusBar() lines = %#v, want actions on second row", lines)
+	}
+}
+
+func TestNewModelDefaultsToNativeCopy(t *testing.T) {
+	m := newModel(newTestLocalApp(t, t.TempDir()), "", "")
+	if m.mouseEnabled {
+		t.Fatalf("mouseEnabled = true, want false so terminal-native selection works")
+	}
+}
+
+func TestViewRendersFullTranscriptWhenNoPendingPanel(t *testing.T) {
+	input := textinput.New()
+	items := make([]transcriptItem, 0, 40)
+	for i := 0; i < 40; i++ {
+		items = append(items, transcriptItem{role: "assistant", text: fmt.Sprintf("history line %02d", i)})
+	}
+	m := model{
+		input:    input,
+		width:    100,
+		height:   24,
+		viewport: viewport.New(100, 5),
+		items:    items,
+		status:   "idle",
+	}
+	m.syncViewport(true)
+
+	got := stripTestANSI(m.View())
+	for _, want := range []string{"history line 00", "history line 20", "history line 39", ">"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("View() missing %q in full transcript:\n%s", want, got)
+		}
 	}
 }
 
@@ -153,6 +287,28 @@ func TestApprovedBashFollowupCarriesToolUseID(t *testing.T) {
 	}
 }
 
+func TestApprovedBashFollowupTreatsShellErrorOutputAsError(t *testing.T) {
+	got := formatApprovedBashFollowup(
+		"toolu_bash_nomatch",
+		`grep -rn foo routers/*.go 2>/dev/null | head -20`,
+		"zsh:1: no matches found: routers/*.go\n",
+		nil,
+	)
+
+	for _, want := range []string{
+		"status=error",
+		"执行错误：shell reported an error in output",
+		"zsh:1: no matches found: routers/*.go",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatApprovedBashFollowup() = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "status=success") {
+		t.Fatalf("formatApprovedBashFollowup() = %q, should not mark shell error output as success", got)
+	}
+}
+
 func TestExpiredBashFollowupCarriesToolUseID(t *testing.T) {
 	got := formatExpiredBashFollowup("toolu_bash_test_expired", "echo stale")
 	for _, want := range []string{
@@ -213,8 +369,8 @@ func TestStartGitSyncFeedbackOnlyUpdatesFooter(t *testing.T) {
 
 func TestStatusBarShowsSelectionMouseHint(t *testing.T) {
 	got := stripTestANSI(renderStatusBar(model{cwd: "/tmp/repo", gitStatus: "main ✓", status: "idle"}, 80))
-	if !strings.Contains(got, "drag select copies") || !strings.Contains(got, "Esc clear") {
-		t.Fatalf("renderStatusBar(idle) = %q, want selection mouse hint", got)
+	if !strings.Contains(got, "native copy") || !strings.Contains(got, "Esc clear") {
+		t.Fatalf("renderStatusBar(idle) = %q, want native copy hint", got)
 	}
 	got = stripTestANSI(renderStatusBar(model{cwd: "/tmp/repo", gitStatus: "main ✓", selection: transcriptSelection{active: true}, status: "selecting"}, 80))
 	if !strings.Contains(got, "selecting") || !strings.Contains(got, "Esc clear") {
@@ -581,14 +737,16 @@ func TestStripMouseSGRFragmentsFromInput(t *testing.T) {
 func TestPendingOptionsUseUpDownBeforeViewportScroll(t *testing.T) {
 	input := textinput.New()
 	m := model{
-		input:          input,
-		pendingOptions: []string{"允许一次", "本会话允许", "拒绝"},
-		pendingChoice:  0,
-		width:          80,
-		height:         24,
-		viewport:       viewport.New(80, 5),
+		input:           input,
+		pendingQuestion: "是否允许执行命令？",
+		pendingOptions:  []string{"允许一次", "本会话允许", "拒绝"},
+		pendingChoice:   0,
+		width:           80,
+		height:          24,
+		viewport:        viewport.New(80, 5),
 	}
-	m.viewport.SetContent(strings.Repeat("line\n", 40))
+	m.items = []transcriptItem{{role: "assistant", text: strings.Repeat("line\n", 40)}}
+	m.syncViewport(true)
 	m.viewport.GotoBottom()
 	before := m.viewport.YOffset
 
@@ -599,6 +757,12 @@ func TestPendingOptionsUseUpDownBeforeViewportScroll(t *testing.T) {
 	}
 	if got.pendingChoice != 1 {
 		t.Fatalf("pendingChoice after Down = %d, want 1", got.pendingChoice)
+	}
+	if view := stripTestANSI(got.View()); !strings.Contains(view, "› 2. 本会话允许") {
+		t.Fatalf("View after Down = %q, want selected second option", view)
+	}
+	if view := stripTestANSI(got.viewport.View()); strings.Contains(view, "› 2. 本会话允许") {
+		t.Fatalf("viewport after Down = %q, want pending option only near input", view)
 	}
 	if got.viewport.YOffset != before {
 		t.Fatalf("viewport offset changed from %d to %d", before, got.viewport.YOffset)
@@ -612,8 +776,705 @@ func TestPendingOptionsUseUpDownBeforeViewportScroll(t *testing.T) {
 	if got.pendingChoice != 0 {
 		t.Fatalf("pendingChoice after Up = %d, want 0", got.pendingChoice)
 	}
+	if view := stripTestANSI(got.View()); !strings.Contains(view, "› 1. 允许一次") {
+		t.Fatalf("View after Up = %q, want selected first option", view)
+	}
+	if view := stripTestANSI(got.viewport.View()); strings.Contains(view, "› 1. 允许一次") {
+		t.Fatalf("viewport after Up = %q, want pending option only near input", view)
+	}
 	if got.viewport.YOffset != before {
 		t.Fatalf("viewport offset changed after Up from %d to %d", before, got.viewport.YOffset)
+	}
+}
+
+func TestPendingBashConfirmEnterApprovesWhileBusy(t *testing.T) {
+	ctx, holder := agentbuiltin.NewToolUseConfirmHolder(context.Background())
+	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, "ses_enter_busy")
+	tool := agentbuiltin.NewShellTool(agentbuiltin.ShellConfig{})
+	if _, err := tool.InvokableRun(ctx, `{"command":"printf approved"}`); err != nil {
+		t.Fatal(err)
+	}
+	confirm := holder.Get()
+	if confirm == nil {
+		t.Fatal("missing pending bash confirm")
+	}
+	t.Cleanup(func() { agentbuiltin.ClearBashApproval("ses_enter_busy") })
+	input := textinput.New()
+	m := model{
+		app:                         newTestLocalApp(t, t.TempDir()),
+		input:                       input,
+		sessionID:                   "ses_enter_busy",
+		pendingToolConfirm:          confirm,
+		pendingToolConfirmReviewFix: false,
+		pendingQuestion:             confirm.Question,
+		pendingOptions:              append([]string(nil), confirm.Options...),
+		pendingChoice:               0,
+		busy:                        true,
+		status:                      "running",
+		width:                       100,
+		height:                      24,
+		viewport:                    viewport.New(100, 10),
+		items:                       []transcriptItem{{role: "run-active", text: "Aligning"}},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatal("Enter returned nil command, want approved bash command")
+	}
+	if !got.busy || got.status != "bash running" {
+		t.Fatalf("busy/status = %v/%q, want bash running", got.busy, got.status)
+	}
+	if got.pendingToolConfirm != nil {
+		t.Fatalf("pendingToolConfirm = %#v, want cleared", got.pendingToolConfirm)
+	}
+	if got.items[len(got.items)-1].role != "event" || !strings.Contains(got.items[len(got.items)-1].text, "approved bash: printf approved") {
+		t.Fatalf("last item = %#v, want approved bash event", got.items[len(got.items)-1])
+	}
+}
+
+func TestBusyEnterQueuesUserPrompt(t *testing.T) {
+	input := textinput.New()
+	input.SetValue("顺手也检查 sitemap")
+	m := model{
+		input:    input,
+		busy:     true,
+		status:   "running",
+		width:    100,
+		height:   24,
+		viewport: viewport.New(100, 10),
+		items:    []transcriptItem{{role: "assistant", text: "正在执行"}},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(model)
+
+	if cmd != nil {
+		t.Fatalf("Update() cmd = %v, want nil while queuing", cmd)
+	}
+	if !got.busy || got.status != "queued 1" {
+		t.Fatalf("busy/status = %v/%q, want queued busy state", got.busy, got.status)
+	}
+	if got.input.Value() != "" {
+		t.Fatalf("input = %q, want cleared", got.input.Value())
+	}
+	if len(got.queuedUserPrompts) != 1 || got.queuedUserPrompts[0] != "顺手也检查 sitemap" {
+		t.Fatalf("queuedUserPrompts = %#v, want queued prompt", got.queuedUserPrompts)
+	}
+	if got.items[len(got.items)-1].role != "user" || got.items[len(got.items)-1].text != "顺手也检查 sitemap" {
+		t.Fatalf("last item = %#v, want queued user transcript", got.items[len(got.items)-1])
+	}
+}
+
+func TestChatDoneStartsQueuedUserPrompt(t *testing.T) {
+	oldStart := startChatCmd
+	var gotPrompt string
+	startChatCmd = func(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, cwd, text string, disabledTools []string) tea.Cmd {
+		gotPrompt = text
+		return func() tea.Msg { return nil }
+	}
+	t.Cleanup(func() { startChatCmd = oldStart })
+	app := newTestLocalApp(t, t.TempDir())
+	m := model{
+		app:               app,
+		input:             textinput.New(),
+		sessionID:         "ses_queue_after_done",
+		cwd:               "/tmp/repo",
+		chatMsgs:          make(chan tea.Msg, 2),
+		events:            make(chan agentevent.Event),
+		busy:              true,
+		status:            "running",
+		width:             100,
+		height:            24,
+		viewport:          viewport.New(100, 10),
+		queuedUserPrompts: []string{"顺手也检查 sitemap", "再看一下静态资源"},
+	}
+	close(m.events)
+
+	next, cmd := m.Update(chatDoneMsg{reply: "当前任务完成"})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatal("chatDone returned nil cmd, want queued prompt chat")
+	}
+	if !got.busy || got.status != "running" {
+		t.Fatalf("busy/status = %v/%q, want queued chat running", got.busy, got.status)
+	}
+	if len(got.queuedUserPrompts) != 0 {
+		t.Fatalf("queuedUserPrompts = %#v, want drained", got.queuedUserPrompts)
+	}
+	if !strings.Contains(gotPrompt, "顺手也检查 sitemap") || !strings.Contains(gotPrompt, "再看一下静态资源") {
+		t.Fatalf("queued prompt = %q, want drained user prompts", gotPrompt)
+	}
+}
+
+func TestBashApprovalFollowupAppendsQueuedUserPrompt(t *testing.T) {
+	oldStart := startChatCmd
+	var gotPrompt string
+	startChatCmd = func(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, cwd, text string, disabledTools []string) tea.Cmd {
+		gotPrompt = text
+		return func() tea.Msg { return nil }
+	}
+	t.Cleanup(func() { startChatCmd = oldStart })
+	m := model{
+		app:               newTestLocalApp(t, t.TempDir()),
+		input:             textinput.New(),
+		sessionID:         "ses_bash_queue",
+		chatMsgs:          make(chan tea.Msg, 2),
+		events:            make(chan agentevent.Event),
+		queuedUserPrompts: []string{"顺手把测试也跑了"},
+		width:             100,
+		height:            24,
+		viewport:          viewport.New(100, 10),
+	}
+	close(m.events)
+
+	next, cmd := m.Update(bashApprovalDoneMsg{
+		command:   "git status --short",
+		output:    " M a.go\n",
+		sessionID: "ses_bash_queue",
+		toolUseID: "toolu_bash_queue",
+	})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatal("bashApprovalDone returned nil cmd, want followup chat")
+	}
+	if len(got.queuedUserPrompts) != 0 {
+		t.Fatalf("queuedUserPrompts = %#v, want drained", got.queuedUserPrompts)
+	}
+	if !strings.Contains(gotPrompt, "[TOOL_RESULT]") || !strings.Contains(gotPrompt, "git status --short") || !strings.Contains(gotPrompt, "顺手把测试也跑了") {
+		t.Fatalf("bash followup prompt = %q, want tool result plus queued prompt", gotPrompt)
+	}
+}
+
+func TestShellDoneStartsQueuedUserPrompt(t *testing.T) {
+	oldStart := startChatCmd
+	var gotPrompt string
+	startChatCmd = func(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, cwd, text string, disabledTools []string) tea.Cmd {
+		gotPrompt = text
+		return func() tea.Msg { return nil }
+	}
+	t.Cleanup(func() { startChatCmd = oldStart })
+	m := model{
+		app:               newTestLocalApp(t, t.TempDir()),
+		input:             textinput.New(),
+		sessionID:         "ses_shell_queue",
+		chatMsgs:          make(chan tea.Msg, 2),
+		events:            make(chan agentevent.Event),
+		queuedUserPrompts: []string{"shell 后继续总结"},
+		busy:              true,
+		status:            "shell running",
+		width:             100,
+		height:            24,
+		viewport:          viewport.New(100, 10),
+	}
+	close(m.events)
+
+	next, cmd := m.Update(shellDoneMsg{command: "pwd", output: "/tmp\n"})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatal("shellDone returned nil cmd, want queued prompt chat")
+	}
+	if !got.busy || got.status != "running" {
+		t.Fatalf("busy/status = %v/%q, want queued chat running", got.busy, got.status)
+	}
+	if !strings.Contains(gotPrompt, "shell 后继续总结") {
+		t.Fatalf("queued prompt = %q, want shell queued prompt", gotPrompt)
+	}
+}
+
+func TestPendingAskPanelRendersNearInputWithoutViewportSync(t *testing.T) {
+	input := textinput.New()
+	m := model{
+		input:           input,
+		pendingQuestion: "是否允许执行命令：git status --short",
+		pendingOptions:  []string{"允许一次 :: git status --short", "拒绝"},
+		pendingChoice:   0,
+		width:           90,
+		height:          24,
+		viewport:        viewport.New(90, 10),
+	}
+	m.viewport.SetContent("等待你确认命令。")
+
+	got := stripTestANSI(m.View())
+
+	for _, want := range []string{"是否允许执行命令", "› 1. 允许一次", "2. 拒绝"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("View() = %q, want pending approval panel containing %q", got, want)
+		}
+	}
+}
+
+func TestPendingBashConfirmRendersFixedApprovalModal(t *testing.T) {
+	input := textinput.New()
+	m := model{
+		input: input,
+		pendingToolConfirm: &agentbuiltin.PendingToolUseConfirm{
+			ToolName:    "bash",
+			ToolUseID:   "toolu_bash_modal",
+			BashHash:    "hash_modal",
+			BashCommand: "newrelic nrql query --accountId 6119564 --query SELECT",
+		},
+		pendingQuestion: "是否允许执行命令：newrelic nrql query --accountId 6119564 --query SELECT",
+		pendingOptions: []string{
+			"允许一次 :: newrelic nrql query --accountId 6119564 --query SELECT",
+			"本会话允许此命令 :: newrelic nrql query --accountId 6119564 --query SELECT",
+			"拒绝",
+		},
+		pendingChoice: 0,
+		width:         100,
+		height:        28,
+		viewport:      viewport.New(100, 10),
+		items:         []transcriptItem{{role: "assistant", text: strings.Repeat("history\n", 20)}},
+	}
+	m.syncViewport(true)
+
+	got := stripTestANSI(m.View())
+
+	for _, want := range []string{"BASH APPROVAL", "toolu_bash_modal", "newrelic nrql query", "› 1. 允许一次"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("View() = %q, want fixed approval modal containing %q", got, want)
+		}
+	}
+	if strings.Contains(stripTestANSI(m.viewport.View()), "BASH APPROVAL") {
+		t.Fatalf("viewport contains approval modal; want modal outside transcript viewport")
+	}
+}
+
+func TestViewKeepsApprovalModalVisibleWithLongTranscript(t *testing.T) {
+	input := textinput.New()
+	m := model{
+		input: input,
+		pendingToolConfirm: &agentbuiltin.PendingToolUseConfirm{
+			ToolName:    "bash",
+			ToolUseID:   "toolu_bash_visible",
+			BashHash:    "hash_visible",
+			BashCommand: "cd /Users/mnhkahn/code/cyeam_web && grep -rln 'HOMEHEAD' . --include='*.html'",
+		},
+		pendingQuestion: "是否允许执行命令：cd /Users/mnhkahn/code/cyeam_web && grep -rln 'HOMEHEAD' . --include='*.html'",
+		pendingOptions: []string{
+			"允许一次 :: cd /Users/mnhkahn/code/cyeam_web && grep -rln 'HOMEHEAD' . --include='*.html'",
+			"拒绝",
+		},
+		pendingChoice: 0,
+		width:         100,
+		height:        24,
+		viewport:      viewport.New(100, 10),
+		items: []transcriptItem{
+			{role: "assistant", text: strings.Repeat("很长的历史输出\n", 80)},
+			{role: "system", text: strings.Repeat("等待你确认执行 bash 命令\n\n```bash\ngit status --short\n```\n\n", 5)},
+		},
+	}
+	m.syncViewport(true)
+
+	view := stripTestANSI(m.View())
+	lines := strings.Split(view, "\n")
+
+	if len(lines) > m.height {
+		t.Fatalf("View() rendered %d lines, want at most terminal height %d\n%s", len(lines), m.height, view)
+	}
+	for _, want := range []string{"BASH APPROVAL", "toolu_bash_visible", "› 1. 允许一次", ">"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() = %q, want visible %q", view, want)
+		}
+	}
+}
+
+func TestPendingAskPanelRendersOnlyOnceInFullView(t *testing.T) {
+	input := textinput.New()
+	m := model{
+		input:           input,
+		items:           []transcriptItem{{role: "system", text: pendingBashApprovalText}},
+		pendingQuestion: "是否允许执行命令：git status --short",
+		pendingOptions:  []string{"允许一次 :: git status --short", "拒绝"},
+		pendingChoice:   0,
+		width:           90,
+		height:          24,
+		viewport:        viewport.New(90, 10),
+	}
+	m.syncViewport(true)
+
+	got := stripTestANSI(m.View())
+
+	if count := strings.Count(got, "是否允许执行命令"); count != 1 {
+		t.Fatalf("View() rendered pending approval %d times, want once:\n%s", count, got)
+	}
+	if !strings.Contains(got, pendingBashApprovalText) {
+		t.Fatalf("View() = %q, want transcript pending status", got)
+	}
+}
+
+func TestPendingToolUseConfirmReplacesBashPlaceholderInTranscript(t *testing.T) {
+	m := model{
+		items: []transcriptItem{
+			{role: "run-active", text: "Aligning"},
+			{role: "assistant", text: "等待你确认命令。"},
+			{role: "run-done", text: "Delivered"},
+		},
+	}
+
+	m.markPendingToolUseConfirmInTranscript(&agentbuiltin.PendingToolUseConfirm{
+		ToolName:    "bash",
+		ToolUseID:   "toolu_bash_test",
+		Question:    "是否允许执行命令：git status --short",
+		Options:     []string{"允许一次 :: git status --short", "拒绝"},
+		BashHash:    "hash",
+		BashCommand: "git status --short",
+	})
+
+	foundPrompt := false
+	for _, item := range m.items {
+		if item.role == "assistant" && isBashApprovalPlaceholder(item.text) {
+			t.Fatalf("placeholder was left visible in transcript: %#v", m.items)
+		}
+		if item.role == "system" && strings.Contains(item.text, "toolu_bash_test") && strings.Contains(item.text, "git status --short") {
+			foundPrompt = true
+		}
+	}
+	if !foundPrompt {
+		t.Fatalf("items = %#v, want local pending approval prompt", m.items)
+	}
+}
+
+func TestPendingToolUseConfirmAppendsAfterAssistantExplanation(t *testing.T) {
+	m := model{
+		items: []transcriptItem{
+			{role: "run-active", text: "Aligning"},
+			{role: "assistant", text: "字段名可能不对，先看 PageViewTiming 有哪些字段："},
+			{role: "run-done", text: "Delivered"},
+		},
+	}
+
+	m.markPendingToolUseConfirmInTranscript(&agentbuiltin.PendingToolUseConfirm{
+		ToolName:    "bash",
+		ToolUseID:   "toolu_bash_nrql",
+		Question:    "是否允许执行命令：newrelic nrql query --accountId 6119564",
+		Options:     []string{"允许一次 :: newrelic nrql query --accountId 6119564", "拒绝"},
+		BashHash:    "hash",
+		BashCommand: "newrelic nrql query --accountId 6119564",
+	})
+
+	if len(m.items) != 4 {
+		t.Fatalf("items len = %d, want appended pending item: %#v", len(m.items), m.items)
+	}
+	last := m.items[len(m.items)-1]
+	if last.role != "system" || !strings.Contains(last.text, "toolu_bash_nrql") || !strings.Contains(last.text, "newrelic nrql query") {
+		t.Fatalf("last item = %#v, want visible pending bash approval", last)
+	}
+	if !strings.Contains(m.items[1].text, "字段名可能不对") {
+		t.Fatalf("assistant explanation was lost: %#v", m.items)
+	}
+}
+
+func TestPermissionAskedEventLoadsPendingToolConfirm(t *testing.T) {
+	m := model{
+		input:    textinput.New(),
+		width:    90,
+		height:   24,
+		viewport: viewport.New(90, 10),
+		events:   make(chan agentevent.Event),
+		items: []transcriptItem{
+			{role: "run-active", text: "Aligning"},
+			{role: "assistant", text: "只截到 string 字段，数值指标在下面。换个查法："},
+			{role: "run-done", text: "Delivered"},
+		},
+	}
+	close(m.events)
+
+	next, _ := m.Update(eventMsg{event: agentevent.Event{
+		Type:      agentevent.TypePermissionAsked,
+		SessionID: "ses_evt_confirm",
+		Data: agentevent.PermissionAskedData{
+			RequestID:   "toolu_bash_evt",
+			SessionID:   "ses_evt_confirm",
+			ToolName:    "bash",
+			ToolUseID:   "toolu_bash_evt",
+			Question:    "是否允许执行命令：newrelic nrql query",
+			Options:     []string{"允许一次 :: newrelic nrql query", "拒绝"},
+			Input:       map[string]string{"command": "newrelic nrql query"},
+			BashHash:    "hash_evt",
+			ChannelName: channelName,
+			DeviceID:    channelUser,
+		},
+	}})
+	got := next.(model)
+
+	if !got.hasPendingBashConfirm() {
+		t.Fatalf("pending confirm missing after permission event: %#v", got.pendingToolConfirm)
+	}
+	if got.pendingToolConfirm.BashHash != "hash_evt" {
+		t.Fatalf("BashHash = %q, want event hash", got.pendingToolConfirm.BashHash)
+	}
+	if got.status != "waiting approval" {
+		t.Fatalf("status = %q, want waiting approval", got.status)
+	}
+	foundPrompt := false
+	for _, item := range got.items {
+		if item.role == "system" && strings.Contains(item.text, "toolu_bash_evt") && strings.Contains(item.text, "newrelic nrql query") {
+			foundPrompt = true
+		}
+	}
+	if !foundPrompt {
+		t.Fatalf("items = %#v, want visible pending approval prompt", got.items)
+	}
+}
+
+func TestChatDoneInvalidatesFakeBashApprovalWithoutPendingConfirm(t *testing.T) {
+	app := newTestLocalApp(t, t.TempDir())
+	m := model{
+		app:            app,
+		input:          textinput.New(),
+		width:          90,
+		height:         24,
+		viewport:       viewport.New(90, 10),
+		streamingIndex: -1,
+		items: []transcriptItem{
+			{role: "run-active", text: "Aligning"},
+			{role: "run-done", text: "Delivered"},
+		},
+	}
+	fakeApproval := "等待你确认执行 bash 命令\n\ntool_use_id: toolu_bash_fake\n\n```bash\nnewrelic nrql query\n```\n\n请在下方审批面板选择允许或拒绝。"
+
+	next, _ := m.Update(chatDoneMsg{reply: fakeApproval})
+	got := next.(model)
+
+	if got.hasPendingBashConfirm() {
+		t.Fatalf("fake approval created pending confirm: %#v", got.pendingToolConfirm)
+	}
+	last := got.items[len(got.items)-1]
+	if last.role != "system" || !strings.Contains(last.text, "模型没有真正调用 bash 工具") || !strings.Contains(last.text, "newrelic nrql query") {
+		t.Fatalf("last item = %#v, want invalid fake approval warning with command", last)
+	}
+}
+
+func TestChatDoneRetriesProseBashApprovalWithoutPendingConfirm(t *testing.T) {
+	app := newTestLocalApp(t, t.TempDir())
+	m := model{
+		app:            app,
+		input:          textinput.New(),
+		sessionID:      "ses_fake_retry",
+		cwd:            "/Users/mnhkahn/code/cyeam_web",
+		width:          90,
+		height:         24,
+		viewport:       viewport.New(90, 10),
+		chatMsgs:       make(chan tea.Msg, 4),
+		events:         make(chan agentevent.Event),
+		streamingIndex: -1,
+		items: []transcriptItem{
+			{role: "run-active", text: "Aligning"},
+			{role: "run-done", text: "Delivered"},
+		},
+	}
+	close(m.events)
+	reply := "模板 define 可能在别处，或者用了不同语法。搜宽一点：\n\n```bash\ncd /Users/mnhkahn/code/cyeam_web && grep -rln 'HOMEHEAD' . --include='*.html' --include='*.tmpl' 2>/dev/null | head -20\n```\n\n批准即跑。"
+
+	next, cmd := m.Update(chatDoneMsg{reply: reply})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatal("Update() returned nil cmd, want automatic retry that asks model to call bash tool")
+	}
+	if !got.busy || got.status != "running" {
+		t.Fatalf("busy/status = %v/%q, want running retry", got.busy, got.status)
+	}
+	last := got.items[len(got.items)-1]
+	if last.role != "system" || !strings.Contains(last.text, "模型没有真正调用 bash 工具") || !strings.Contains(last.text, "批准即跑") {
+		t.Fatalf("last item = %#v, want invalid prose approval warning", last)
+	}
+}
+
+func TestChatDoneConsumesPendingToolConfirmBySessionID(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newTestLocalApp(t, dataDir)
+	sessionID, err := app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	app.Agent.StoreToolUseConfirmForTest(context.Background(), "local", &agentbuiltin.PendingToolUseConfirm{
+		RequestID:   "toolu_bash_session",
+		SessionID:   sessionID,
+		ToolName:    "bash",
+		ToolUseID:   "toolu_bash_session",
+		Question:    "是否允许执行命令：git status --short",
+		Options:     []string{"允许一次 :: git status --short", "拒绝"},
+		BashHash:    "hash",
+		BashCommand: "git status --short",
+	})
+	m := model{
+		app:       app,
+		input:     textinput.New(),
+		sessionID: sessionID,
+		width:     90,
+		height:    24,
+		viewport:  viewport.New(90, 10),
+		items: []transcriptItem{
+			{role: "run-active", text: "Aligning"},
+			{role: "assistant", text: "等待你确认执行 bash 命令\n\ntool_use_id: toolu_bash_session\n\n```bash\ngit status --short\n```\n\n请在下方审批面板选择允许或拒绝。"},
+			{role: "run-done", text: "Delivered"},
+		},
+	}
+
+	next, _ := m.Update(chatDoneMsg{reply: m.items[1].text})
+	got := next.(model)
+
+	if !got.hasPendingBashConfirm() {
+		t.Fatalf("pending confirm missing after chatDone: %#v", got.pendingToolConfirm)
+	}
+	if got.pendingQuestion == "" || len(got.pendingOptions) == 0 {
+		t.Fatalf("pending panel state = question %q options %#v", got.pendingQuestion, got.pendingOptions)
+	}
+	view := stripTestANSI(got.View())
+	if !strings.Contains(view, "› 1. 允许一次") || !strings.Contains(view, "2. 拒绝") {
+		t.Fatalf("View() = %q, want pending approval panel", view)
+	}
+}
+
+func TestChatDoneQueuesMultiplePendingToolConfirms(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newTestLocalApp(t, dataDir)
+	sessionID, err := app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	app.Agent.StoreToolUseConfirmForTest(context.Background(), "local", &agentbuiltin.PendingToolUseConfirm{
+		RequestID:   "toolu_bash_first",
+		SessionID:   sessionID,
+		ToolName:    "bash",
+		ToolUseID:   "toolu_bash_first",
+		Question:    "是否允许执行命令：git status --short",
+		Options:     []string{"允许一次 :: git status --short", "拒绝"},
+		BashHash:    "hash_first",
+		BashCommand: "git status --short",
+	})
+	app.Agent.StoreToolUseConfirmForTest(context.Background(), "local", &agentbuiltin.PendingToolUseConfirm{
+		RequestID:   "toolu_bash_second",
+		SessionID:   sessionID,
+		ToolName:    "bash",
+		ToolUseID:   "toolu_bash_second",
+		Question:    "是否允许执行命令：git diff --stat",
+		Options:     []string{"允许一次 :: git diff --stat", "拒绝"},
+		BashHash:    "hash_second",
+		BashCommand: "git diff --stat",
+	})
+	m := model{
+		app:       app,
+		input:     textinput.New(),
+		sessionID: sessionID,
+		width:     90,
+		height:    24,
+		viewport:  viewport.New(90, 10),
+	}
+
+	next, _ := m.Update(chatDoneMsg{reply: "我需要跑两个命令。"})
+	got := next.(model)
+
+	if got.pendingToolConfirm == nil || got.pendingToolConfirm.ToolUseID != "toolu_bash_first" {
+		t.Fatalf("current pending = %#v, want first confirm", got.pendingToolConfirm)
+	}
+	if len(got.pendingToolConfirmQueue) != 1 || got.pendingToolConfirmQueue[0].confirm.ToolUseID != "toolu_bash_second" {
+		t.Fatalf("queue = %#v, want second confirm queued", got.pendingToolConfirmQueue)
+	}
+	modal := stripTestANSI(renderPendingToolConfirmModal(got.pendingToolConfirm, got.pendingQuestion, got.pendingOptions, got.pendingChoice, 90))
+	if !strings.Contains(modal, "git status --short") || strings.Contains(modal, "git diff --stat") {
+		t.Fatalf("modal = %q, want only current approval in modal", modal)
+	}
+}
+
+func TestPendingToolConfirmQueuePromotesAfterCurrentClear(t *testing.T) {
+	m := model{
+		pendingToolConfirm: &agentbuiltin.PendingToolUseConfirm{
+			SessionID: "ses_queue",
+			ToolName:  "bash",
+			ToolUseID: "toolu_bash_first",
+			BashHash:  "hash_first",
+		},
+		pendingToolConfirmQueue: []pendingToolConfirmQueueItem{{
+			confirm: &agentbuiltin.PendingToolUseConfirm{
+				SessionID:   "ses_queue",
+				ToolName:    "bash",
+				ToolUseID:   "toolu_bash_second",
+				BashHash:    "hash_second",
+				Question:    "是否允许执行命令：git diff --stat",
+				Options:     []string{"允许一次 :: git diff --stat", "拒绝"},
+				BashCommand: "git diff --stat",
+			},
+			reviewFix: true,
+		}},
+	}
+
+	m.clearPendingToolConfirmState("ses_queue", false)
+
+	if m.pendingToolConfirm == nil || m.pendingToolConfirm.ToolUseID != "toolu_bash_second" {
+		t.Fatalf("current pending = %#v, want second confirm promoted", m.pendingToolConfirm)
+	}
+	if !m.pendingToolConfirmReviewFix {
+		t.Fatalf("pendingToolConfirmReviewFix = false, want queued reviewFix preserved")
+	}
+	if len(m.pendingToolConfirmQueue) != 0 {
+		t.Fatalf("queue len = %d, want empty", len(m.pendingToolConfirmQueue))
+	}
+}
+
+func TestPermissionAskedEventDeduplicatesPendingToolConfirm(t *testing.T) {
+	m := model{
+		input:    textinput.New(),
+		width:    90,
+		height:   24,
+		viewport: viewport.New(90, 10),
+		events:   make(chan agentevent.Event),
+	}
+	close(m.events)
+	event := agentevent.Event{
+		Type:      agentevent.TypePermissionAsked,
+		SessionID: "ses_evt_confirm",
+		Data: agentevent.PermissionAskedData{
+			RequestID:   "toolu_bash_evt",
+			SessionID:   "ses_evt_confirm",
+			ToolName:    "bash",
+			ToolUseID:   "toolu_bash_evt",
+			Question:    "是否允许执行命令：newrelic nrql query",
+			Options:     []string{"允许一次 :: newrelic nrql query", "拒绝"},
+			Input:       map[string]string{"command": "newrelic nrql query"},
+			BashHash:    "hash_evt",
+			ChannelName: channelName,
+			DeviceID:    channelUser,
+		},
+	}
+
+	next, _ := m.Update(eventMsg{event: event})
+	got, _ := next.(model).Update(eventMsg{event: event})
+	modelAfterDuplicate := got.(model)
+
+	if modelAfterDuplicate.pendingToolConfirm == nil || modelAfterDuplicate.pendingToolConfirm.ToolUseID != "toolu_bash_evt" {
+		t.Fatalf("pending confirm = %#v, want event confirm", modelAfterDuplicate.pendingToolConfirm)
+	}
+	if len(modelAfterDuplicate.pendingToolConfirmQueue) != 0 {
+		t.Fatalf("queue len = %d, want duplicate ignored", len(modelAfterDuplicate.pendingToolConfirmQueue))
+	}
+}
+
+func TestSyncViewportRefreshesWhenNonLastItemChanges(t *testing.T) {
+	m := model{
+		width:    80,
+		height:   24,
+		viewport: viewport.New(80, 10),
+		items: []transcriptItem{
+			{role: "run-active", text: "Aligning"},
+			{role: "assistant", text: "给"},
+			{role: "run-done", text: "Delivered"},
+		},
+	}
+	m.syncViewport(true)
+	m.items[1].text = "给 8 个带 `bg-fixed-layer` 的页面换成 CSS + preload，首页/pin/geek 直接受益。"
+
+	m.syncViewport(true)
+
+	got := stripTestANSI(m.viewport.View())
+	if !strings.Contains(got, "bg-fixed-layer") {
+		t.Fatalf("viewport = %q, want refreshed non-last assistant content", got)
 	}
 }
 
@@ -1189,6 +2050,56 @@ func TestWorkspaceTitleFallsBackToFirstUserPrompt(t *testing.T) {
 	}
 }
 
+func TestRestoreInputHistoryFromSessionUserMessages(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newTestLocalApp(t, dataDir)
+	sessionID, err := app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	mem := agentruntime.NewLocalMemory(agentruntime.Config{
+		StorageBackend: "local",
+		LocalDataDir:   dataDir,
+	})
+	if err := mem.Save(context.Background(), sessionID, []*schema.Message{
+		schema.UserMessage("第一个问题"),
+		schema.AssistantMessage("ok", nil),
+		schema.UserMessage("[TOOL_RESULT]\ntool=bash\nstatus=success"),
+		schema.UserMessage("第二个问题"),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	got := restoreInputHistory(app.Agent, sessionID)
+
+	if len(got) != 2 || got[0] != "第一个问题" || got[1] != "第二个问题" {
+		t.Fatalf("restoreInputHistory() = %#v, want restored user prompts only", got)
+	}
+}
+
+func TestNewModelRestoresSessionInputHistory(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newTestLocalApp(t, dataDir)
+	sessionID, err := app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	mem := agentruntime.NewLocalMemory(agentruntime.Config{
+		StorageBackend: "local",
+		LocalDataDir:   dataDir,
+	})
+	if err := mem.Save(context.Background(), sessionID, []*schema.Message{
+		schema.UserMessage("恢复后的上一条输入"),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	m := newModel(app, sessionID, "")
+	if !m.navigateInputHistory(-1) || m.input.Value() != "恢复后的上一条输入" {
+		t.Fatalf("restored input history = %#v input=%q", m.inputHistory, m.input.Value())
+	}
+}
+
 func TestOpenWorkspacePickerEnrichesDefaultSessionTitle(t *testing.T) {
 	dataDir := t.TempDir()
 	app := newTestLocalApp(t, dataDir)
@@ -1230,6 +2141,130 @@ func TestOpenWorkspacePickerEnrichesDefaultSessionTitle(t *testing.T) {
 	}
 	if got := m.workspacePicker.items[0].Title; got != "修一下 head.html 的 SEO 字段" {
 		t.Fatalf("picker title = %q, want first user prompt", got)
+	}
+}
+
+func TestWorkspacePickerCachesRenderedView(t *testing.T) {
+	items := []workspaceItem{
+		{CWD: "/Users/test/code/alpha", SessionID: "ses_alpha_123456789", Title: strings.Repeat("中文标题", 12), LastOpened: time.Now()},
+		{CWD: "/Users/test/code/beta", SessionID: "ses_beta_123456789", Title: "Beta", LastOpened: time.Now().Add(-time.Hour)},
+	}
+	p := newWorkspacePicker(items, items[0].CWD, 120, 30)
+
+	first := p.View()
+	firstKey := p.viewKey
+	if first == "" || firstKey == "" || len(p.labels) != len(items) {
+		t.Fatalf("picker cache not populated: view=%q key=%q labels=%#v", first, firstKey, p.labels)
+	}
+	second := p.View()
+	if second != first || p.viewKey != firstKey {
+		t.Fatalf("second View missed cache")
+	}
+
+	p.move(1)
+	if p.viewKey != "" {
+		t.Fatalf("move did not invalidate cached view")
+	}
+	third := p.View()
+	if third == first {
+		t.Fatalf("selected row changed but rendered view did not")
+	}
+}
+
+func TestWorkspacePickerCopiesSelectedSessionID(t *testing.T) {
+	oldCopy := copyTextToClipboardFunc
+	defer func() { copyTextToClipboardFunc = oldCopy }()
+	copied := ""
+	copyTextToClipboardFunc = func(text string) error {
+		copied = text
+		return nil
+	}
+
+	items := []workspaceItem{
+		{CWD: "/Users/test/code/alpha", SessionID: "ses_first_full", Title: "Alpha", LastOpened: time.Now()},
+		{CWD: "/Users/test/code/beta", SessionID: "ses_second_full", Title: "Beta", LastOpened: time.Now().Add(-time.Hour)},
+	}
+	m := model{
+		width:           120,
+		height:          30,
+		workspacePicker: newWorkspacePicker(items, items[0].CWD, 120, 30),
+	}
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatalf("Down returned cmd = %#v, want nil", cmd)
+	}
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyCtrlY})
+	got = next.(model)
+	if cmd != nil {
+		t.Fatalf("Ctrl+Y returned cmd = %#v, want nil", cmd)
+	}
+	if copied != "ses_second_full" {
+		t.Fatalf("copied = %q, want full selected session id", copied)
+	}
+	if got.workspacePicker == nil {
+		t.Fatalf("workspace picker closed after copy")
+	}
+	if view := stripTestANSI(got.workspacePicker.View()); !strings.Contains(view, "Copied session ses_second_full") {
+		t.Fatalf("picker feedback = %q, want copied session feedback", view)
+	}
+}
+
+func TestWorkspaceGitSummaryShowsChangeSize(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runGit(dir, "version"); err != nil {
+		t.Skipf("git unavailable: %v", err)
+	}
+	mustRunGit(t, dir, "init")
+	mustRunGit(t, dir, "config", "user.email", "test@example.invalid")
+	mustRunGit(t, dir, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunGit(t, dir, "add", "a.txt")
+	mustRunGit(t, dir, "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("new\nextra\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.txt"), []byte("staged\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustRunGit(t, dir, "add", "b.txt")
+	if err := os.WriteFile(filepath.Join(dir, "c.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := currentWorkspaceGitSummary(dir)
+	for _, want := range []string{"changed 3 files", "+3 -1", "staged 1", "unstaged 1", "untracked 1"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("currentWorkspaceGitSummary() = %q, want %q", got, want)
+		}
+	}
+
+	p := newWorkspacePicker([]workspaceItem{{CWD: dir, SessionID: "ses_test", Title: "Repo", LastOpened: time.Now()}}, dir, 120, 30)
+	view := stripTestANSI(p.View())
+	if !strings.Contains(view, "current:") || !strings.Contains(view, "changed 3 files") {
+		t.Fatalf("workspace picker view missing git summary:\n%s", view)
+	}
+	if !strings.Contains(view, "+3 -1") {
+		t.Fatalf("workspace picker row missing compact git line summary:\n%s", view)
+	}
+	if got := p.gitByCWD[workspaceGitSummaryKey(dir)]; !strings.Contains(got, "+3 -1") {
+		t.Fatalf("gitByCWD summary = %q, want compact line summary", got)
+	}
+}
+
+func TestParseWorkspaceGitStatus(t *testing.T) {
+	got := parseWorkspaceGitStatus(" M a.go\nM  b.go\nA  c.go\n?? d.go\n")
+	if got.Files != 4 || got.Staged != 2 || got.Unstaged != 1 || got.Untracked != 1 {
+		t.Fatalf("parseWorkspaceGitStatus() = %#v", got)
+	}
+}
+
+func TestParseGitNumstatSkipsBinaryFiles(t *testing.T) {
+	added, deleted := parseGitNumstat("10\t2\ta.go\n-\t-\timage.png\n3\t0\tb.go\n")
+	if added != 13 || deleted != 2 {
+		t.Fatalf("parseGitNumstat() = +%d -%d, want +13 -2", added, deleted)
 	}
 }
 
@@ -1285,6 +2320,54 @@ func TestSwitchWorkspaceUpdatesChannelSession(t *testing.T) {
 	}
 }
 
+func TestSwitchWorkspaceRestoresInputHistoryForTargetSession(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newTestLocalApp(t, dataDir)
+	currentDir := t.TempDir()
+	nextDir := t.TempDir()
+	currentSession, err := app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		t.Fatalf("NewSession(current) error = %v", err)
+	}
+	nextSession, err := app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		t.Fatalf("NewSession(next) error = %v", err)
+	}
+	mem := agentruntime.NewLocalMemory(agentruntime.Config{
+		StorageBackend: "local",
+		LocalDataDir:   dataDir,
+	})
+	if err := mem.Save(context.Background(), nextSession, []*schema.Message{
+		schema.UserMessage("目标 session 的历史输入"),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	m := model{
+		app:                app,
+		input:              textinput.New(),
+		cwd:                currentDir,
+		sessionID:          currentSession,
+		inputHistory:       []string{"当前 session 的历史输入"},
+		historyIndex:       1,
+		historyDraft:       "draft",
+		width:              100,
+		height:             30,
+		workspaceStatePath: filepath.Join(dataDir, "state", "workspaces.json"),
+	}
+
+	m.switchWorkspace(workspaceItem{CWD: nextDir, SessionID: nextSession, Title: "Next"})
+
+	if len(m.inputHistory) != 1 || m.inputHistory[0] != "目标 session 的历史输入" {
+		t.Fatalf("inputHistory after switch = %#v, want target session history", m.inputHistory)
+	}
+	if m.historyIndex != 0 || m.historyDraft != "" {
+		t.Fatalf("history cursor after switch = %d/%q, want reset", m.historyIndex, m.historyDraft)
+	}
+	if !m.navigateInputHistory(-1) || m.input.Value() != "目标 session 的历史输入" {
+		t.Fatalf("up after switch input = %q history=%#v", m.input.Value(), m.inputHistory)
+	}
+}
+
 func TestSwitchWorkspaceCreatesSessionWhenMissing(t *testing.T) {
 	dataDir := t.TempDir()
 	app := newTestLocalApp(t, dataDir)
@@ -1312,28 +2395,31 @@ func TestSwitchWorkspaceCreatesSessionWhenMissing(t *testing.T) {
 	}
 }
 
-func TestSwitchWorkspaceClearsPendingBashState(t *testing.T) {
+func TestSwitchWorkspaceClearsPendingToolConfirmState(t *testing.T) {
 	dataDir := t.TempDir()
 	app := newTestLocalApp(t, dataDir)
 	nextDir := t.TempDir()
 	m := model{
-		app:                  app,
-		input:                textinput.New(),
-		cwd:                  t.TempDir(),
-		width:                100,
-		height:               30,
-		workspaceStatePath:   filepath.Join(dataDir, "state", "workspaces.json"),
-		pendingBashHash:      "old-hash",
-		pendingBashToolUseID: "old-tool",
-		pendingQuestion:      "是否允许执行命令？",
-		pendingOptions:       []string{"允许一次", "拒绝"},
-		pendingChoice:        1,
+		app:                app,
+		input:              textinput.New(),
+		cwd:                t.TempDir(),
+		width:              100,
+		height:             30,
+		workspaceStatePath: filepath.Join(dataDir, "state", "workspaces.json"),
+		pendingToolConfirm: &agentbuiltin.PendingToolUseConfirm{
+			ToolName:  "bash",
+			ToolUseID: "old-tool",
+			BashHash:  "old-hash",
+		},
+		pendingQuestion: "是否允许执行命令？",
+		pendingOptions:  []string{"允许一次", "拒绝"},
+		pendingChoice:   1,
 	}
 
 	m.switchWorkspace(workspaceItem{CWD: nextDir, Title: "Next"})
 
-	if m.pendingBashHash != "" || m.pendingBashToolUseID != "" || m.pendingQuestion != "" || len(m.pendingOptions) != 0 || m.pendingChoice != 0 {
-		t.Fatalf("pending bash state not cleared: hash=%q tool=%q question=%q options=%v choice=%d", m.pendingBashHash, m.pendingBashToolUseID, m.pendingQuestion, m.pendingOptions, m.pendingChoice)
+	if m.pendingToolConfirm != nil || m.pendingQuestion != "" || len(m.pendingOptions) != 0 || m.pendingChoice != 0 {
+		t.Fatalf("pending tool confirm state not cleared: confirm=%#v question=%q options=%v choice=%d", m.pendingToolConfirm, m.pendingQuestion, m.pendingOptions, m.pendingChoice)
 	}
 }
 
@@ -1352,6 +2438,114 @@ func TestStaleBashContinuationIsBlockedLocally(t *testing.T) {
 		t.Fatalf("Update() cmd = %v, want nil", cmd)
 	}
 	if len(got.items) != 2 || got.items[1].role != "system" || !strings.Contains(got.items[1].text, "没有正在等待确认的命令") {
+		t.Fatalf("items = %#v, want local stale approval warning", got.items)
+	}
+	if got.input.Value() != "" {
+		t.Fatalf("input = %q, want cleared", got.input.Value())
+	}
+}
+
+func TestProseBashApprovalConsentIsBlockedLocally(t *testing.T) {
+	input := textinput.New()
+	input.SetValue("同意")
+	m := model{
+		app:   newTestLocalApp(t, t.TempDir()),
+		input: input,
+		items: []transcriptItem{{role: "assistant", text: "请批准：\n```bash\ncd /tmp && grep -rn '/css/' main.go controllers/ 2>/dev/null | head -20\n```"}},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(model)
+
+	if cmd != nil {
+		t.Fatalf("Update() cmd = %v, want nil", cmd)
+	}
+	if len(got.items) != 2 || got.items[1].role != "system" || !strings.Contains(got.items[1].text, "这不是有效的本地审批") {
+		t.Fatalf("items = %#v, want local prose approval warning", got.items)
+	}
+	if got.input.Value() != "" {
+		t.Fatalf("input = %q, want cleared", got.input.Value())
+	}
+}
+
+func TestRestoreTranscriptMarksStaleBashApproval(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newTestLocalApp(t, dataDir)
+	sessionID, err := app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	mem := agentruntime.NewLocalMemory(agentruntime.Config{
+		StorageBackend: "local",
+		LocalDataDir:   dataDir,
+	})
+	if err := mem.Save(context.Background(), sessionID, []*schema.Message{
+		schema.UserMessage("跑一下检查"),
+		schema.AssistantMessage("等待你确认命令。", nil),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	items := restoreTranscript(app.Agent, sessionID)
+
+	if len(items) < 3 {
+		t.Fatalf("restoreTranscript() items = %#v, want restored messages", items)
+	}
+	last := items[len(items)-1]
+	if last.role != "system" || !strings.Contains(last.text, "命令确认已失效") {
+		t.Fatalf("last restored item = %#v, want stale approval warning", last)
+	}
+}
+
+func TestRestoreTranscriptKeepsRichStaleBashApprovalDetails(t *testing.T) {
+	dataDir := t.TempDir()
+	app := newTestLocalApp(t, dataDir)
+	sessionID, err := app.Agent.NewSession(context.Background(), channelName, channelUser)
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	mem := agentruntime.NewLocalMemory(agentruntime.Config{
+		StorageBackend: "local",
+		LocalDataDir:   dataDir,
+	})
+	richApproval := "等待你确认执行 bash 命令\n\n```bash\ngit status --short\n```\n\n请在下方审批面板选择允许或拒绝。"
+	if err := mem.Save(context.Background(), sessionID, []*schema.Message{
+		schema.UserMessage("跑一下检查"),
+		schema.AssistantMessage(richApproval, nil),
+	}); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	items := restoreTranscript(app.Agent, sessionID)
+
+	if len(items) < 3 {
+		t.Fatalf("restoreTranscript() items = %#v, want restored messages", items)
+	}
+	last := items[len(items)-1]
+	if last.role != "system" || !strings.Contains(last.text, "命令确认已失效") || !strings.Contains(last.text, "git status --short") {
+		t.Fatalf("last restored item = %#v, want stale warning with command", last)
+	}
+}
+
+func TestStaleRichBashApprovalConsentAfterResumeIsBlockedLocally(t *testing.T) {
+	input := textinput.New()
+	input.SetValue("同意")
+	m := model{
+		app:   newTestLocalApp(t, t.TempDir()),
+		input: input,
+		items: []transcriptItem{
+			{role: "system", text: staleBashApprovalText + "\n\n等待你确认执行 bash 命令\n\ntool_use_id: toolu_bash_old\n\n```bash\ngit status --short\n```\n\n请在下方审批面板选择允许或拒绝。"},
+			{role: "system", text: "Resumed session ses_old"},
+		},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(model)
+
+	if cmd != nil {
+		t.Fatalf("Update() cmd = %v, want nil", cmd)
+	}
+	if len(got.items) != 3 || got.items[2].role != "system" || !strings.Contains(got.items[2].text, "这不是有效的本地审批") {
 		t.Fatalf("items = %#v, want local stale approval warning", got.items)
 	}
 	if got.input.Value() != "" {

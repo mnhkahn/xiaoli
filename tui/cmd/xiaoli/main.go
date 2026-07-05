@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -56,6 +58,9 @@ type transcriptItem struct {
 	frame int
 }
 
+const staleBashApprovalText = "命令确认已失效，请重新发起需要审批的命令。"
+const pendingBashApprovalText = "等待你确认命令，请在下方选择一个选项。"
+
 type slashSuggestion = slash.Suggestion
 
 type chatDoneMsg struct {
@@ -70,13 +75,24 @@ type chatTimeoutMsg struct {
 
 const defaultChatTimeout = 10 * time.Minute
 
+const streamFlushInterval = 50 * time.Millisecond
+
 type chatDeltaMsg struct {
-	delta string
+	delta    string
+	flushNow bool
+}
+
+type streamFlushMsg struct {
+	runID int
 }
 
 type eventMsg struct {
 	event agentevent.Event
 }
+
+type chatStreamClosedMsg struct{}
+
+type eventStreamClosedMsg struct{}
 
 type runPulseTickMsg struct{}
 
@@ -153,6 +169,11 @@ type bashApprovalDoneMsg struct {
 	reviewFix bool
 }
 
+type pendingToolConfirmQueueItem struct {
+	confirm   *agentbuiltin.PendingToolUseConfirm
+	reviewFix bool
+}
+
 type gitSyncState struct {
 	Branch string
 	Ahead  int
@@ -193,59 +214,68 @@ const (
 )
 
 type model struct {
-	app                  *localapp.App
-	events               chan agentevent.Event
-	chatMsgs             chan tea.Msg
-	activeCancel         context.CancelFunc
-	chatCanceled         bool
-	chatRunID            int
-	input                textinput.Model
-	inputHistory         []string
-	historyIndex         int
-	historyDraft         string
-	pastedContents       map[int]pastedContent
-	nextPasteID          int
-	shellHistory         []string
-	shellHistIndex       int
-	shellHistDraft       string
-	items                []transcriptItem
-	sessionID            string
-	cwd                  string
-	workspaceStatePath   string
-	workspacePicker      *workspacePicker
-	lastTabAt            time.Time
-	gitStatus            string
-	gitSync              gitSyncState
-	gitSyncFeedback      gitSyncFeedback
-	logPath              string
-	updateInfo           updateInfo
-	contextUsage         *agentruntime.ContextUsage
-	runPulseFrame        int
-	runPulseActive       bool
-	scroll               int
-	viewport             viewport.Model
-	streamingIndex       int
-	hadChatInput         bool
-	planMode             bool
-	width                int
-	height               int
-	busy                 bool
-	status               string
-	lastError            string
-	pendingBashHash      string
-	pendingBashToolUseID string
-	pendingBashReviewFix bool
-	pendingQuestion      string
-	pendingOptions       []string
-	pendingChoice        int
-	pendingGitCmsg       gitCmsgPending
-	reviewLoop           codexReviewLoop
-	explorer             *tuiExplorer
-	mouseEnabled         bool
-	focus                focusArea
-	selection            transcriptSelection
-	transcriptLinks      []transcriptLink
-	quitting             bool
+	app                         *localapp.App
+	events                      chan agentevent.Event
+	chatMsgs                    chan tea.Msg
+	activeCancel                context.CancelFunc
+	chatCanceled                bool
+	chatRunID                   int
+	input                       textinput.Model
+	inputHistory                []string
+	historyIndex                int
+	historyDraft                string
+	pastedContents              map[int]pastedContent
+	nextPasteID                 int
+	shellHistory                []string
+	shellHistIndex              int
+	shellHistDraft              string
+	items                       []transcriptItem
+	sessionID                   string
+	cwd                         string
+	workspaceStatePath          string
+	workspacePicker             *workspacePicker
+	lastTabAt                   time.Time
+	gitStatus                   string
+	gitSync                     gitSyncState
+	gitSyncFeedback             gitSyncFeedback
+	logPath                     string
+	updateInfo                  updateInfo
+	contextUsage                *agentruntime.ContextUsage
+	runPulseFrame               int
+	runPulseActive              bool
+	scroll                      int
+	viewport                    viewport.Model
+	streamingIndex              int
+	hadChatInput                bool
+	queuedUserPrompts           []string
+	planMode                    bool
+	width                       int
+	height                      int
+	busy                        bool
+	status                      string
+	lastError                   string
+	pendingToolConfirm          *agentbuiltin.PendingToolUseConfirm
+	pendingToolConfirmReviewFix bool
+	pendingToolConfirmQueue     []pendingToolConfirmQueueItem
+	pendingQuestion             string
+	pendingOptions              []string
+	pendingChoice               int
+	pendingGitCmsg              gitCmsgPending
+	reviewLoop                  codexReviewLoop
+	explorer                    *tuiExplorer
+	mouseEnabled                bool
+	focus                       focusArea
+	selection                   transcriptSelection
+	transcriptLinks             []transcriptLink
+	transcriptCache             transcriptRenderCache
+	streamFlushPending          bool
+	quitting                    bool
+}
+
+type transcriptRenderCache struct {
+	key     string
+	content string
+	links   []transcriptLink
 }
 
 var (
@@ -258,6 +288,7 @@ var (
 	linkStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Underline(true)
 	hintStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 	boxStyle           = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
+	approvalBoxStyle   = lipgloss.NewStyle().Border(lipgloss.DoubleBorder()).BorderForeground(lipgloss.Color("220")).Padding(0, 1)
 	sideStyle          = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("238")).Padding(0, 1)
 	gitOKStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Bold(true)
 	gitPushStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("45")).Bold(true)
@@ -333,7 +364,7 @@ func main() {
 		return
 	}
 
-	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(newModel(app, *resumeSession, logPath))
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "xiaoli: %v\n", err)
@@ -402,9 +433,11 @@ func newModel(app *localapp.App, resumeSessionID string, logPath string) model {
 		workspacePath = workspaceStatePath(app.Config.DataDir)
 	}
 	items := []transcriptItem{{role: "banner"}}
+	inputHistory := []string(nil)
 	if sessionID != "" {
 		items = restoreTranscript(app.Agent, sessionID)
 		items = append(items, transcriptItem{role: "system", text: "Resumed session " + sessionID})
+		inputHistory = restoreInputHistory(app.Agent, sessionID)
 	}
 	gitSync := gitSyncStateForCWD(cwd)
 
@@ -423,7 +456,8 @@ func newModel(app *localapp.App, resumeSessionID string, logPath string) model {
 		status:             "idle",
 		streamingIndex:     -1,
 		items:              items,
-		mouseEnabled:       true,
+		inputHistory:       inputHistory,
+		mouseEnabled:       false,
 	}
 }
 
@@ -567,12 +601,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activeCancel()
 				m.activeCancel = nil
 			}
+			m.streamFlushPending = false
 			m.chatCanceled = true
 			m.busy = false
 			m.quitting = true
 			return m, tea.Quit
 		}
 		if m.workspacePicker != nil {
+			if msg.String() == "ctrl+y" {
+				sessionID := m.workspacePicker.selectedSessionID()
+				if sessionID == "" {
+					m.workspacePicker.setFeedback("No session selected")
+					return m, nil
+				}
+				if err := copyTextToClipboardFunc(sessionID); err != nil {
+					m.workspacePicker.setFeedback("Copy failed: " + err.Error())
+					return m, nil
+				}
+				m.workspacePicker.setFeedback("Copied session " + sessionID)
+				return m, nil
+			}
 			item, selected, closePicker := m.workspacePicker.handleKey(msg)
 			if selected {
 				m.switchWorkspace(item)
@@ -619,6 +667,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activeCancel()
 					m.activeCancel = nil
 				}
+				m.streamFlushPending = false
 				m.chatCanceled = true
 				m.busy = false
 				m.status = "idle"
@@ -677,14 +726,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleVerticalKey(1)
 		case "left", "shift+tab":
 			if m.movePendingChoice(-1) {
+				m.syncViewport(false)
 				return m, nil
 			}
 		case "right":
 			if m.movePendingChoice(1) {
+				m.syncViewport(false)
 				return m, nil
 			}
 		case "tab":
 			if m.movePendingChoice(1) {
+				m.syncViewport(false)
 				return m, nil
 			}
 			if m.consumeDoubleTab() {
@@ -710,7 +762,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if text == "" && m.hasPendingOptions() {
 				text = pendingOptionValue(m.pendingOptions[m.pendingChoice])
 			}
-			if text == "" || m.busy {
+			if selected, ok := m.pendingOptionByInput(text); ok {
+				text = selected
+			}
+			if m.hasPendingBashConfirm() && (isReject(text) || isApprove(text) || isBashApprovalChoice(text)) {
+				return m.handlePendingBashConfirmInput(text)
+			}
+			if text == "" {
+				return m, nil
+			}
+			if m.busy {
+				m.queueUserPrompt(text)
+				m.input.SetValue("")
+				m.clearPastedContents()
+				m.syncViewport(true)
 				return m, nil
 			}
 			rawInput := m.input.Value()
@@ -731,9 +796,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, startShellCommand(runCtx, m.cwd, command)
 			}
 			m.recordInputHistory(m.input.Value())
-			if selected, ok := m.pendingOptionByInput(text); ok {
-				text = selected
-			}
 			if strings.EqualFold(text, "/quit") || strings.EqualFold(text, "/exit") {
 				m.quitting = true
 				return m, tea.Quit
@@ -780,66 +842,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.syncViewport(true)
 				return m, nil
 			}
-			if m.shouldBlockStaleBashContinuation(text) {
+			if m.shouldBlockStaleBashResponse(text) {
 				m.input.SetValue("")
 				m.status = "idle"
-				m.items = append(m.items, transcriptItem{role: "system", text: "没有正在等待确认的命令。请重新描述任务，或让模型重新发起需要审批的命令。"})
+				m.items = append(m.items, transcriptItem{role: "system", text: staleBashResponseWarning(text)})
 				m.syncViewport(true)
 				return m, nil
 			}
 			m.lastError = ""
 			m.items = append(m.items, transcriptItem{role: "user", text: m.inputDisplayText()})
-			if m.pendingBashHash != "" {
-				if isReject(text) {
-					m.clearPendingBashState(m.activeSessionID(), true)
-					m.input.SetValue("")
-					m.items = append(m.items, transcriptItem{role: "system", text: "已拒绝执行命令。"})
-					return m, nil
-				}
-				if isApprove(text) || isBashApprovalChoice(text) {
-					sessionID := m.activeSessionID()
-					reviewFix := m.pendingBashReviewFix
-					command, toolUseID, expired, ok := agentbuiltin.PendingBashApproval(sessionID, m.pendingBashHash)
-					if strings.TrimSpace(toolUseID) == "" {
-						toolUseID = m.pendingBashToolUseID
-					}
-					m.input.SetValue("")
-					if !ok {
-						m.clearPendingBashState(sessionID, true)
-						m.items = append(m.items, transcriptItem{role: "error", text: "待审批命令已失效，请重新发起。"})
-						m.syncViewport(true)
-						return m, nil
-					}
-					if expired {
-						m.clearPendingBashState(sessionID, true)
-						m.busy = true
-						m.status = "running"
-						m.items = append(m.items, transcriptItem{role: "error", text: "待审批命令已过期，已通知模型重新发起。"})
-						m.syncViewport(true)
-						prompt := formatExpiredBashFollowup(toolUseID, command)
-						chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
-						m.activeCancel = cancel
-						m.chatCanceled = false
-						m.chatRunID++
-						return m, tea.Batch(m.startBashFollowupChat(chatCtx, sessionID, prompt, reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
-					}
-					if err := agentbuiltin.StoreBashApprovalChoice(sessionID, m.pendingBashHash, normalizeBashApprovalChoice(text)); err != nil {
-						m.clearPendingBashState(sessionID, true)
-						m.items = append(m.items, transcriptItem{role: "error", text: "保存 Bash 权限失败：" + err.Error()})
-						m.syncViewport(true)
-						return m, nil
-					}
-					m.clearPendingBashState(sessionID, true)
-					m.busy = true
-					m.status = "bash running"
-					m.items = append(m.items, transcriptItem{role: "event", text: "approved bash: " + command})
-					m.syncViewport(true)
-					runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-					m.activeCancel = cancel
-					m.chatCanceled = false
-					return m, startApprovedBashCommand(runCtx, m.cwd, command, sessionID, toolUseID, reviewFix)
-				}
-			}
 			if m.pendingGitCmsg.Active {
 				cmd := m.handleGitCmsgChoice(text)
 				return m, cmd
@@ -870,6 +881,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if cmd.sessionID != "" && cmd.sessionID != m.sessionID {
 					m.sessionID = cmd.sessionID
 					m.items = restoreTranscript(m.app.Agent, m.sessionID)
+					m.inputHistory = restoreInputHistory(m.app.Agent, m.sessionID)
+					m.historyIndex = 0
+					m.historyDraft = ""
 					m.items = append(m.items, transcriptItem{role: "system", text: cmd.reply})
 					m.recordCurrentSession()
 				} else {
@@ -892,14 +906,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			m.status = "running"
 			m.streamingIndex = -1
+			m.streamFlushPending = false
 			m.scroll = 0
 			m.syncViewport(true)
 			chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
 			m.activeCancel = cancel
 			m.chatCanceled = false
 			m.chatRunID++
+			text = m.promptWithQueuedUserPrompts(text)
 			return m, tea.Batch(startChatCmd(chatCtx, m.app.Agent, m.chatMsgs, m.sessionID, m.cwd, text, disabledToolsForPlanMode(m.planMode || planRequest)), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
 		}
+	case chatStreamClosedMsg:
+		if m.busy {
+			m.busy = false
+			m.status = "idle"
+			m.chatCanceled = true
+			m.streamFlushPending = false
+			m.items = append(m.items, transcriptItem{role: "error", text: "模型消息通道已关闭，已停止当前执行。"})
+			m.syncViewport(true)
+		}
+		return m, nil
 	case chatDeltaMsg:
 		if m.chatCanceled {
 			return m, waitForChat(m.chatMsgs)
@@ -911,11 +937,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.items[m.streamingIndex].text += msg.delta
 			m.scroll = 0
-			m.syncViewport(true)
+			if msg.flushNow {
+				m.streamFlushPending = false
+				m.refreshContextUsage()
+				m.syncViewport(true)
+				return m, waitForChat(m.chatMsgs)
+			}
+			if !m.streamFlushPending {
+				m.streamFlushPending = true
+				m.refreshContextUsage()
+				return m, tea.Batch(waitForChat(m.chatMsgs), streamFlushCmd(m.chatRunID))
+			}
 		}
 		m.refreshContextUsage()
 		return m, waitForChat(m.chatMsgs)
+	case streamFlushMsg:
+		if msg.runID != m.chatRunID || !m.streamFlushPending {
+			return m, nil
+		}
+		m.streamFlushPending = false
+		m.syncViewport(true)
+		return m, nil
 	case chatDoneMsg:
+		m.streamFlushPending = false
 		if msg.reviewFix {
 			return m.handleCodexReviewFixDone(msg)
 		}
@@ -942,31 +986,73 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastError = msg.err.Error()
 			m.items = append(m.items, transcriptItem{role: "error", text: msg.err.Error()})
 		} else {
+			updatedIndex := -1
 			if m.streamingIndex >= 0 && m.streamingIndex < len(m.items) {
 				if strings.TrimSpace(msg.reply) != "" {
 					m.items[m.streamingIndex].text = msg.reply
+					updatedIndex = m.streamingIndex
 				}
 			} else {
 				m.items = append(m.items, transcriptItem{role: "assistant", text: msg.reply})
+				updatedIndex = len(m.items) - 1
 			}
+			logger.Infof("tui chat done: reply_len=%d updated_index=%d items=%d last_role=%s", len([]rune(msg.reply)), updatedIndex, len(m.items), lastTranscriptRole(m.items))
 		}
 		m.streamingIndex = -1
+		fakeBashApprovalIndex := -1
+		for {
+			confirm := m.consumePendingToolConfirm()
+			if confirm == nil {
+				break
+			}
+			m.enqueuePendingToolConfirm(confirm, msg.reviewFix, "chat_done")
+		}
+		if !m.hasPendingBashConfirm() {
+			for i := len(m.items) - 1; i >= 0; i-- {
+				if m.items[i].role != "assistant" {
+					continue
+				}
+				if containsFakeBashApprovalTranscript(m.items[i].text) {
+					fakeBashApprovalIndex = i
+				}
+				break
+			}
+		}
 		if ask := m.app.Agent.ConsumeAskData(channelUser); ask != nil {
 			m.pendingQuestion = ask.Question
 			m.pendingOptions = append([]string(nil), ask.Options...)
 			m.pendingChoice = 0
-			logger.Infof("tui pending ask loaded: bash=%v question_len=%d options=%d", ask.BashHash != "", len(ask.Question), len(ask.Options))
-			if ask.BashHash != "" {
-				m.pendingBashHash = ask.BashHash
-				m.pendingBashToolUseID = ask.BashToolUseID
-				m.pendingBashReviewFix = msg.reviewFix
-				m.status = "waiting approval"
-			} else if len(m.pendingOptions) > 0 {
+			logger.Infof("tui pending ask loaded: question_len=%d options=%d", len(ask.Question), len(ask.Options))
+			if len(m.pendingOptions) > 0 {
 				m.status = "waiting input"
 			}
 		}
+		if fakeBashApprovalIndex >= 0 && !m.hasPendingBashConfirm() {
+			fakeText := m.items[fakeBashApprovalIndex].text
+			m.items[fakeBashApprovalIndex].role = "system"
+			m.items[fakeBashApprovalIndex].text = fakeBashApprovalTranscriptText(fakeText)
+			logger.Infof("tui invalidated fake bash approval transcript: index=%d reply_len=%d", fakeBashApprovalIndex, len([]rune(m.items[fakeBashApprovalIndex].text)))
+			if prompt := fakeBashApprovalCorrectionPrompt(fakeText); prompt != "" {
+				sessionID := m.activeSessionID()
+				if sessionID == "" {
+					sessionID = m.sessionID
+				}
+				m.busy = true
+				m.status = "running"
+				m.syncViewport(true)
+				chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
+				m.activeCancel = cancel
+				m.chatCanceled = false
+				m.chatRunID++
+				return m, tea.Batch(m.startBashFollowupChat(chatCtx, sessionID, prompt, msg.reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
+			}
+			m.status = "idle"
+		}
 		m.refreshContextUsage()
 		m.syncViewport(true)
+		if len(m.queuedUserPrompts) > 0 && !m.hasPendingBashConfirm() && !m.hasPendingOptions() {
+			return m.startQueuedUserPromptChat()
+		}
 		return m, waitForEvent(m.events)
 	case chatTimeoutMsg:
 		if msg.runID != m.chatRunID || !m.busy {
@@ -979,6 +1065,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.status = "idle"
 		m.chatCanceled = true
+		m.streamFlushPending = false
 		m.runPulseActive = false
 		m.reviewLoop = codexReviewLoop{}
 		m.items = append(m.items, transcriptItem{role: "error", text: "模型调用超时，已停止当前执行。"})
@@ -1015,6 +1102,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recordCurrentSession()
 		m.items = append(m.items, msg.transcriptItem())
 		m.syncViewport(true)
+		if len(m.queuedUserPrompts) > 0 {
+			return m.startQueuedUserPromptChat()
+		}
 		return m, nil
 	case bashApprovalDoneMsg:
 		if m.activeCancel != nil {
@@ -1160,7 +1250,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runPulseFrame++
 		m.syncViewport(false)
 		return m, tickRunPulse()
+	case eventStreamClosedMsg:
+		return m, nil
 	case eventMsg:
+		if confirm := pendingToolConfirmFromPermissionEvent(msg.event); confirm != nil {
+			m.enqueuePendingToolConfirm(confirm, false, "permission_event")
+			m.refreshContextUsage()
+			m.syncViewport(true)
+			return m, waitForEvent(m.events)
+		}
+		if isSilentPermissionEvent(msg.event) {
+			return m, waitForEvent(m.events)
+		}
 		item := eventTranscriptItem(msg.event)
 		item.frame = m.runPulseFrame
 		switch item.role {
@@ -1211,17 +1312,19 @@ func (m model) View() string {
 		m.explorer.resize(m.width, m.height)
 		return m.explorer.View()
 	}
-	mainW, _, bodyH, promptW, statusH := layoutSizes(m.width, m.height)
+	mainW, _, _, promptW, statusH := layoutSizes(m.width, m.height)
 
-	m.syncViewport(false)
-	transcript := m.viewport.View()
-	if m.selection.active || m.selection.dragging {
-		transcript = renderTranscriptSelectionOverlay(strings.Split(transcript, "\n"), m.selection, mainW)
+	approvalModal := ""
+	if m.hasPendingBashConfirm() {
+		approvalModal = renderPendingToolConfirmModal(m.pendingToolConfirm, m.pendingQuestion, m.pendingOptions, m.pendingChoice, promptW)
 	}
-	top := boxStyle.Width(mainW).Height(bodyH).Render(transcript)
-	status := renderStatusBar(m, max(20, promptW+boxStyle.GetHorizontalFrameSize()))
 
 	promptParts := []string{}
+	if approvalModal == "" && (m.hasPendingOptions() || strings.TrimSpace(m.pendingQuestion) != "") {
+		if panel := renderPendingAskPanel(m.pendingQuestion, m.pendingOptions, m.pendingChoice, promptW-2); strings.TrimSpace(panel) != "" {
+			promptParts = append(promptParts, panel)
+		}
+	}
 	if suggestions := m.shellSuggestions(8); len(suggestions) > 0 {
 		promptParts = append(promptParts, renderShellSuggestions(suggestions, promptW-2))
 	} else if suggestions := m.slashSuggestions(8); len(suggestions) > 0 {
@@ -1229,11 +1332,48 @@ func (m model) View() string {
 	}
 	promptParts = append(promptParts, m.input.View())
 	prompt := boxStyle.Width(promptW).Render(strings.Join(promptParts, "\n"))
-	parts := []string{top, prompt}
+	status := ""
 	if statusH > 0 {
+		status = renderStatusBar(m, max(20, promptW+boxStyle.GetHorizontalFrameSize()))
+	}
+	constrainTranscript := approvalModal != "" || len(promptParts) > 1
+	transcript := ""
+	transcriptH := 0
+	if constrainTranscript {
+		reservedH := renderedHeight(approvalModal) + renderedHeight(prompt) + renderedHeight(status)
+		transcriptBoxH := max(boxStyle.GetVerticalFrameSize()+1, m.height-reservedH)
+		transcriptH = max(1, transcriptBoxH-boxStyle.GetVerticalFrameSize())
+		vp := m.viewport
+		vp.Width = mainW
+		vp.Height = transcriptH
+		transcript = vp.View()
+	} else {
+		transcript = m.fullTranscriptView(mainW)
+	}
+	if m.selection.active || m.selection.dragging {
+		transcript = renderTranscriptSelectionOverlay(strings.Split(transcript, "\n"), m.selection, mainW)
+	}
+	topStyle := boxStyle.Width(mainW)
+	if constrainTranscript {
+		topStyle = topStyle.Height(transcriptH)
+	}
+	top := topStyle.Render(transcript)
+	parts := []string{top}
+	if approvalModal != "" {
+		parts = append(parts, approvalModal)
+	}
+	parts = append(parts, prompt)
+	if status != "" {
 		parts = append(parts, status)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
+
+func renderedHeight(s string) int {
+	if strings.TrimSpace(s) == "" {
+		return 0
+	}
+	return lipgloss.Height(s)
 }
 
 func layoutSizes(width, height int) (mainW, sideW, bodyH, promptW, statusH int) {
@@ -1250,6 +1390,19 @@ func layoutMainWidth(width, height int) int {
 	return mainW
 }
 
+func (m model) fullTranscriptView(width int) string {
+	if m.streamFlushPending {
+		if strings.TrimSpace(m.transcriptCache.content) != "" {
+			return m.transcriptCache.content
+		}
+		return m.viewport.View()
+	}
+	if strings.TrimSpace(m.transcriptCache.content) != "" && m.transcriptCache.key == m.transcriptCacheKey(width) {
+		return m.transcriptCache.content
+	}
+	return m.renderTranscriptContent(width)
+}
+
 func (m *model) syncViewport(gotoBottom bool) {
 	if m == nil || m.width <= 0 || m.height <= 0 {
 		return
@@ -1261,35 +1414,74 @@ func (m *model) syncViewport(gotoBottom bool) {
 	atBottom := m.viewport.AtBottom()
 	m.viewport.Width = mainW
 	m.viewport.Height = bodyH
-	content, links := m.renderTranscriptContentWithLinks(mainW)
-	m.transcriptLinks = links
-	m.viewport.SetContent(content)
+	key := m.transcriptCacheKey(mainW)
+	content := m.transcriptCache.content
+	if key != m.transcriptCache.key {
+		links := []transcriptLink(nil)
+		content, links = m.renderTranscriptContentWithLinks(mainW)
+		m.transcriptCache = transcriptRenderCache{
+			key:     key,
+			content: content,
+			links:   append([]transcriptLink(nil), links...),
+		}
+		m.transcriptLinks = links
+		m.viewport.SetContent(content)
+		logger.Debugf("tui viewport sync: cache_miss=true goto_bottom=%v items=%d content_len=%d height=%d", gotoBottom, len(m.items), len([]rune(content)), bodyH)
+	} else {
+		m.transcriptLinks = m.transcriptCache.links
+		logger.Debugf("tui viewport sync: cache_miss=false goto_bottom=%v items=%d height=%d", gotoBottom, len(m.items), bodyH)
+	}
 	if gotoBottom || atBottom {
 		m.viewport.GotoBottom()
 	}
 }
 
+func (m model) transcriptCacheKey(width int) string {
+	var b strings.Builder
+	b.WriteString(strconv.Itoa(width))
+	b.WriteByte('|')
+	b.WriteString(strconv.Itoa(len(m.items)))
+	b.WriteByte('|')
+	b.WriteString(strconv.Itoa(m.runPulseFrame))
+	b.WriteByte('|')
+	b.WriteString(strconv.Itoa(m.pendingChoice))
+	b.WriteByte('|')
+	b.WriteString(m.pendingQuestion)
+	b.WriteByte('|')
+	b.WriteString(strings.Join(m.pendingOptions, "\x00"))
+	for _, item := range m.items {
+		b.WriteByte('|')
+		b.WriteString(item.role)
+		b.WriteByte('|')
+		b.WriteString(strconv.Itoa(item.frame))
+		b.WriteByte('|')
+		b.WriteString(strconv.Itoa(len(item.text)))
+		b.WriteByte('|')
+		b.WriteString(hashText(item.text))
+	}
+	return b.String()
+}
+
+func lastTranscriptRole(items []transcriptItem) string {
+	if len(items) == 0 {
+		return ""
+	}
+	return items[len(items)-1].role
+}
+
+func hashText(text string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(text))
+	return strconv.FormatUint(h.Sum64(), 16)
+}
+
 func (m model) renderTranscriptContent(width int) string {
 	content, _ := m.renderTranscriptItemsWithLinks(width)
-	if m.hasPendingOptions() || strings.TrimSpace(m.pendingQuestion) != "" {
-		panel := renderPendingAskPanel(m.pendingQuestion, m.pendingOptions, m.pendingChoice, width)
-		if strings.TrimSpace(content) == "" {
-			return panel
-		}
-		return content + "\n\n" + panel
-	}
 	return content
 }
 
 func (m model) renderTranscriptContentWithLinks(width int) (string, []transcriptLink) {
 	content, links := m.renderTranscriptItemsWithLinks(width)
-	if m.hasPendingOptions() || strings.TrimSpace(m.pendingQuestion) != "" {
-		panel := renderPendingAskPanel(m.pendingQuestion, m.pendingOptions, m.pendingChoice, width)
-		if strings.TrimSpace(content) == "" {
-			return panel, nil
-		}
-		return content + "\n\n" + panel, links
-	}
 	return content, links
 }
 
@@ -1928,7 +2120,7 @@ func renderStatusBar(m model, width int) string {
 	if m.updateInfo.Available() {
 		stateParts = append(stateParts, "update "+m.updateInfo.Latest)
 	}
-	actionParts := []string{"wheel scroll", "drag select copies", "Esc clear", "⌃S sync", "⌃T tree", "⌃K diff", "Tab Tab projects", "/cd", "/upgrade", "⌃C quit"}
+	actionParts := []string{"native copy", "Esc clear", "⌃S sync", "⌃T tree", "⌃K diff", "Tab Tab projects", "/cd", "/upgrade", "⌃C quit"}
 	lines := []string{
 		hintStyle.Render(fitDisplay(strings.Join(stateParts, " · "), bodyWidth)),
 		hintStyle.Render(fitDisplay(strings.Join(actionParts, " · "), bodyWidth)),
@@ -2472,8 +2664,7 @@ func sidebarFooterLines(m model, width int) []string {
 	}
 	m.gitStatus = git
 	lines = append(lines, truncateDisplay(gitSyncButtonLabel(m), width))
-	lines = append(lines, "wheel scroll")
-	lines = append(lines, "drag select copies")
+	lines = append(lines, "native copy")
 	lines = append(lines, "Esc clear")
 	lines = append(lines, "⌃S sync")
 	lines = append(lines, "⌃T tree")
@@ -2943,16 +3134,40 @@ func limitLines(text string, limit int) []string {
 }
 
 func truncateDisplay(s string, width int) string {
-	if width <= 0 || lipgloss.Width(s) <= width {
+	if width <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= width {
 		return s
 	}
 	if width <= 3 {
-		runes := []rune(s)
-		for len(runes) > 0 && lipgloss.Width(string(runes)) > width {
-			runes = runes[:len(runes)-1]
-		}
-		return string(runes)
+		return truncatePlainDisplay(s, width, "")
 	}
+	if strings.Contains(s, "\x1b") {
+		return truncateDisplaySlow(s, width)
+	}
+	return truncatePlainDisplay(s, width-3, "...")
+}
+
+func truncatePlainDisplay(s string, width int, suffix string) string {
+	if width <= 0 {
+		return suffix
+	}
+	var b strings.Builder
+	used := 0
+	for _, r := range s {
+		part := string(r)
+		w := lipgloss.Width(part)
+		if used+w > width {
+			break
+		}
+		b.WriteRune(r)
+		used += w
+	}
+	return b.String() + suffix
+}
+
+func truncateDisplaySlow(s string, width int) string {
 	runes := []rune(s)
 	for len(runes) > 0 && lipgloss.Width(string(runes)+"...") > width {
 		runes = runes[:len(runes)-1]
@@ -3080,6 +3295,30 @@ func renderPendingAskPanel(question string, options []string, selected int, widt
 		lines = lines[:len(lines)-1]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderPendingToolConfirmModal(confirm *agentbuiltin.PendingToolUseConfirm, question string, options []string, selected int, width int) string {
+	if confirm == nil {
+		return ""
+	}
+	innerWidth := max(20, width-approvalBoxStyle.GetHorizontalFrameSize())
+	command := strings.TrimSpace(confirm.BashCommand)
+	if command == "" {
+		command = strings.TrimSpace(strings.TrimPrefix(question, "是否允许执行命令："))
+	}
+	lines := []string{titleStyle.Render("BASH APPROVAL")}
+	if strings.TrimSpace(confirm.ToolUseID) != "" {
+		lines = append(lines, hintStyle.Render(fitDisplay("tool_use_id: "+strings.TrimSpace(confirm.ToolUseID), innerWidth)))
+	}
+	if command != "" {
+		lines = append(lines, shellStyle.Render(fitDisplay("$ "+summarizeCommandForDisplay(command), innerWidth)))
+	}
+	lines = append(lines, "")
+	if panel := renderPendingAskPanel("", options, selected, innerWidth); strings.TrimSpace(panel) != "" {
+		lines = append(lines, panel)
+	}
+	lines = append(lines, hintStyle.Render(fitDisplay("Use ↑/↓ or 1-4, Enter to approve, type 拒绝 to reject.", innerWidth)))
+	return approvalBoxStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 
 func pendingQuestionDisplay(question string) string {
@@ -3460,36 +3699,336 @@ func (m model) hasPendingOptions() bool {
 	return len(m.pendingOptions) > 0
 }
 
-func (m *model) clearPendingBashState(sessionID string, clearApproval bool) {
+func (m model) hasPendingBashConfirm() bool {
+	return m.pendingToolConfirm != nil && strings.EqualFold(m.pendingToolConfirm.ToolName, "bash") && strings.TrimSpace(m.pendingToolConfirm.BashHash) != ""
+}
+
+func (m model) handlePendingBashConfirmInput(text string) (tea.Model, tea.Cmd) {
+	if !m.hasPendingBashConfirm() {
+		return m, nil
+	}
+	if display := strings.TrimSpace(m.inputDisplayText()); display != "" {
+		m.items = append(m.items, transcriptItem{role: "user", text: display})
+	}
+	if isReject(text) {
+		confirm := m.pendingToolConfirm
+		m.publishPermissionReplied(confirm, "reject", "tui_input")
+		m.clearPendingToolConfirmState(m.activeSessionID(), true)
+		m.input.SetValue("")
+		m.items = append(m.items, transcriptItem{role: "system", text: "已拒绝执行命令。"})
+		m.syncViewport(true)
+		return m, nil
+	}
+	if !isApprove(text) && !isBashApprovalChoice(text) {
+		return m, nil
+	}
+	sessionID := m.activeSessionID()
+	confirm := m.pendingToolConfirm
+	reviewFix := m.pendingToolConfirmReviewFix
+	command, toolUseID, expired, ok := agentbuiltin.PendingBashApproval(sessionID, confirm.BashHash)
+	if strings.TrimSpace(toolUseID) == "" {
+		toolUseID = confirm.ToolUseID
+	}
+	m.input.SetValue("")
+	if !ok {
+		m.publishPermissionReplied(confirm, "stale", "tui_input")
+		m.clearPendingToolConfirmState(sessionID, true)
+		m.items = append(m.items, transcriptItem{role: "error", text: "待审批命令已失效，请重新发起。"})
+		m.syncViewport(true)
+		return m, nil
+	}
+	if expired {
+		m.publishPermissionReplied(confirm, "expired", "tui_input")
+		m.clearPendingToolConfirmState(sessionID, true)
+		m.busy = true
+		m.status = "running"
+		m.items = append(m.items, transcriptItem{role: "error", text: "待审批命令已过期，已通知模型重新发起。"})
+		m.syncViewport(true)
+		prompt := formatExpiredBashFollowup(toolUseID, command)
+		chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
+		m.activeCancel = cancel
+		m.chatCanceled = false
+		m.chatRunID++
+		return m, tea.Batch(m.startBashFollowupChat(chatCtx, sessionID, prompt, reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
+	}
+	if err := agentbuiltin.StoreBashApprovalChoice(sessionID, confirm.BashHash, normalizeBashApprovalChoice(text)); err != nil {
+		m.publishPermissionReplied(confirm, "error", "tui_input")
+		m.clearPendingToolConfirmState(sessionID, true)
+		m.items = append(m.items, transcriptItem{role: "error", text: "保存 Bash 权限失败：" + err.Error()})
+		m.syncViewport(true)
+		return m, nil
+	}
+	m.publishPermissionReplied(confirm, "allow", "tui_input")
+	m.clearPendingToolConfirmState(sessionID, true)
+	m.busy = true
+	m.status = "bash running"
+	m.items = append(m.items, transcriptItem{role: "event", text: "approved bash: " + command})
+	m.syncViewport(true)
+	runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	m.activeCancel = cancel
+	m.chatCanceled = false
+	return m, startApprovedBashCommand(runCtx, m.cwd, command, sessionID, toolUseID, reviewFix)
+}
+
+func (m *model) enqueuePendingToolConfirm(confirm *agentbuiltin.PendingToolUseConfirm, reviewFix bool, source string) {
+	if confirm == nil || m.hasPendingToolConfirm(confirm) {
+		return
+	}
+	m.markPendingToolUseConfirmInTranscript(confirm)
+	if m.pendingToolConfirm == nil {
+		m.setPendingToolConfirm(confirm, reviewFix)
+		m.publishPermissionShown(confirm, source)
+		logger.Infof("tui pending tool confirm shown: source=%s session=%s tool=%s tool_use_id=%s question_len=%d options=%d bash_hash=%v queue=%d", source, confirm.SessionID, confirm.ToolName, confirm.ToolUseID, len(confirm.Question), len(confirm.Options), strings.TrimSpace(confirm.BashHash) != "", len(m.pendingToolConfirmQueue))
+		return
+	}
+	m.pendingToolConfirmQueue = append(m.pendingToolConfirmQueue, pendingToolConfirmQueueItem{confirm: confirm, reviewFix: reviewFix})
+	logger.Infof("tui pending tool confirm queued: source=%s session=%s tool=%s tool_use_id=%s queue=%d", source, confirm.SessionID, confirm.ToolName, confirm.ToolUseID, len(m.pendingToolConfirmQueue))
+}
+
+func (m model) hasPendingToolConfirm(confirm *agentbuiltin.PendingToolUseConfirm) bool {
+	if samePendingToolConfirm(m.pendingToolConfirm, confirm) {
+		return true
+	}
+	for _, queued := range m.pendingToolConfirmQueue {
+		if samePendingToolConfirm(queued.confirm, confirm) {
+			return true
+		}
+	}
+	return false
+}
+
+func samePendingToolConfirm(a, b *agentbuiltin.PendingToolUseConfirm) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if a.ToolUseID != "" || b.ToolUseID != "" {
+		return strings.TrimSpace(a.ToolUseID) == strings.TrimSpace(b.ToolUseID)
+	}
+	return strings.TrimSpace(a.SessionID) == strings.TrimSpace(b.SessionID) &&
+		strings.TrimSpace(a.ToolName) == strings.TrimSpace(b.ToolName) &&
+		strings.TrimSpace(a.BashHash) == strings.TrimSpace(b.BashHash)
+}
+
+func (m *model) setPendingToolConfirm(confirm *agentbuiltin.PendingToolUseConfirm, reviewFix bool) {
+	m.pendingToolConfirm = confirm
+	m.pendingToolConfirmReviewFix = reviewFix
+	if confirm == nil {
+		m.pendingQuestion = ""
+		m.pendingOptions = nil
+		m.pendingChoice = 0
+		return
+	}
+	m.pendingQuestion = confirm.Question
+	m.pendingOptions = append([]string(nil), confirm.Options...)
+	m.pendingChoice = 0
+	if strings.EqualFold(confirm.ToolName, "bash") {
+		m.status = "waiting approval"
+	} else if len(m.pendingOptions) > 0 {
+		m.status = "waiting input"
+	}
+}
+
+func (m *model) promoteNextPendingToolConfirm(source string) {
+	if len(m.pendingToolConfirmQueue) == 0 {
+		m.setPendingToolConfirm(nil, false)
+		return
+	}
+	next := m.pendingToolConfirmQueue[0]
+	copy(m.pendingToolConfirmQueue, m.pendingToolConfirmQueue[1:])
+	m.pendingToolConfirmQueue[len(m.pendingToolConfirmQueue)-1] = pendingToolConfirmQueueItem{}
+	m.pendingToolConfirmQueue = m.pendingToolConfirmQueue[:len(m.pendingToolConfirmQueue)-1]
+	m.setPendingToolConfirm(next.confirm, next.reviewFix)
+	m.publishPermissionShown(next.confirm, source)
+	logger.Infof("tui pending tool confirm promoted: source=%s session=%s tool=%s tool_use_id=%s queue=%d", source, next.confirm.SessionID, next.confirm.ToolName, next.confirm.ToolUseID, len(m.pendingToolConfirmQueue))
+}
+
+func (m *model) clearPendingToolConfirmState(sessionID string, clearApproval bool) {
+	confirm := m.pendingToolConfirm
+	reviewFix := m.pendingToolConfirmReviewFix
+	if clearApproval && confirm != nil && strings.TrimSpace(sessionID) != "" && strings.TrimSpace(confirm.BashHash) != "" {
+		agentbuiltin.ClearBashApprovalHash(sessionID, confirm.BashHash)
+	}
+	m.pendingToolConfirmReviewFix = reviewFix
+	m.promoteNextPendingToolConfirm("current_cleared")
+}
+
+func (m *model) clearAllPendingToolConfirmState(sessionID string, clearApproval bool) {
 	if clearApproval && strings.TrimSpace(sessionID) != "" {
 		agentbuiltin.ClearBashApproval(sessionID)
 	}
-	m.pendingBashHash = ""
-	m.pendingBashToolUseID = ""
-	m.pendingBashReviewFix = false
-	m.pendingQuestion = ""
-	m.pendingOptions = nil
-	m.pendingChoice = 0
+	m.pendingToolConfirmQueue = nil
+	m.setPendingToolConfirm(nil, false)
 }
 
-func (m model) startBashFollowupChat(ctx context.Context, sessionID, prompt string, reviewFix bool) tea.Cmd {
+func (m model) publishPermissionShown(confirm *agentbuiltin.PendingToolUseConfirm, source string) {
+	if confirm == nil || m.app == nil || m.app.Bus == nil {
+		return
+	}
+	sessionID := firstNonEmpty(strings.TrimSpace(confirm.SessionID), strings.TrimSpace(m.activeSessionID()))
+	_ = m.app.Bus.Publish(context.Background(), agentevent.Event{
+		Type:      agentevent.TypePermissionShown,
+		SessionID: sessionID,
+		Data: agentevent.PermissionAskedData{
+			RequestID:   firstNonEmpty(strings.TrimSpace(confirm.RequestID), strings.TrimSpace(confirm.ToolUseID)),
+			Action:      "tool_use_confirm",
+			Resource:    confirm.ToolName,
+			SessionID:   sessionID,
+			ToolName:    confirm.ToolName,
+			ToolUseID:   confirm.ToolUseID,
+			Question:    confirm.Question,
+			Options:     append([]string(nil), confirm.Options...),
+			Input:       map[string]string{"command": confirm.BashCommand},
+			BashHash:    confirm.BashHash,
+			ChannelName: confirm.ChannelName,
+			DeviceID:    confirm.DeviceID,
+		},
+		Metadata: map[string]any{"source": source, "queue_len": len(m.pendingToolConfirmQueue)},
+	})
+}
+
+func (m model) publishPermissionReplied(confirm *agentbuiltin.PendingToolUseConfirm, reply, source string) {
+	if confirm == nil || m.app == nil || m.app.Bus == nil {
+		return
+	}
+	sessionID := firstNonEmpty(strings.TrimSpace(confirm.SessionID), strings.TrimSpace(m.activeSessionID()))
+	_ = m.app.Bus.Publish(context.Background(), agentevent.Event{
+		Type:      agentevent.TypePermissionReplied,
+		SessionID: sessionID,
+		Data: agentevent.PermissionRepliedData{
+			RequestID: firstNonEmpty(strings.TrimSpace(confirm.RequestID), strings.TrimSpace(confirm.ToolUseID)),
+			Reply:     reply,
+			SessionID: sessionID,
+			ToolName:  confirm.ToolName,
+			ToolUseID: confirm.ToolUseID,
+			BashHash:  confirm.BashHash,
+			Source:    source,
+		},
+	})
+}
+
+func (m *model) startBashFollowupChat(ctx context.Context, sessionID, prompt string, reviewFix bool) tea.Cmd {
+	prompt = m.promptWithQueuedUserPrompts(prompt)
 	if reviewFix {
 		return startReviewFixChatCmd(ctx, m.appAgent(), m.chatMsgs, sessionID, m.cwd, prompt, disabledToolsForPlanMode(m.planMode))
 	}
 	return startChatCmd(ctx, m.appAgent(), m.chatMsgs, sessionID, m.cwd, prompt, disabledToolsForPlanMode(m.planMode))
 }
 
-func (m model) shouldBlockStaleBashContinuation(text string) bool {
-	if strings.TrimSpace(m.pendingBashHash) != "" || !isContinuationText(text) {
+func (m model) shouldBlockStaleBashResponse(text string) bool {
+	if m.hasPendingBashConfirm() || !isStaleBashResponseText(text) {
 		return false
 	}
 	for i := len(m.items) - 1; i >= 0; i-- {
-		if m.items[i].role != "assistant" {
+		if m.items[i].role != "assistant" && m.items[i].role != "system" {
 			continue
 		}
-		return strings.Contains(m.items[i].text, "等待你确认命令")
+		if isResumeTranscriptItem(m.items[i]) {
+			continue
+		}
+		return containsStaleBashApprovalTranscript(m.items[i].text) || strings.Contains(m.items[i].text, "等待你确认命令") || containsProseBashApprovalRequest(m.items[i].text)
 	}
 	return false
+}
+
+func isResumeTranscriptItem(item transcriptItem) bool {
+	return item.role == "system" && strings.HasPrefix(strings.TrimSpace(item.text), "Resumed session ")
+}
+
+func containsStaleBashApprovalTranscript(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.Contains(trimmed, staleBashApprovalText) || strings.Contains(trimmed, "等待你确认执行 bash 命令")
+}
+
+func containsFakeBashApprovalTranscript(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if strings.Contains(trimmed, "等待你确认执行 bash 命令") &&
+		(strings.Contains(trimmed, "tool_use_id:") || strings.Contains(trimmed, "请在下方审批面板选择")) {
+		return true
+	}
+	return containsProseBashApprovalRequest(trimmed)
+}
+
+func fakeBashApprovalTranscriptText(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "模型没有真正调用 bash 工具；这段命令确认无效。请重新要求模型调用 bash 工具发起审批。"
+	}
+	return "模型没有真正调用 bash 工具；这段命令确认无效。请重新要求模型调用 bash 工具发起审批。\n\n" + trimmed
+}
+
+func fakeBashApprovalCorrectionPrompt(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("你刚才没有调用 bash 工具，只是在普通文本里写了命令和审批文案，因此 TUI 无法弹出确认框。\n\n")
+	b.WriteString("请立即重新发起真实 bash 工具调用来执行你刚才想让我批准的命令。不要再手写“批准即跑”“请批准”“等待确认”、tool_use_id 或审批面板文字。\n\n")
+	if command := firstBashCodeBlock(trimmed); command != "" {
+		b.WriteString("你刚才写出的命令是：\n```bash\n")
+		b.WriteString(command)
+		b.WriteString("\n```\n\n")
+	}
+	b.WriteString("下一步必须调用 bash 工具。")
+	return b.String()
+}
+
+func isStaleBashResponseText(text string) bool {
+	if isContinuationText(text) || isApprove(text) || isBashApprovalChoice(text) || isReject(text) {
+		return true
+	}
+	return strings.TrimSpace(text) == "统一"
+}
+
+func containsProseBashApprovalRequest(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if !containsBashCommandBlock(trimmed) {
+		return false
+	}
+	for _, marker := range []string{"请批准", "批准即跑", "批准后", "同意后", "确认后", "你确认后", "你批准后", "批准就跑"} {
+		if strings.Contains(trimmed, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsBashCommandBlock(text string) bool {
+	return firstBashCodeBlock(text) != ""
+}
+
+func firstBashCodeBlock(text string) string {
+	trimmed := strings.TrimSpace(text)
+	for _, fence := range []string{"```bash", "```sh", "```zsh", "```shell", "```"} {
+		start := strings.Index(trimmed, fence)
+		if start < 0 {
+			continue
+		}
+		bodyStart := start + len(fence)
+		if bodyStart < len(trimmed) && trimmed[bodyStart] == '\r' {
+			bodyStart++
+		}
+		if bodyStart < len(trimmed) && trimmed[bodyStart] == '\n' {
+			bodyStart++
+		}
+		rest := trimmed[bodyStart:]
+		end := strings.Index(rest, "```")
+		if end < 0 {
+			continue
+		}
+		command := strings.TrimSpace(rest[:end])
+		if command != "" {
+			return command
+		}
+	}
+	return ""
+}
+
+func staleBashResponseWarning(text string) string {
+	if isContinuationText(text) {
+		return "没有正在等待确认的命令。请重新描述任务，或让模型重新发起需要审批的命令。"
+	}
+	return "这不是有效的本地审批。请让模型重新发起需要审批的命令，看到“是否允许执行命令”的选项后再确认。"
 }
 
 func isContinuationText(text string) bool {
@@ -3511,6 +4050,7 @@ func (m *model) movePendingChoice(delta int) bool {
 
 func (m model) handleVerticalKey(direction int) (tea.Model, tea.Cmd) {
 	if m.movePendingChoice(direction) {
+		m.syncViewport(false)
 		return m, nil
 	}
 	if m.shouldNavigateInputHistory() {
@@ -3864,6 +4404,58 @@ func (m *model) recordInputHistory(text string) {
 	m.historyDraft = ""
 }
 
+func (m *model) queueUserPrompt(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	m.recordInputHistory(text)
+	m.queuedUserPrompts = append(m.queuedUserPrompts, text)
+	m.items = append(m.items, transcriptItem{role: "user", text: text})
+	m.status = fmt.Sprintf("queued %d", len(m.queuedUserPrompts))
+	logger.Infof("tui queued user prompt while busy: queue=%d text_len=%d", len(m.queuedUserPrompts), len([]rune(text)))
+}
+
+func (m *model) promptWithQueuedUserPrompts(base string) string {
+	queued := append([]string(nil), m.queuedUserPrompts...)
+	if len(queued) == 0 {
+		return base
+	}
+	m.queuedUserPrompts = nil
+	var b strings.Builder
+	if strings.TrimSpace(base) != "" {
+		b.WriteString(strings.TrimSpace(base))
+		b.WriteString("\n\n")
+	}
+	b.WriteString("[用户在上一轮执行期间追加的提示]\n")
+	for i, prompt := range queued {
+		fmt.Fprintf(&b, "%d. %s\n", i+1, strings.TrimSpace(prompt))
+	}
+	b.WriteString("\n请在当前任务结果基础上，把这些新增提示一起处理。")
+	return strings.TrimSpace(b.String())
+}
+
+func (m *model) startQueuedUserPromptChat() (tea.Model, tea.Cmd) {
+	if len(m.queuedUserPrompts) == 0 {
+		return m, nil
+	}
+	if m.sessionID == "" {
+		m.sessionID = m.createProjectSession()
+	}
+	m.recordCurrentSession()
+	prompt := m.promptWithQueuedUserPrompts("")
+	m.busy = true
+	m.status = "running"
+	m.streamingIndex = -1
+	m.streamFlushPending = false
+	m.syncViewport(true)
+	chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
+	m.activeCancel = cancel
+	m.chatCanceled = false
+	m.chatRunID++
+	return *m, tea.Batch(startChatCmd(chatCtx, m.appAgent(), m.chatMsgs, m.sessionID, m.cwd, prompt, disabledToolsForPlanMode(m.planMode)), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
+}
+
 func (m *model) clearInputDraft() {
 	m.input.SetValue("")
 	m.clearPastedContents()
@@ -4121,16 +4713,20 @@ func (m *model) switchWorkspace(item workspaceItem) {
 	m.pendingQuestion = ""
 	m.pendingOptions = nil
 	m.pendingChoice = 0
-	m.clearPendingBashState(oldSessionID, true)
+	m.clearAllPendingToolConfirmState(oldSessionID, true)
 	if m.sessionID != "" {
 		var agent *agentruntime.Agent
 		if m.app != nil {
 			agent = m.app.Agent
 		}
 		m.items = restoreTranscript(agent, m.sessionID)
+		m.inputHistory = restoreInputHistory(agent, m.sessionID)
 	} else {
 		m.items = nil
+		m.inputHistory = nil
 	}
+	m.historyIndex = 0
+	m.historyDraft = ""
 	m.items = append(m.items, transcriptItem{role: "system", text: "Switched to " + target})
 	m.refreshContextUsage()
 	m.recordCurrentSession()
@@ -4307,6 +4903,18 @@ func (m model) activeSessionID() string {
 	return m.currentChannelSession()
 }
 
+func (m model) consumePendingToolConfirm() *agentbuiltin.PendingToolUseConfirm {
+	if m.app == nil || m.app.Agent == nil {
+		return nil
+	}
+	if sessionID := strings.TrimSpace(m.activeSessionID()); sessionID != "" {
+		if confirm := m.app.Agent.ConsumeToolUseConfirm(sessionID); confirm != nil {
+			return confirm
+		}
+	}
+	return m.app.Agent.ConsumeToolUseConfirm(channelUser)
+}
+
 type slashResult struct {
 	handled   bool
 	reply     string
@@ -4316,15 +4924,8 @@ type slashResult struct {
 
 func restoreTranscript(agent *agentruntime.Agent, sessionID string) []transcriptItem {
 	items := []transcriptItem{{role: "system", text: "Resumed session " + sessionID}}
-	if agent == nil || agent.MemoryReader() == nil || sessionID == "" {
-		return items
-	}
-	raw, err := agent.MemoryReader().LoadRaw(context.Background(), sessionID)
-	if err != nil {
-		return items
-	}
-	var msgs []*schema.Message
-	if err := json.Unmarshal(raw.Raw, &msgs); err != nil {
+	msgs := loadSessionSchemaMessages(agent, sessionID)
+	if len(msgs) == 0 {
 		return items
 	}
 	for _, msg := range msgs {
@@ -4338,9 +4939,126 @@ func restoreTranscript(agent *agentruntime.Agent, sessionID string) []transcript
 		case schema.Assistant:
 			role = "assistant"
 		}
+		if role == "assistant" && isBashApprovalPendingTranscript(msg.Content) {
+			role = "system"
+			msg.Content = staleBashApprovalTranscriptText(msg.Content)
+		}
 		items = append(items, transcriptItem{role: role, text: msg.Content})
 	}
 	return items
+}
+
+func restoreInputHistory(agent *agentruntime.Agent, sessionID string) []string {
+	msgs := loadSessionSchemaMessages(agent, sessionID)
+	if len(msgs) == 0 {
+		return nil
+	}
+	history := make([]string, 0, len(msgs))
+	for _, msg := range msgs {
+		if msg == nil || msg.Role != schema.User {
+			continue
+		}
+		text := strings.TrimSpace(msg.Content)
+		if !shouldRestoreInputHistoryText(text) {
+			continue
+		}
+		history = append(history, text)
+	}
+	return history
+}
+
+func loadSessionSchemaMessages(agent *agentruntime.Agent, sessionID string) []*schema.Message {
+	if agent == nil || agent.MemoryReader() == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	raw, err := agent.MemoryReader().LoadRaw(context.Background(), sessionID)
+	if err != nil {
+		return nil
+	}
+	var msgs []*schema.Message
+	if err := json.Unmarshal(raw.Raw, &msgs); err != nil {
+		return nil
+	}
+	return msgs
+}
+
+func shouldRestoreInputHistoryText(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	if strings.HasPrefix(text, "[TOOL_RESULT]") || strings.HasPrefix(text, "[SYSTEM]") {
+		return false
+	}
+	return true
+}
+
+func isBashApprovalPlaceholder(text string) bool {
+	return strings.TrimSpace(text) == "等待你确认命令。"
+}
+
+func isBashApprovalPendingTranscript(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return trimmed == "等待你确认命令。" || strings.HasPrefix(trimmed, "等待你确认执行 bash 命令")
+}
+
+func staleBashApprovalTranscriptText(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || trimmed == "等待你确认命令。" {
+		return staleBashApprovalText
+	}
+	return staleBashApprovalText + "\n\n" + trimmed
+}
+
+func (m *model) markPendingToolUseConfirmInTranscript(confirm *agentbuiltin.PendingToolUseConfirm) {
+	if confirm == nil {
+		return
+	}
+	text := pendingToolUseConfirmTranscriptText(confirm)
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	if strings.TrimSpace(confirm.ToolUseID) != "" {
+		for _, item := range m.items {
+			if item.role == "system" && strings.Contains(item.text, confirm.ToolUseID) {
+				return
+			}
+		}
+	}
+	for i := len(m.items) - 1; i >= 0; i-- {
+		if m.items[i].role == "assistant" && isBashApprovalPlaceholder(m.items[i].text) {
+			m.items[i].role = "system"
+			m.items[i].text = text
+			return
+		}
+	}
+	m.items = append(m.items, transcriptItem{role: "system", text: text})
+}
+
+func pendingToolUseConfirmTranscriptText(confirm *agentbuiltin.PendingToolUseConfirm) string {
+	if confirm == nil {
+		return ""
+	}
+	if strings.EqualFold(confirm.ToolName, "bash") {
+		command := strings.TrimSpace(confirm.BashCommand)
+		if command == "" {
+			command = strings.TrimSpace(strings.TrimPrefix(confirm.Question, "是否允许执行命令："))
+		}
+		var b strings.Builder
+		b.WriteString("等待你确认执行 bash 命令")
+		if strings.TrimSpace(confirm.ToolUseID) != "" {
+			b.WriteString("\n\ntool_use_id: ")
+			b.WriteString(strings.TrimSpace(confirm.ToolUseID))
+		}
+		if command != "" {
+			b.WriteString("\n\n```bash\n")
+			b.WriteString(command)
+			b.WriteString("\n```")
+		}
+		b.WriteString("\n\n请在下方审批面板选择允许或拒绝。")
+		return b.String()
+	}
+	return strings.TrimSpace(confirm.Question)
 }
 
 var startChatCmd = func(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, cwd, text string, disabledTools []string) tea.Cmd {
@@ -4351,25 +5069,93 @@ var startReviewFixChatCmd = func(ctx context.Context, agent *agentruntime.Agent,
 	return startChat(ctx, agent, out, sessionID, cwd, text, disabledTools, true)
 }
 
+type streamDeltaBatcher struct {
+	ctx context.Context
+	out chan<- tea.Msg
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func newStreamDeltaBatcher(ctx context.Context, out chan<- tea.Msg) *streamDeltaBatcher {
+	return &streamDeltaBatcher{ctx: ctx, out: out}
+}
+
+func (b *streamDeltaBatcher) Append(delta string) bool {
+	if b == nil || delta == "" {
+		return true
+	}
+	select {
+	case <-b.ctx.Done():
+		return false
+	default:
+	}
+	b.mu.Lock()
+	b.buf.WriteString(delta)
+	b.mu.Unlock()
+	return true
+}
+
+func (b *streamDeltaBatcher) Flush() bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	delta := b.buf.String()
+	b.buf.Reset()
+	b.mu.Unlock()
+	if delta == "" {
+		return true
+	}
+	select {
+	case b.out <- chatDeltaMsg{delta: delta, flushNow: true}:
+		return true
+	case <-b.ctx.Done():
+		return false
+	}
+}
+
+func startStreamDeltaBatcher(ctx context.Context, out chan<- tea.Msg, interval time.Duration) (*streamDeltaBatcher, func()) {
+	batcher := newStreamDeltaBatcher(ctx, out)
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if !batcher.Flush() {
+					return
+				}
+			case <-stop:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return batcher, func() {
+		close(stop)
+		<-stopped
+		batcher.Flush()
+	}
+}
+
 func startChat(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, cwd, text string, disabledTools []string, reviewFix bool) tea.Cmd {
 	return func() tea.Msg {
 		go func() {
 			if strings.TrimSpace(cwd) != "" {
 				agent.SetAgentFileRoots([]string{cwd})
 			}
+			batcher, flushStream := startStreamDeltaBatcher(ctx, out, streamFlushInterval)
 			reply, err := agent.ChatWithContextOptions(ctx, channelUser, channelUser, text, agentruntime.ChatOptions{
 				Channel:       channelName,
 				SessionID:     sessionID,
 				DisabledTools: disabledTools,
-				Stream: func(delta string) bool {
-					select {
-					case out <- chatDeltaMsg{delta: delta}:
-						return true
-					case <-ctx.Done():
-						return false
-					}
-				},
+				Stream:        batcher.Append,
 			})
+			flushStream()
 			out <- chatDoneMsg{reply: reply, err: err, reviewFix: reviewFix}
 		}()
 		return nil
@@ -4378,7 +5164,11 @@ func startChat(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Ms
 
 func waitForChat(ch <-chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		return <-ch
+		msg, ok := <-ch
+		if !ok {
+			return chatStreamClosedMsg{}
+		}
+		return msg
 	}
 }
 
@@ -4388,9 +5178,18 @@ func chatTimeoutCmd(runID int, timeout time.Duration) tea.Cmd {
 	})
 }
 
+func streamFlushCmd(runID int) tea.Cmd {
+	return tea.Tick(streamFlushInterval, func(time.Time) tea.Msg {
+		return streamFlushMsg{runID: runID}
+	})
+}
+
 func waitForEvent(ch <-chan agentevent.Event) tea.Cmd {
 	return func() tea.Msg {
-		e := <-ch
+		e, ok := <-ch
+		if !ok {
+			return eventStreamClosedMsg{}
+		}
 		return eventMsg{event: e}
 	}
 }
@@ -4405,6 +5204,90 @@ func (m *model) appendRunActiveEvent(label string) {
 	m.items = append(m.items, transcriptItem{role: "run-active", text: label, frame: m.runPulseFrame})
 	m.runPulseActive = true
 	m.runPulseFrame = 0
+}
+
+func pendingToolConfirmFromPermissionEvent(e agentevent.Event) *agentbuiltin.PendingToolUseConfirm {
+	if e.Type != agentevent.TypePermissionAsked {
+		return nil
+	}
+	data, ok := permissionAskedDataFromEvent(e.Data)
+	if !ok || strings.TrimSpace(data.ToolName) == "" {
+		return nil
+	}
+	command := strings.TrimSpace(data.Input["command"])
+	return &agentbuiltin.PendingToolUseConfirm{
+		RequestID:      data.RequestID,
+		SessionID:      firstNonEmpty(data.SessionID, e.SessionID),
+		ConversationID: channelUser,
+		ChannelName:    data.ChannelName,
+		DeviceID:       data.DeviceID,
+		ToolName:       data.ToolName,
+		ToolUseID:      firstNonEmpty(data.ToolUseID, data.RequestID),
+		Question:       data.Question,
+		Options:        append([]string(nil), data.Options...),
+		BashHash:       data.BashHash,
+		BashCommand:    command,
+	}
+}
+
+func isSilentPermissionEvent(e agentevent.Event) bool {
+	return e.Type == agentevent.TypePermissionShown || e.Type == agentevent.TypePermissionReplied
+}
+
+func permissionAskedDataFromEvent(data any) (agentevent.PermissionAskedData, bool) {
+	switch v := data.(type) {
+	case agentevent.PermissionAskedData:
+		return v, true
+	case map[string]any:
+		input := map[string]string{}
+		if rawInput, ok := v["input"].(map[string]any); ok {
+			for key, value := range rawInput {
+				if text, ok := value.(string); ok {
+					input[key] = text
+				}
+			}
+		} else if rawInput, ok := v["input"].(map[string]string); ok {
+			input = rawInput
+		}
+		return agentevent.PermissionAskedData{
+			RequestID:   stringMapValue(v, "request_id"),
+			Action:      stringMapValue(v, "action"),
+			Resource:    stringMapValue(v, "resource"),
+			SessionID:   stringMapValue(v, "session_id"),
+			ToolName:    stringMapValue(v, "tool_name"),
+			ToolUseID:   stringMapValue(v, "tool_use_id"),
+			Question:    stringMapValue(v, "question"),
+			Options:     stringSliceMapValue(v, "options"),
+			Input:       input,
+			BashHash:    stringMapValue(v, "bash_hash"),
+			ChannelName: stringMapValue(v, "channel_name"),
+			DeviceID:    stringMapValue(v, "device_id"),
+		}, true
+	default:
+		return agentevent.PermissionAskedData{}, false
+	}
+}
+
+func stringMapValue(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return value
+}
+
+func stringSliceMapValue(values map[string]any, key string) []string {
+	switch v := values[key].(type) {
+	case []string:
+		return append([]string(nil), v...)
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if text, ok := item.(string); ok {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func eventTranscriptItem(e agentevent.Event) transcriptItem {
@@ -4846,6 +5729,8 @@ func transcriptPlainText(items []transcriptItem) string {
 	}
 	return strings.Join(lines, "\n\n")
 }
+
+var copyTextToClipboardFunc = copyTextToClipboard
 
 func copyTextToClipboard(text string) error {
 	var cmd *exec.Cmd

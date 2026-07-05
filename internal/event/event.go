@@ -26,6 +26,7 @@ const (
 
 	// Permission events
 	TypePermissionAsked   = "permission.asked"
+	TypePermissionShown   = "permission.shown"
 	TypePermissionReplied = "permission.replied"
 
 	// Question events
@@ -114,10 +115,18 @@ type SessionDiffData struct {
 
 // PermissionAskedData is the payload for permission.asked events
 type PermissionAskedData struct {
-	RequestID string `json:"request_id"`
-	Action    string `json:"action"`
-	Resource  string `json:"resource"`
-	SessionID string `json:"session_id"`
+	RequestID   string            `json:"request_id"`
+	Action      string            `json:"action"`
+	Resource    string            `json:"resource"`
+	SessionID   string            `json:"session_id"`
+	ToolName    string            `json:"tool_name,omitempty"`
+	ToolUseID   string            `json:"tool_use_id,omitempty"`
+	Question    string            `json:"question,omitempty"`
+	Options     []string          `json:"options,omitempty"`
+	Input       map[string]string `json:"input,omitempty"`
+	BashHash    string            `json:"bash_hash,omitempty"`
+	ChannelName string            `json:"channel_name,omitempty"`
+	DeviceID    string            `json:"device_id,omitempty"`
 }
 
 // PermissionRepliedData is the payload for permission.replied events
@@ -125,6 +134,10 @@ type PermissionRepliedData struct {
 	RequestID string `json:"request_id"`
 	Reply     string `json:"reply"` // allow, reject, once
 	SessionID string `json:"session_id"`
+	ToolName  string `json:"tool_name,omitempty"`
+	ToolUseID string `json:"tool_use_id,omitempty"`
+	BashHash  string `json:"bash_hash,omitempty"`
+	Source    string `json:"source,omitempty"`
 }
 
 // QuestionAskedData is the payload for question.asked events

@@ -55,25 +55,64 @@ func TestBashPersistentSubcommandAllowsMatchingCommands(t *testing.T) {
 	}
 }
 
-func TestShellToolStoresRichApprovalOptions(t *testing.T) {
-	ctx, holder := NewAskDataHolder(context.Background())
+func TestShellToolStoresPendingToolUseConfirm(t *testing.T) {
+	ctx, askHolder := NewAskDataHolder(context.Background())
+	ctx, confirmHolder := NewToolUseConfirmHolder(ctx)
 	ctx = context.WithValue(ctx, SubAgentParentKey, "ses_policy_tool")
 	tool := NewShellTool(ShellConfig{PolicyPath: filepath.Join(t.TempDir(), "policy.json")})
 	if _, err := tool.InvokableRun(ctx, `{"command":"git diff --cached --stat"}`); err != nil {
 		t.Fatal(err)
 	}
-	ask := holder.Get()
-	if ask == nil || ask.BashHash == "" || ask.BashToolUseID == "" {
-		t.Fatalf("ask data = %#v, want bash approval", ask)
+	if ask := askHolder.Get(); ask != nil {
+		t.Fatalf("ask data = %#v, want bash approval to avoid AskData", ask)
 	}
-	if !strings.HasPrefix(ask.BashToolUseID, "toolu_bash_") {
-		t.Fatalf("BashToolUseID = %q, want toolu_bash_ prefix", ask.BashToolUseID)
+	confirm := confirmHolder.Get()
+	if confirm == nil || confirm.BashHash == "" || confirm.ToolUseID == "" {
+		t.Fatalf("confirm = %#v, want bash approval", confirm)
 	}
-	if got, ok := PendingBashToolUseID("ses_policy_tool", ask.BashHash); !ok || got != ask.BashToolUseID {
-		t.Fatalf("PendingBashToolUseID() = %q, %v; want %q, true", got, ok, ask.BashToolUseID)
+	if confirm.BashCommand != "git diff --cached --stat" {
+		t.Fatalf("BashCommand = %q, want original command", confirm.BashCommand)
 	}
-	joined := strings.Join(ask.Options, "\n")
+	if !strings.HasPrefix(confirm.ToolUseID, "toolu_bash_") {
+		t.Fatalf("ToolUseID = %q, want toolu_bash_ prefix", confirm.ToolUseID)
+	}
+	if got, ok := PendingBashToolUseID("ses_policy_tool", confirm.BashHash); !ok || got != confirm.ToolUseID {
+		t.Fatalf("PendingBashToolUseID() = %q, %v; want %q, true", got, ok, confirm.ToolUseID)
+	}
+	joined := strings.Join(confirm.Options, "\n")
 	if !strings.Contains(joined, "本会话允许此命令") || !strings.Contains(joined, "始终允许子命令") {
-		t.Fatalf("options = %#v, want rich approval options", ask.Options)
+		t.Fatalf("options = %#v, want rich approval options", confirm.Options)
+	}
+}
+
+func TestShellToolKeepsMultiplePendingApprovalsForSession(t *testing.T) {
+	ctx, confirmHolder := NewToolUseConfirmHolder(context.Background())
+	ctx = context.WithValue(ctx, SubAgentParentKey, "ses_policy_multi")
+	tool := NewShellTool(ShellConfig{PolicyPath: filepath.Join(t.TempDir(), "policy.json")})
+
+	if _, err := tool.InvokableRun(ctx, `{"command":"git status --short"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.InvokableRun(ctx, `{"command":"git diff --cached --stat"}`); err != nil {
+		t.Fatal(err)
+	}
+	confirms := confirmHolder.All()
+	if len(confirms) != 2 {
+		t.Fatalf("confirmHolder.All() len = %d, want 2: %#v", len(confirms), confirms)
+	}
+	first := confirms[0]
+	second := confirms[1]
+	if _, _, _, ok := PendingBashApproval("ses_policy_multi", first.BashHash); !ok {
+		t.Fatalf("first pending approval missing: %#v", first)
+	}
+	if _, _, _, ok := PendingBashApproval("ses_policy_multi", second.BashHash); !ok {
+		t.Fatalf("second pending approval missing: %#v", second)
+	}
+	ClearBashApprovalHash("ses_policy_multi", first.BashHash)
+	if _, _, _, ok := PendingBashApproval("ses_policy_multi", first.BashHash); ok {
+		t.Fatalf("first pending approval still present after clear")
+	}
+	if _, _, _, ok := PendingBashApproval("ses_policy_multi", second.BashHash); !ok {
+		t.Fatalf("second pending approval was cleared with first")
 	}
 }

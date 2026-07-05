@@ -185,6 +185,7 @@ func (m model) handleCodexReviewDone(msg codexReviewDoneMsg) (tea.Model, tea.Cmd
 
 func (m model) handleCodexReviewFixDone(msg chatDoneMsg) (tea.Model, tea.Cmd) {
 	loop := m.reviewLoop
+	m.streamFlushPending = false
 	if m.activeCancel != nil {
 		m.activeCancel()
 		m.activeCancel = nil

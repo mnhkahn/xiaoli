@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/mnhkahn/gogogo/logger"
+	agentbuiltin "github.com/mnhkahn/xiaoli/internal/agent/tool/builtin"
 )
 
 func TestLoadConfigEnablesLarkOnlyFromAppIDAndToken(t *testing.T) {
@@ -175,6 +176,36 @@ func TestLarkTextEventUsesSharedPipelineAndReplies(t *testing.T) {
 	replyBody := <-replyBodies
 	if !strings.Contains(replyBody, `"msg_type":"post"`) || !strings.Contains(replyBody, `收到：你好`) {
 		t.Fatalf("reply body = %s, want post reply with pipeline answer", replyBody)
+	}
+}
+
+func TestLarkPendingInteractionCardUsesToolUseConfirmValues(t *testing.T) {
+	card := larkPendingInteractionCard(ConversationReply{
+		ToolUseConfirm: &agentbuiltin.PendingToolUseConfirm{
+			ToolName:    "bash",
+			ToolUseID:   "toolu_bash_card",
+			Question:    "是否允许执行命令：git status",
+			Options:     []string{"允许一次", "拒绝"},
+			BashHash:    "hash_card",
+			BashCommand: "git status",
+		},
+	}, "oc_chat", "ou_user")
+	if card == nil {
+		t.Fatal("larkPendingInteractionCard() returned nil")
+	}
+	raw, _ := json.Marshal(card)
+	text := string(raw)
+	for _, want := range []string{
+		`"_permission_type":"tool_use_confirm"`,
+		`"_tool_name":"bash"`,
+		`"_tool_use_id":"toolu_bash_card"`,
+		`"_bash_hash":"hash_card"`,
+		`"_chat_id":"oc_chat"`,
+		`"_sender_id":"ou_user"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("card = %s, want %s", text, want)
+		}
 	}
 }
 

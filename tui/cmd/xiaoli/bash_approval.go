@@ -28,6 +28,7 @@ func bashApprovalTranscriptItem(msg bashApprovalDoneMsg) transcriptItem {
 }
 
 func formatApprovedBashFollowup(toolUseID, command, output string, err error) string {
+	err = normalizeApprovedBashError(output, err)
 	var b strings.Builder
 	writeBashToolResultHeader(&b, toolUseID)
 	if err != nil {
@@ -47,6 +48,39 @@ func formatApprovedBashFollowup(toolUseID, command, output string, err error) st
 	b.WriteString("[/TOOL_RESULT]\n\n")
 	b.WriteString("上面是你刚才请求的 bash 工具调用结果，tool_use_id 与原工具请求绑定。请基于这个结果继续完成上一项任务；如果还需要工作，直接调用下一个工具，不要只回复“开始处理”。不要重复请求执行同一条命令；如果需要新的高风险命令，再明确说明。")
 	return b.String()
+}
+
+func normalizeApprovedBashError(output string, err error) error {
+	if err != nil {
+		return err
+	}
+	if shellOutputLooksLikeError(output) {
+		return fmt.Errorf("shell reported an error in output")
+	}
+	return nil
+}
+
+func shellOutputLooksLikeError(output string) bool {
+	text := strings.TrimSpace(output)
+	if text == "" {
+		return false
+	}
+	errorMarkers := []string{
+		"zsh: no matches found:",
+		"zsh:1: no matches found:",
+		"bash: no match:",
+		"no matches found:",
+		"command not found:",
+		"permission denied:",
+		"syntax error",
+	}
+	lower := strings.ToLower(text)
+	for _, marker := range errorMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func formatExpiredBashFollowup(toolUseID, command string) string {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,11 +38,18 @@ type workspaceSession struct {
 }
 
 type workspacePicker struct {
-	items    []workspaceItem
-	selected int
-	width    int
-	height   int
-	err      string
+	items          []workspaceItem
+	selected       int
+	width          int
+	height         int
+	err            string
+	feedback       string
+	currentSummary string
+	gitByCWD       map[string]string
+	labelWidth     int
+	labels         []string
+	viewKey        string
+	view           string
 }
 
 func workspaceStatePath(dataDir string) string {
@@ -295,7 +303,13 @@ func samePath(a, b string) bool {
 }
 
 func newWorkspacePicker(items []workspaceItem, cwd string, width, height int) *workspacePicker {
-	p := &workspacePicker{items: append([]workspaceItem(nil), items...), width: width, height: height}
+	p := &workspacePicker{
+		items:          append([]workspaceItem(nil), items...),
+		width:          width,
+		height:         height,
+		currentSummary: currentWorkspaceGitSummary(cwd),
+	}
+	p.gitByCWD = workspaceGitSummariesForItems(p.items)
 	if len(p.items) == 0 {
 		p.err = "No recent projects yet"
 		return p
@@ -313,8 +327,12 @@ func (p *workspacePicker) resize(width, height int) {
 	if p == nil {
 		return
 	}
+	if p.width == width && p.height == height {
+		return
+	}
 	p.width = width
 	p.height = height
+	p.viewKey = ""
 }
 
 func (p *workspacePicker) handleKey(msg tea.KeyMsg) (workspaceItem, bool, bool) {
@@ -356,7 +374,27 @@ func (p *workspacePicker) move(delta int) {
 	if p == nil || len(p.items) == 0 {
 		return
 	}
-	p.selected = (p.selected + delta + len(p.items)) % len(p.items)
+	next := (p.selected + delta + len(p.items)) % len(p.items)
+	if next != p.selected {
+		p.selected = next
+		p.feedback = ""
+		p.viewKey = ""
+	}
+}
+
+func (p *workspacePicker) selectedSessionID() string {
+	if p == nil || p.selected < 0 || p.selected >= len(p.items) {
+		return ""
+	}
+	return strings.TrimSpace(p.items[p.selected].SessionID)
+}
+
+func (p *workspacePicker) setFeedback(text string) {
+	if p == nil {
+		return
+	}
+	p.feedback = strings.TrimSpace(text)
+	p.viewKey = ""
 }
 
 func (p *workspacePicker) View() string {
@@ -367,35 +405,63 @@ func (p *workspacePicker) View() string {
 	height := max(10, p.height)
 	bodyH := max(4, height-4)
 	bodyW := max(20, width-boxStyle.GetHorizontalFrameSize())
-	lines := []string{titleStyle.Render("Projects"), ""}
+	key := fmt.Sprintf("%d|%d|%d|%d|%s|%s|%s", width, height, bodyW, p.selected, p.err, p.feedback, p.currentSummary)
+	if key == p.viewKey {
+		return p.view
+	}
+	p.ensureLabels(bodyW - 2)
+	lines := []string{titleStyle.Render("Projects")}
+	if strings.TrimSpace(p.currentSummary) != "" {
+		lines = append(lines, hintStyle.Render(fitDisplay("current: "+p.currentSummary, bodyW)))
+	}
+	if strings.TrimSpace(p.feedback) != "" {
+		lines = append(lines, eventStyle.Render(fitDisplay(p.feedback, bodyW)))
+	}
+	lines = append(lines, "")
 	if p.err != "" {
 		lines = append(lines, eventStyle.Render(p.err))
 	} else {
-		limit := min(len(p.items), bodyH-2)
+		limit := max(0, min(len(p.items), bodyH-len(lines)))
 		start := 0
 		if p.selected >= limit {
 			start = p.selected - limit + 1
 		}
 		for i := start; i < min(len(p.items), start+limit); i++ {
-			item := p.items[i]
 			prefix := "  "
 			style := eventStyle
 			if i == p.selected {
 				prefix = "› "
 				style = explorerSelectedStyle()
 			}
-			lines = append(lines, style.Render(fitDisplay(prefix+workspaceLabel(item, bodyW-2), bodyW)))
+			label := ""
+			if i >= 0 && i < len(p.labels) {
+				label = p.labels[i]
+			}
+			lines = append(lines, style.Render(fitDisplay(prefix+label, bodyW)))
 		}
 	}
 	for len(lines) < bodyH {
 		lines = append(lines, "")
 	}
 	body := boxStyle.Width(bodyW).Height(bodyH).Render(strings.Join(lines, "\n"))
-	help := hintStyle.Render(fitDisplay("Enter switch · Tab next · Shift+Tab prev · Esc close · ↑/↓ move", width))
-	return lipgloss.JoinVertical(lipgloss.Left, body, help)
+	help := hintStyle.Render(fitDisplay("Enter switch · Ctrl+Y copy session · Tab next · Shift+Tab prev · Esc close", width))
+	p.viewKey = key
+	p.view = lipgloss.JoinVertical(lipgloss.Left, body, help)
+	return p.view
 }
 
-func workspaceLabel(item workspaceItem, width int) string {
+func (p *workspacePicker) ensureLabels(width int) {
+	if p == nil || p.labelWidth == width && len(p.labels) == len(p.items) {
+		return
+	}
+	p.labelWidth = width
+	p.labels = make([]string, len(p.items))
+	for i, item := range p.items {
+		p.labels[i] = workspaceLabel(item, width, p.gitByCWD[workspaceGitSummaryKey(item.CWD)])
+	}
+}
+
+func workspaceLabel(item workspaceItem, width int, gitSummary string) string {
 	cwd := compactPath(item.CWD, max(16, width/3))
 	title := strings.TrimSpace(item.Title)
 	if title == "" {
@@ -412,7 +478,157 @@ func workspaceLabel(item workspaceItem, width int) string {
 	if age != "" {
 		parts = append(parts, age)
 	}
+	if strings.TrimSpace(gitSummary) != "" {
+		parts = append(parts, gitSummary)
+	}
 	return strings.Join(parts, "  ")
+}
+
+type workspaceGitChanges struct {
+	Files     int
+	Staged    int
+	Unstaged  int
+	Untracked int
+	Added     int
+	Deleted   int
+}
+
+func currentWorkspaceGitSummary(cwd string) string {
+	name := cwdDisplayName(cwd)
+	state := gitSyncStateForCWD(cwd)
+	if !state.Valid {
+		return strings.TrimSpace(strings.Join([]string{name, state.Format()}, "  "))
+	}
+	changes := workspaceGitChangesForCWD(cwd)
+	parts := []string{name, state.Format()}
+	if changes.Files == 0 {
+		parts = append(parts, "clean")
+		return strings.Join(nonEmptyStrings(parts), "  ")
+	}
+	parts = append(parts, fmt.Sprintf("changed %d files", changes.Files))
+	if changes.Added > 0 || changes.Deleted > 0 {
+		parts = append(parts, fmt.Sprintf("+%d -%d", changes.Added, changes.Deleted))
+	}
+	if changes.Staged > 0 {
+		parts = append(parts, fmt.Sprintf("staged %d", changes.Staged))
+	}
+	if changes.Unstaged > 0 {
+		parts = append(parts, fmt.Sprintf("unstaged %d", changes.Unstaged))
+	}
+	if changes.Untracked > 0 {
+		parts = append(parts, fmt.Sprintf("untracked %d", changes.Untracked))
+	}
+	return strings.Join(nonEmptyStrings(parts), "  ")
+}
+
+func workspaceGitSummariesForItems(items []workspaceItem) map[string]string {
+	out := make(map[string]string)
+	for _, item := range items {
+		key := workspaceGitSummaryKey(item.CWD)
+		if key == "" {
+			continue
+		}
+		if _, ok := out[key]; ok {
+			continue
+		}
+		out[key] = compactWorkspaceGitSummary(item.CWD)
+	}
+	return out
+}
+
+func workspaceGitSummaryKey(cwd string) string {
+	if abs, err := filepath.Abs(strings.TrimSpace(cwd)); err == nil {
+		cwd = abs
+	}
+	if real, err := filepath.EvalSymlinks(cwd); err == nil {
+		cwd = real
+	}
+	return filepath.Clean(cwd)
+}
+
+func compactWorkspaceGitSummary(cwd string) string {
+	state := gitSyncStateForCWD(cwd)
+	if !state.Valid {
+		return state.Format()
+	}
+	changes := workspaceGitChangesForCWD(cwd)
+	summary := state.Format()
+	if changes.Files == 0 {
+		return summary + " clean"
+	}
+	if changes.Added > 0 || changes.Deleted > 0 {
+		summary += fmt.Sprintf(" +%d -%d", changes.Added, changes.Deleted)
+	}
+	return summary
+}
+
+func workspaceGitChangesForCWD(cwd string) workspaceGitChanges {
+	out, err := runGit(cwd, "status", "--porcelain=v1")
+	if err != nil {
+		return workspaceGitChanges{}
+	}
+	changes := parseWorkspaceGitStatus(out)
+	if out, err := runGit(cwd, "diff", "--numstat"); err == nil {
+		add, del := parseGitNumstat(out)
+		changes.Added += add
+		changes.Deleted += del
+	}
+	if out, err := runGit(cwd, "diff", "--cached", "--numstat"); err == nil {
+		add, del := parseGitNumstat(out)
+		changes.Added += add
+		changes.Deleted += del
+	}
+	return changes
+}
+
+func parseWorkspaceGitStatus(out string) workspaceGitChanges {
+	var changes workspaceGitChanges
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		changes.Files++
+		if strings.HasPrefix(line, "??") {
+			changes.Untracked++
+			continue
+		}
+		if len(line) < 2 {
+			continue
+		}
+		if line[0] != ' ' {
+			changes.Staged++
+		}
+		if line[1] != ' ' {
+			changes.Unstaged++
+		}
+	}
+	return changes
+}
+
+func parseGitNumstat(out string) (added, deleted int) {
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if n, err := strconv.Atoi(fields[0]); err == nil {
+			added += n
+		}
+		if n, err := strconv.Atoi(fields[1]); err == nil {
+			deleted += n
+		}
+	}
+	return added, deleted
+}
+
+func nonEmptyStrings(values []string) []string {
+	out := values[:0]
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func relativeAge(t time.Time) string {

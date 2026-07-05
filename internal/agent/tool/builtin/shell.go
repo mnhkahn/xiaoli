@@ -13,6 +13,7 @@ import (
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
+	"github.com/mnhkahn/gogogo/logger"
 )
 
 type ShellConfig struct {
@@ -27,11 +28,11 @@ type ShellTool struct {
 }
 
 // Global bash pending/approval stores — shared across all ShellTool instances.
-// bashPending: convID → pendingInfo — commands waiting for user approval
+// bashPending: convID → command hash → pendingInfo — commands waiting for user approval
 // bashApproved: convID → approvedHash — commands the user has approved
 var (
 	bashPendingMu  sync.Mutex
-	bashPending    = map[string]pendingInfo{}
+	bashPending    = map[string]map[string]pendingInfo{}
 	bashApprovedMu sync.Mutex
 	bashApproved   = map[string]approvedInfo{}
 )
@@ -65,7 +66,8 @@ func StoreBashApprovalChoice(convID, hash, choice string) error {
 		return nil
 	}
 	bashPendingMu.Lock()
-	p, ok := bashPending[convID]
+	pendingByHash := bashPending[convID]
+	p, ok := pendingByHash[hash]
 	bashPendingMu.Unlock()
 	if !ok || time.Now().After(p.ExpiresAt) || p.Hash != hash {
 		return nil
@@ -84,7 +86,7 @@ func StoreBashApprovalChoice(convID, hash, choice string) error {
 func PendingBashApproval(convID, hash string) (command, toolUseID string, expired, ok bool) {
 	bashPendingMu.Lock()
 	defer bashPendingMu.Unlock()
-	p, ok := bashPending[convID]
+	p, ok := bashPending[convID][hash]
 	if !ok || p.Hash != hash {
 		return "", "", false, false
 	}
@@ -95,7 +97,7 @@ func PendingBashApproval(convID, hash string) (command, toolUseID string, expire
 func PendingBashCommand(convID, hash string) (string, bool) {
 	bashPendingMu.Lock()
 	defer bashPendingMu.Unlock()
-	p, ok := bashPending[convID]
+	p, ok := bashPending[convID][hash]
 	if !ok || time.Now().After(p.ExpiresAt) || p.Hash != hash {
 		return "", false
 	}
@@ -106,7 +108,7 @@ func PendingBashCommand(convID, hash string) (string, bool) {
 func PendingBashToolUseID(convID, hash string) (string, bool) {
 	bashPendingMu.Lock()
 	defer bashPendingMu.Unlock()
-	p, ok := bashPending[convID]
+	p, ok := bashPending[convID][hash]
 	if !ok || time.Now().After(p.ExpiresAt) || p.Hash != hash {
 		return "", false
 	}
@@ -120,6 +122,22 @@ func ClearBashApproval(convID string) {
 	bashPendingMu.Unlock()
 	bashApprovedMu.Lock()
 	delete(bashApproved, convID)
+	bashApprovedMu.Unlock()
+}
+
+func ClearBashApprovalHash(convID, hash string) {
+	bashPendingMu.Lock()
+	if pendingByHash := bashPending[convID]; pendingByHash != nil {
+		delete(pendingByHash, hash)
+		if len(pendingByHash) == 0 {
+			delete(bashPending, convID)
+		}
+	}
+	bashPendingMu.Unlock()
+	bashApprovedMu.Lock()
+	if approved, ok := bashApproved[convID]; ok && approved.Hash == hash {
+		delete(bashApproved, convID)
+	}
 	bashApprovedMu.Unlock()
 }
 
@@ -159,19 +177,19 @@ func (t *ShellTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 		return "用法：bash(command=\"要执行的命令\")\n支持管道和重定向，不支持交互式命令。", nil
 	}
 
-	convID, _ := ctx.Value(SubAgentParentKey).(string)
-	if convID != "" && bashCommandAllowed(convID, cmd, t.config.PolicyPath) {
+	sessionID, _ := ctx.Value(SubAgentParentKey).(string)
+	if sessionID != "" && bashCommandAllowed(sessionID, cmd, t.config.PolicyPath) {
 		return t.execute(ctx, cmd)
 	}
 
 	// 1. Check if user has explicitly approved this command
-	if convID != "" {
+	if sessionID != "" {
 		bashApprovedMu.Lock()
-		a, hasApproved := bashApproved[convID]
+		a, hasApproved := bashApproved[sessionID]
 		bashApprovedMu.Unlock()
 		if hasApproved && time.Now().Before(a.ExpiresAt) && hashCommand(cmd) == a.Hash {
 			bashApprovedMu.Lock()
-			delete(bashApproved, convID)
+			delete(bashApproved, sessionID)
 			bashApprovedMu.Unlock()
 			return t.execute(ctx, cmd)
 		}
@@ -180,9 +198,12 @@ func (t *ShellTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 	// 2. No approval found — store pending and ask user
 	cmdHash := hashCommand(cmd)
 	toolUseID := newBashToolUseID(cmdHash)
-	if convID != "" {
+	if sessionID != "" {
 		bashPendingMu.Lock()
-		bashPending[convID] = pendingInfo{
+		if bashPending[sessionID] == nil {
+			bashPending[sessionID] = map[string]pendingInfo{}
+		}
+		bashPending[sessionID][cmdHash] = pendingInfo{
 			Command:    cmd,
 			Hash:       cmdHash,
 			ToolUseID:  toolUseID,
@@ -192,14 +213,24 @@ func (t *ShellTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 		bashPendingMu.Unlock()
 	}
 
-	question := fmt.Sprintf("是否允许执行命令：%s", cmd)
-	if holder, ok := ctx.Value(AskDataKey).(*AskDataHolder); ok {
-		holder.Set(&AskData{
-			Question:      question,
-			Options:       bashApprovalOptions(cmd, t.config.PolicyPath),
-			BashHash:      cmdHash,
-			BashToolUseID: toolUseID,
+	if holder, ok := ctx.Value(ToolUseConfirmKey).(*ToolUseConfirmHolder); ok {
+		channelName, _ := ctx.Value(SubAgentChannelKey).(string)
+		deviceID, _ := ctx.Value(SubAgentDeviceIDKey).(string)
+		logger.Infof("bash approval confirm created: session=%s channel=%s device=%s tool_use_id=%s command_len=%d", sessionID, channelName, deviceID, toolUseID, len([]rune(cmd)))
+		holder.Append(&PendingToolUseConfirm{
+			RequestID:   toolUseID,
+			SessionID:   sessionID,
+			ChannelName: channelName,
+			DeviceID:    deviceID,
+			ToolName:    "bash",
+			ToolUseID:   toolUseID,
+			Question:    fmt.Sprintf("是否允许执行命令：%s", cmd),
+			Options:     bashApprovalOptions(cmd, t.config.PolicyPath),
+			BashHash:    cmdHash,
+			BashCommand: cmd,
 		})
+	} else {
+		logger.Infof("bash approval confirm missing holder: session=%s tool_use_id=%s command_len=%d", sessionID, toolUseID, len([]rune(cmd)))
 	}
 
 	return fmt.Sprintf("命令「%s」需要您的确认，已发送审批请求，等待用户回复", cmd), nil

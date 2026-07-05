@@ -45,29 +45,31 @@ type MCPEndpointStatus struct {
 }
 
 type Agent struct {
-	modelMu         sync.Mutex
-	chatModels      map[string]*openai.ChatModel
-	modelSelector   *agentmodel.Selector
-	memory          *Memory
-	cfg             Config
-	hub             DeviceTools
-	extMCPs         []*agentmcp.Client
-	extToolSets     [][]tool.BaseTool
-	extMCPNames     []string
-	extMCPStatus    []MCPEndpointStatus
-	skillMW         adk.ChatModelAgentMiddleware // 普通 channel 用
-	a2aSkillMW      adk.ChatModelAgentMiddleware // A2A channel 用（skill 白名单）
-	recorder        *Recorder
-	sessionMgr      agentsession.Store
-	askData         map[string]*agentbuiltin.AskData
-	askDataMu       sync.Mutex
-	taskTool        *agentbuiltin.TaskTool
-	eventBus        agentevent.Publisher
-	channelSendTool tool.InvokableTool
-	fileWriteRoots  []string
-	agentFileRoots  []string
-	visionAnalyzer  agentbuiltin.VisionAnalyzer
-	recentImages    agentbuiltin.RecentImageStore
+	modelMu          sync.Mutex
+	chatModels       map[string]*openai.ChatModel
+	modelSelector    *agentmodel.Selector
+	memory           *Memory
+	cfg              Config
+	hub              DeviceTools
+	extMCPs          []*agentmcp.Client
+	extToolSets      [][]tool.BaseTool
+	extMCPNames      []string
+	extMCPStatus     []MCPEndpointStatus
+	skillMW          adk.ChatModelAgentMiddleware // 普通 channel 用
+	a2aSkillMW       adk.ChatModelAgentMiddleware // A2A channel 用（skill 白名单）
+	recorder         *Recorder
+	sessionMgr       agentsession.Store
+	askData          map[string]*agentbuiltin.AskData
+	askDataMu        sync.Mutex
+	toolUseConfirms  map[string][]*agentbuiltin.PendingToolUseConfirm
+	toolUseConfirmMu sync.Mutex
+	taskTool         *agentbuiltin.TaskTool
+	eventBus         agentevent.Publisher
+	channelSendTool  tool.InvokableTool
+	fileWriteRoots   []string
+	agentFileRoots   []string
+	visionAnalyzer   agentbuiltin.VisionAnalyzer
+	recentImages     agentbuiltin.RecentImageStore
 }
 
 const defaultAgentMaxIterations = 200
@@ -500,7 +502,7 @@ func (a *Agent) storeAskData(conversationID string, d *agentbuiltin.AskData) {
 	if d == nil {
 		return
 	}
-	logger.Infof("ask data stored: conversation=%s bash=%v question_len=%d options=%d", conversationID, d.BashHash != "", len(d.Question), len(d.Options))
+	logger.Infof("ask data stored: conversation=%s question_len=%d options=%d", conversationID, len(d.Question), len(d.Options))
 	a.askDataMu.Lock()
 	defer a.askDataMu.Unlock()
 	if a.askData == nil {
@@ -515,20 +517,153 @@ func (a *Agent) ConsumeAskData(conversationID string) *agentbuiltin.AskData {
 	d := a.askData[conversationID]
 	delete(a.askData, conversationID)
 	if d != nil {
-		logger.Infof("ask data consumed: conversation=%s bash=%v question_len=%d options=%d", conversationID, d.BashHash != "", len(d.Question), len(d.Options))
+		logger.Infof("ask data consumed: conversation=%s question_len=%d options=%d", conversationID, len(d.Question), len(d.Options))
 	}
 	return d
 }
 
-func assistantResultAfterRun(result *schema.Message, streamed string, ask *agentbuiltin.AskData) *schema.Message {
+func (a *Agent) storeToolUseConfirm(ctx context.Context, conversationID string, d *agentbuiltin.PendingToolUseConfirm) {
+	if d == nil {
+		return
+	}
+	if strings.TrimSpace(d.ConversationID) == "" {
+		d.ConversationID = conversationID
+	}
+	logger.Infof("tool use confirm stored: conversation=%s session=%s channel=%s device=%s tool=%s tool_use_id=%s options=%d", conversationID, d.SessionID, d.ChannelName, d.DeviceID, d.ToolName, d.ToolUseID, len(d.Options))
+	a.toolUseConfirmMu.Lock()
+	if a.toolUseConfirms == nil {
+		a.toolUseConfirms = make(map[string][]*agentbuiltin.PendingToolUseConfirm)
+	}
+	a.toolUseConfirms[conversationID] = appendPendingToolUseConfirm(a.toolUseConfirms[conversationID], d)
+	if strings.TrimSpace(d.SessionID) != "" && d.SessionID != conversationID {
+		a.toolUseConfirms[d.SessionID] = appendPendingToolUseConfirm(a.toolUseConfirms[d.SessionID], d)
+	}
+	a.toolUseConfirmMu.Unlock()
+	_ = a.publishToolUseConfirmEvent(ctx, d)
+}
+
+// StoreToolUseConfirmForTest stores a pending tool confirmation for tests that
+// need to exercise UI/channel consumption without running a model.
+func (a *Agent) StoreToolUseConfirmForTest(ctx context.Context, conversationID string, d *agentbuiltin.PendingToolUseConfirm) {
+	a.storeToolUseConfirm(ctx, conversationID, d)
+}
+
+func (a *Agent) publishToolUseConfirmEvent(ctx context.Context, d *agentbuiltin.PendingToolUseConfirm) error {
+	if d == nil {
+		return nil
+	}
+	requestID := strings.TrimSpace(d.RequestID)
+	if requestID == "" {
+		requestID = strings.TrimSpace(d.ToolUseID)
+	}
+	input := map[string]string{}
+	if strings.EqualFold(d.ToolName, "bash") && strings.TrimSpace(d.BashCommand) != "" {
+		input["command"] = d.BashCommand
+	}
+	sessionID := strings.TrimSpace(d.SessionID)
+	return publishRunEvent(ctx, a.eventBus, agentevent.TypePermissionAsked, sessionID, agentevent.PermissionAskedData{
+		RequestID:   requestID,
+		Action:      "use_tool",
+		Resource:    d.ToolName,
+		SessionID:   sessionID,
+		ToolName:    d.ToolName,
+		ToolUseID:   d.ToolUseID,
+		Question:    d.Question,
+		Options:     append([]string(nil), d.Options...),
+		Input:       input,
+		BashHash:    d.BashHash,
+		ChannelName: d.ChannelName,
+		DeviceID:    d.DeviceID,
+	})
+}
+
+func (a *Agent) ConsumeToolUseConfirm(conversationID string) *agentbuiltin.PendingToolUseConfirm {
+	a.toolUseConfirmMu.Lock()
+	defer a.toolUseConfirmMu.Unlock()
+	queue := a.toolUseConfirms[conversationID]
+	var d *agentbuiltin.PendingToolUseConfirm
+	if len(queue) > 0 {
+		d = queue[0]
+		queue = queue[1:]
+		if len(queue) == 0 {
+			delete(a.toolUseConfirms, conversationID)
+		} else {
+			a.toolUseConfirms[conversationID] = queue
+		}
+	}
+	if d != nil {
+		if strings.TrimSpace(d.ConversationID) != "" {
+			a.removeToolUseConfirmLocked(d.ConversationID, d)
+		}
+		if strings.TrimSpace(d.SessionID) != "" {
+			a.removeToolUseConfirmLocked(d.SessionID, d)
+		}
+		logger.Infof("tool use confirm consumed: key=%s conversation=%s session=%s tool=%s tool_use_id=%s options=%d", conversationID, d.ConversationID, d.SessionID, d.ToolName, d.ToolUseID, len(d.Options))
+	} else {
+		keys := make([]string, 0, len(a.toolUseConfirms))
+		for key := range a.toolUseConfirms {
+			keys = append(keys, key)
+		}
+		logger.Infof("tool use confirm consume miss: key=%s pending_keys=%v", conversationID, keys)
+	}
+	return d
+}
+
+func appendPendingToolUseConfirm(queue []*agentbuiltin.PendingToolUseConfirm, d *agentbuiltin.PendingToolUseConfirm) []*agentbuiltin.PendingToolUseConfirm {
+	if d == nil {
+		return queue
+	}
+	for _, existing := range queue {
+		if samePendingToolUseConfirm(existing, d) {
+			return queue
+		}
+	}
+	return append(queue, d)
+}
+
+func (a *Agent) removeToolUseConfirmLocked(key string, d *agentbuiltin.PendingToolUseConfirm) {
+	if strings.TrimSpace(key) == "" || d == nil {
+		return
+	}
+	queue := a.toolUseConfirms[key]
+	if len(queue) == 0 {
+		return
+	}
+	filtered := queue[:0]
+	for _, existing := range queue {
+		if !samePendingToolUseConfirm(existing, d) {
+			filtered = append(filtered, existing)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(a.toolUseConfirms, key)
+		return
+	}
+	a.toolUseConfirms[key] = filtered
+}
+
+func samePendingToolUseConfirm(a, b *agentbuiltin.PendingToolUseConfirm) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if strings.TrimSpace(a.ToolUseID) != "" && strings.TrimSpace(b.ToolUseID) != "" {
+		return a.ToolUseID == b.ToolUseID
+	}
+	return a == b
+}
+
+func assistantResultAfterRun(result *schema.Message, streamed string, ask *agentbuiltin.AskData, confirm *agentbuiltin.PendingToolUseConfirm) *schema.Message {
+	if ask != nil {
+		return schema.AssistantMessage(askPendingContent(ask), nil)
+	}
 	if streamed != "" {
 		return schema.AssistantMessage(streamed, nil)
 	}
 	if result != nil && result.Content != "" {
 		return result
 	}
-	if ask != nil {
-		return schema.AssistantMessage(askPendingContent(ask), nil)
+	if confirm != nil {
+		return schema.AssistantMessage(toolUseConfirmPendingContent(confirm), nil)
 	}
 	return schema.AssistantMessage("命令或工具已执行完成，但模型没有生成后续回复。你可以继续输入下一步，或查看上面的工具结果。", nil)
 }
@@ -537,14 +672,31 @@ func askPendingContent(ask *agentbuiltin.AskData) string {
 	if ask == nil {
 		return ""
 	}
-	if ask.BashHash != "" {
-		return "等待你确认命令。"
-	}
 	question := strings.TrimSpace(ask.Question)
 	if question == "" {
 		return "等待你的选择。"
 	}
 	return "等待你的选择：" + question
+}
+
+func toolUseConfirmPendingContent(confirm *agentbuiltin.PendingToolUseConfirm) string {
+	if confirm == nil {
+		return ""
+	}
+	if strings.EqualFold(confirm.ToolName, "bash") {
+		return bashApprovalPendingContent(confirm)
+	}
+	question := strings.TrimSpace(confirm.Question)
+	if question == "" {
+		question = "等待你确认工具调用。"
+	}
+	var b strings.Builder
+	b.WriteString(question)
+	if strings.TrimSpace(confirm.ToolUseID) != "" {
+		b.WriteString("\n\ntool_use_id: ")
+		b.WriteString(confirm.ToolUseID)
+	}
+	return b.String()
 }
 
 func (a *Agent) CompressSession(ctx context.Context, memoryID string) (string, error) {
@@ -700,6 +852,8 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 
 	var askHolder *agentbuiltin.AskDataHolder
 	ctx, askHolder = agentbuiltin.NewAskDataHolder(ctx)
+	var toolUseConfirmHolder *agentbuiltin.ToolUseConfirmHolder
+	ctx, toolUseConfirmHolder = agentbuiltin.NewToolUseConfirmHolder(ctx)
 	var sendStatus *agentbuiltin.ChannelSendStatus
 	ctx, sendStatus = agentbuiltin.NewChannelSendStatus(ctx)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, memoryID)
@@ -823,7 +977,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	if err != nil {
 		if sendStatus.Sent() {
 			logger.Infof("Agent.Chat completed after channel_send despite runner error: %v", err)
-			return a.completeAfterChannelSend(ctx, conversationID, memoryID, usingSession, channelName, channelUser, epochToday, history, userText, askHolder), nil
+			return a.completeAfterChannelSend(ctx, conversationID, memoryID, usingSession, channelName, channelUser, epochToday, history, userText, askHolder, toolUseConfirmHolder), nil
 		}
 		_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": err.Error()})
 		return "", fmt.Errorf("agent error: %w", err)
@@ -836,7 +990,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 			logger.Infof("Agent.Chat event error: %v", event.Err)
 			if sendStatus.Sent() {
 				logger.Infof("Agent.Chat completed after channel_send despite event error: %v", event.Err)
-				return a.completeAfterChannelSend(ctx, conversationID, memoryID, usingSession, channelName, channelUser, epochToday, history, userText, askHolder), nil
+				return a.completeAfterChannelSend(ctx, conversationID, memoryID, usingSession, channelName, channelUser, epochToday, history, userText, askHolder, toolUseConfirmHolder), nil
 			}
 			_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": event.Err.Error()})
 			return "", fmt.Errorf("agent error: %w", event.Err)
@@ -872,7 +1026,14 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		}
 	}
 	ask := askHolder.Get()
-	result = assistantResultAfterRun(result, streamed.String(), ask)
+	confirm := toolUseConfirmHolder.Get()
+	confirms := toolUseConfirmHolder.All()
+	resultLen := 0
+	if result != nil {
+		resultLen = len([]rune(result.Content))
+	}
+	logger.Infof("Agent.Chat post-run pending: ask=%v confirms=%d conversation=%s memory=%s streamed_len=%d result_len=%d", ask != nil, len(confirms), conversationID, memoryID, streamed.Len(), resultLen)
+	result = assistantResultAfterRun(result, streamed.String(), ask, confirm)
 
 	updated := append(history,
 		schema.UserMessage(userText),
@@ -891,6 +1052,9 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	if ask != nil {
 		a.storeAskData(conversationID, ask)
 	}
+	for _, confirm := range confirms {
+		a.storeToolUseConfirm(ctx, conversationID, confirm)
+	}
 
 	_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunCompleted, memoryID, map[string]any{
 		"message_len": len(result.Content),
@@ -899,7 +1063,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	return result.Content, nil
 }
 
-func (a *Agent) completeAfterChannelSend(ctx context.Context, conversationID string, memoryID string, usingSession bool, channelName string, channelUser string, epochToday string, history []*schema.Message, userText string, askHolder *agentbuiltin.AskDataHolder) string {
+func (a *Agent) completeAfterChannelSend(ctx context.Context, conversationID string, memoryID string, usingSession bool, channelName string, channelUser string, epochToday string, history []*schema.Message, userText string, askHolder *agentbuiltin.AskDataHolder, toolUseConfirmHolder *agentbuiltin.ToolUseConfirmHolder) string {
 	result := schema.AssistantMessage("已发送。", nil)
 	updated := append(history,
 		schema.UserMessage(userText),
@@ -915,6 +1079,9 @@ func (a *Agent) completeAfterChannelSend(ctx context.Context, conversationID str
 	}
 	if ask := askHolder.Get(); ask != nil {
 		a.storeAskData(conversationID, ask)
+	}
+	for _, confirm := range toolUseConfirmHolder.All() {
+		a.storeToolUseConfirm(ctx, conversationID, confirm)
 	}
 	_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunCompleted, memoryID, map[string]any{
 		"message_len": len(result.Content),
@@ -934,7 +1101,7 @@ func (a *Agent) toolGuide(interactive bool) string {
 	• websearch — 搜索网络。用于查询实时信息、最新新闻、事件和知识。`)
 	if a.cfg.BashConfig.Enabled {
 		b.WriteString(`
-	• bash — 执行 shell 命令。用于系统诊断、查看状态、运行脚本。所有命令均需用户确认。`)
+	• bash — 执行 shell 命令。用于系统诊断、查看状态、运行脚本。需要执行命令时必须调用 bash 工具，不能只描述命令或让用户复制执行。所有命令均需用户确认；确认 UI 只能由 bash 工具触发，禁止手写“等待你确认执行 bash 命令”、tool_use_id、审批面板或类似确认块。`)
 	}
 	if interactive {
 		b.WriteString(`
@@ -956,6 +1123,26 @@ func (a *Agent) toolGuide(interactive bool) string {
 	}
 	b.WriteString(`
 • MCP tools — 外部 MCP 协议工具，按需调用。`)
+	return b.String()
+}
+
+func bashApprovalPendingContent(confirm *agentbuiltin.PendingToolUseConfirm) string {
+	command := strings.TrimSpace(confirm.BashCommand)
+	if command == "" {
+		command = strings.TrimSpace(strings.TrimPrefix(confirm.Question, "是否允许执行命令："))
+	}
+	var b strings.Builder
+	b.WriteString("等待你确认执行 bash 命令")
+	if strings.TrimSpace(confirm.ToolUseID) != "" {
+		b.WriteString("\n\ntool_use_id: ")
+		b.WriteString(strings.TrimSpace(confirm.ToolUseID))
+	}
+	if command != "" {
+		b.WriteString("\n\n```bash\n")
+		b.WriteString(command)
+		b.WriteString("\n```")
+	}
+	b.WriteString("\n\n请在下方审批面板选择允许或拒绝。")
 	return b.String()
 }
 

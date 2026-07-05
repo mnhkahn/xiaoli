@@ -347,8 +347,9 @@ type ConversationTurn struct {
 }
 
 type ConversationReply struct {
-	Text    string
-	AskData *agentbuiltin.AskData
+	Text           string
+	AskData        *agentbuiltin.AskData
+	ToolUseConfirm *agentbuiltin.PendingToolUseConfirm
 }
 
 type DeviceVoiceFactory struct{}
@@ -472,18 +473,21 @@ func (p *ConversationPipeline) Run(ctx context.Context, turn ConversationTurn) (
 				text = "我现在还没想好怎么回答。"
 			}
 			reply := ConversationReply{Text: text}
-			return p.withAskData(reply, turn.ConversationID), nil
+			return p.withPendingInteractions(reply, turn.ConversationID), nil
 		}
 		reply := ConversationReply{Text: fmt.Sprintf("我现在回答不了。错误原因：%v。", err)}
-		return p.withAskData(reply, turn.ConversationID), nil
+		return p.withPendingInteractions(reply, turn.ConversationID), nil
 	}
 	return p.runDirect(ctx, turn)
 }
 
-func (p *ConversationPipeline) withAskData(reply ConversationReply, conversationID string) ConversationReply {
+func (p *ConversationPipeline) withPendingInteractions(reply ConversationReply, conversationID string) ConversationReply {
 	if p.agent != nil {
 		if ask := p.agent.ConsumeAskData(conversationID); ask != nil {
 			reply.AskData = ask
+		}
+		if confirm := p.agent.ConsumeToolUseConfirm(conversationID); confirm != nil {
+			reply.ToolUseConfirm = confirm
 		}
 	}
 	return reply
@@ -520,7 +524,7 @@ func (p *ConversationPipeline) runDirect(ctx context.Context, turn ConversationT
 	if answer == "" {
 		answer = "我现在还没想好怎么回答。"
 	}
-	return p.withAskData(ConversationReply{Text: answer}, turn.ConversationID), nil
+	return p.withPendingInteractions(ConversationReply{Text: answer}, turn.ConversationID), nil
 }
 
 func DefinitionChatReact(agent agentworkflow.AgentSpec) agentworkflow.Definition {
@@ -717,6 +721,63 @@ func pickLarkReaction() string {
 	return larkProcessingEmojis[rand.Intn(len(larkProcessingEmojis))]
 }
 
+func larkPendingInteractionCard(reply ConversationReply, chatID, senderID string) map[string]any {
+	if reply.ToolUseConfirm != nil {
+		confirm := reply.ToolUseConfirm
+		values := map[string]string{
+			"_chat_id":         chatID,
+			"_sender_id":       senderID,
+			"_permission_type": "tool_use_confirm",
+			"_tool_name":       confirm.ToolName,
+			"_tool_use_id":     confirm.ToolUseID,
+		}
+		if strings.EqualFold(confirm.ToolName, "bash") && confirm.BashHash != "" {
+			values["_bash_hash"] = confirm.BashHash
+		}
+		return larkAskCardWithValues(confirm.Question, confirm.Options, values)
+	}
+	if reply.AskData != nil {
+		return larkAskCardWithValues(reply.AskData.Question, reply.AskData.Options, map[string]string{
+			"_chat_id":   chatID,
+			"_sender_id": senderID,
+		})
+	}
+	return nil
+}
+
+func larkAskCardWithValues(question string, options []string, values map[string]string) map[string]any {
+	card := agentslash.AskLarkCard(question, options)
+	var cardBody map[string]any
+	if json.Unmarshal([]byte(card), &cardBody) != nil {
+		return nil
+	}
+	delete(cardBody, "_lark_card")
+	elements, _ := cardBody["elements"].([]any)
+	for _, elem := range elements {
+		m, ok := elem.(map[string]any)
+		if !ok || m["tag"] != "action" {
+			continue
+		}
+		actions, _ := m["actions"].([]any)
+		for _, act := range actions {
+			a, ok := act.(map[string]any)
+			if !ok {
+				continue
+			}
+			v, ok := a["value"].(map[string]any)
+			if !ok {
+				continue
+			}
+			for key, value := range values {
+				if value != "" {
+					v[key] = value
+				}
+			}
+		}
+	}
+	return cardBody
+}
+
 func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCallback) error {
 	var event larkMessageEvent
 	if err := json.Unmarshal(callback.Event, &event); err != nil {
@@ -816,36 +877,11 @@ func (s *AdminServer) handleLarkTextMessage(ctx context.Context, callback larkCa
 		return fmt.Errorf("lark conversation returned empty reply")
 	}
 
-	if askData := reply.AskData; askData != nil {
-		card := agentslash.AskLarkCard(askData.Question, askData.Options)
-		var cardBody map[string]any
-		if json.Unmarshal([]byte(card), &cardBody) == nil {
-			delete(cardBody, "_lark_card")
-			if elements, ok := cardBody["elements"].([]any); ok {
-				for _, elem := range elements {
-					if m, ok := elem.(map[string]any); ok && m["tag"] == "action" {
-						if actions, ok := m["actions"].([]any); ok {
-							for _, act := range actions {
-								if a, ok := act.(map[string]any); ok {
-									if v, ok := a["value"].(map[string]any); ok {
-										v["_chat_id"] = event.Message.ChatID
-										v["_sender_id"] = senderID
-										if askData.BashHash != "" {
-											v["_bash_type"] = "bash"
-											v["_bash_hash"] = askData.BashHash
-										}
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-			if err := sendReply("lark", func(sendCtx context.Context) error {
-				return lc.ReplyCard(sendCtx, event.Message.MessageID, cardBody)
-			}); err != nil {
-				logger.Infof("[lark] ask card send failed: %v", err)
-			}
+	if cardBody := larkPendingInteractionCard(reply, event.Message.ChatID, senderID); cardBody != nil {
+		if err := sendReply("lark", func(sendCtx context.Context) error {
+			return lc.ReplyCard(sendCtx, event.Message.MessageID, cardBody)
+		}); err != nil {
+			logger.Infof("[lark] pending interaction card send failed: %v", err)
 		}
 	}
 
@@ -882,7 +918,19 @@ func (s *AdminServer) handleLarkCardAction(ctx context.Context, w http.ResponseW
 
 	if chatID != "" && senderID != "" && s.conversation != nil {
 		formatter := agentlark.NewReplyFormatter(lc, actionEvent.OpenMessageID, selected)
-		if actionEvent.Action.Value["_bash_type"] == "bash" {
+		if actionEvent.Action.Value["_permission_type"] == "tool_use_confirm" && actionEvent.Action.Value["_tool_name"] == "bash" {
+			bashHash := actionEvent.Action.Value["_bash_hash"]
+			if bashHash != "" && senderID != "" && actionEvent.OpenID == senderID {
+				if s.agent != nil && s.agent.SessionManager() != nil {
+					sid := s.agent.SessionManager().GetChannelSession(ctx, string(ChannelLarkText), senderID)
+					if sid != "" {
+						if err := agentbuiltin.StoreBashApprovalChoice(sid, bashHash, selected); err != nil {
+							logger.Infof("[lark] bash approval choice failed sid=%s tool_use_id=%s err=%v", sid, actionEvent.Action.Value["_tool_use_id"], err)
+						}
+					}
+				}
+			}
+		} else if actionEvent.Action.Value["_bash_type"] == "bash" {
 			bashHash := actionEvent.Action.Value["_bash_hash"]
 			if bashHash != "" && senderID != "" && actionEvent.OpenID == senderID {
 				if s.agent != nil && s.agent.SessionManager() != nil {
@@ -901,34 +949,9 @@ func (s *AdminServer) handleLarkCardAction(ctx context.Context, w http.ResponseW
 		if err != nil {
 			logger.Infof("[lark] card action conversation error: %v", err)
 		} else if reply.Text != "" {
-			if reply.AskData != nil {
-				card := agentslash.AskLarkCard(reply.AskData.Question, reply.AskData.Options)
-				var cardBody map[string]any
-				if json.Unmarshal([]byte(card), &cardBody) == nil {
-					delete(cardBody, "_lark_card")
-					if elements, ok := cardBody["elements"].([]any); ok {
-						for _, elem := range elements {
-							if m, ok := elem.(map[string]any); ok && m["tag"] == "action" {
-								if actions, ok := m["actions"].([]any); ok {
-									for _, act := range actions {
-										if a, ok := act.(map[string]any); ok {
-											if v, ok := a["value"].(map[string]any); ok {
-												v["_chat_id"] = chatID
-												v["_sender_id"] = senderID
-												if reply.AskData.BashHash != "" {
-													v["_bash_type"] = "bash"
-													v["_bash_hash"] = reply.AskData.BashHash
-												}
-											}
-										}
-									}
-								}
-							}
-						}
-					}
-					if err := lc.ReplyCard(ctx, actionEvent.OpenMessageID, cardBody); err != nil {
-						logger.Infof("[lark] card action ask card send failed: %v", err)
-					}
+			if cardBody := larkPendingInteractionCard(reply, chatID, senderID); cardBody != nil {
+				if err := lc.ReplyCard(ctx, actionEvent.OpenMessageID, cardBody); err != nil {
+					logger.Infof("[lark] card action pending interaction card send failed: %v", err)
 				}
 			}
 			if err := formatter.Send(ctx, reply.Text); err != nil {
@@ -1396,7 +1419,16 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 		reply = ConversationReply{Text: "抱歉，我暂时无法回答。"}
 	}
 
-	if askData := reply.AskData; askData != nil {
+	if confirm := reply.ToolUseConfirm; confirm != nil {
+		textReply := agentslash.AskText(confirm.Question, confirm.Options)
+		if err := sendReply("wechat", func(sendCtx context.Context) error {
+			return formatter.Send(sendCtx, textReply)
+		}); err != nil {
+			logger.Infof("[wechat] tool use confirm text send error: %v", err)
+		} else {
+			logger.Infof("[wechat] tool use confirm text sent to=%s tool=%s tool_use_id=%s", msg.FromUserID, confirm.ToolName, confirm.ToolUseID)
+		}
+	} else if askData := reply.AskData; askData != nil {
 		textReply := agentslash.AskText(askData.Question, askData.Options)
 		if err := sendReply("wechat", func(sendCtx context.Context) error {
 			return formatter.Send(sendCtx, textReply)
