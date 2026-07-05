@@ -208,6 +208,82 @@ func TestDiffExplorerRenderRightShowsSelectionOverlay(t *testing.T) {
 	}
 }
 
+func TestDiffExplorerShowsStagedOnlyDiff(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runGit(dir, "init"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "Dockerfile")
+	if err := os.WriteFile(path, []byte("FROM debian\nRUN apt-get install -y git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(dir, "add", "Dockerfile"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(dir, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "init"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("FROM debian\nRUN apt-get install -y git poppler-utils antiword\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(dir, "add", "Dockerfile"); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := explorerEntry{Path: "Dockerfile", Status: "M", Staged: true}
+	diff, err := fileDiff(dir, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "poppler-utils antiword") {
+		t.Fatalf("fileDiff(staged-only) = %q, want cached diff", diff)
+	}
+
+	ex := &tuiExplorer{
+		mode:        explorerDiff,
+		cwd:         dir,
+		width:       120,
+		height:      30,
+		leftWidth:   explorerLeftWidth(120),
+		entries:     []explorerEntry{entry},
+		selected:    0,
+		preview:     diff,
+		previewRaw:  diff,
+		previewPath: entry.Path,
+	}
+	if plain := stripTestANSI(ex.renderRight(70, 20)); !strings.Contains(plain, "poppler-utils antiword") {
+		t.Fatalf("renderRight(staged-only) = %q, want cached diff", plain)
+	}
+}
+
+func TestDiffExplorerMouseClickSelectsWithoutTogglingStage(t *testing.T) {
+	ex := &tuiExplorer{
+		mode:      explorerDiff,
+		width:     100,
+		height:    30,
+		leftWidth: explorerLeftWidth(100),
+		entries: []explorerEntry{
+			{Path: "a.go", Status: " M"},
+			{Path: "b.go", Status: "M", Staged: true},
+		},
+		selected: 0,
+		preview:  "old preview",
+	}
+
+	if !ex.handleMouse(tea.MouseMsg{Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: 2, Y: 4}) {
+		t.Fatalf("mouse click was not handled")
+	}
+	if ex.selected != 1 {
+		t.Fatalf("selected = %d, want 1", ex.selected)
+	}
+	if !ex.entries[1].Staged {
+		t.Fatalf("click toggled staged state")
+	}
+	if !strings.Contains(ex.preview, "No diff for b.go") {
+		t.Fatalf("preview = %q, want selected file preview", ex.preview)
+	}
+}
+
 func TestExplorerRefreshPreviewClearsSelection(t *testing.T) {
 	ex := &tuiExplorer{
 		mode:      explorerDiff,

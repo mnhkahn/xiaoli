@@ -770,8 +770,7 @@ func TestCodexReviewLoopsIntoFixAndNextRound(t *testing.T) {
 	if len(got.items) < 2 || got.items[len(got.items)-2].role != "assistant" || !strings.Contains(got.items[len(got.items)-2].text, "第 1 轮审查发现问题") || !strings.Contains(got.items[len(got.items)-2].text, "[P1] fix bug") {
 		t.Fatalf("review findings not printed before fix: %#v", got.items)
 	}
-	msg := cmd()
-	next, cmd = got.Update(msg)
+	next, cmd = got.Update(chatDoneMsg{reply: "fixed", reviewFix: true})
 	got = next.(model)
 	if cmd == nil {
 		t.Fatalf("review fix completion returned nil next review command")
@@ -781,6 +780,17 @@ func TestCodexReviewLoopsIntoFixAndNextRound(t *testing.T) {
 	}
 	if got.items[len(got.items)-1].role != "run-active" || got.items[len(got.items)-1].text != "Codex review 2/3" {
 		t.Fatalf("items = %#v, want round 2 active event", got.items)
+	}
+}
+
+func TestCodexReviewFixPromptTruncatesLargeFindings(t *testing.T) {
+	large := strings.Repeat("审查问题", 10000)
+	prompt := codexReviewFixPrompt(large, codexReviewLoop{Round: 1, MaxRounds: 3})
+	if !strings.Contains(prompt, "已截断") {
+		t.Fatalf("fix prompt missing truncation marker")
+	}
+	if len([]rune(prompt)) > maxCodexReviewFixPromptChars+1000 {
+		t.Fatalf("fix prompt length = %d, want bounded", len([]rune(prompt)))
 	}
 }
 
@@ -818,6 +828,66 @@ func TestReviewFixBashFollowupKeepsReviewLoop(t *testing.T) {
 	}
 	if !called {
 		t.Fatalf("bash followup did not use review-fix chat path")
+	}
+}
+
+func TestCtrlCPrioritizedOverExplorerAndPicker(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		m    model
+	}{
+		{
+			name: "explorer",
+			m: model{
+				input:    textinput.New(),
+				explorer: &tuiExplorer{mode: explorerDiff},
+			},
+		},
+		{
+			name: "workspace picker",
+			m: model{
+				input:           textinput.New(),
+				workspacePicker: &workspacePicker{},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next, cmd := tc.m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+			got := next.(model)
+			if cmd == nil {
+				t.Fatalf("ctrl+c returned nil command")
+			}
+			if !got.quitting || got.busy {
+				t.Fatalf("ctrl+c model quitting=%v busy=%v", got.quitting, got.busy)
+			}
+		})
+	}
+}
+
+func TestChatTimeoutStopsBusyRun(t *testing.T) {
+	canceled := false
+	m := model{
+		busy:           true,
+		status:         "running",
+		chatRunID:      7,
+		activeCancel:   func() { canceled = true },
+		runPulseActive: true,
+		reviewLoop:     codexReviewLoop{Active: true, Round: 1, MaxRounds: 3},
+	}
+
+	next, cmd := m.Update(chatTimeoutMsg{runID: 7})
+	got := next.(model)
+	if cmd == nil {
+		t.Fatalf("timeout returned nil command, want waitForEvent")
+	}
+	if !canceled {
+		t.Fatalf("timeout did not cancel active call")
+	}
+	if got.busy || got.status != "idle" || got.runPulseActive || got.reviewLoop.Active {
+		t.Fatalf("timeout model busy=%v status=%q pulse=%v review=%#v", got.busy, got.status, got.runPulseActive, got.reviewLoop)
+	}
+	if len(got.items) == 0 || got.items[len(got.items)-1].role != "error" {
+		t.Fatalf("timeout items = %#v, want error", got.items)
 	}
 }
 

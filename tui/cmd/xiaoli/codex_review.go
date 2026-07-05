@@ -29,6 +29,10 @@ type codexReviewLoop struct {
 
 const defaultCodexReviewMaxRounds = 3
 
+const maxCodexReviewFixPromptChars = 20000
+
+const maxCodexReviewDisplayChars = 40000
+
 const codexReviewChinesePrompt = "请用中文输出审查结论。若发现问题，请按严重程度列出问题、文件路径和修复建议；若没有问题，请明确说明未发现问题。"
 
 func (m *model) startCodexReviewSlash(text string) tea.Cmd {
@@ -49,7 +53,7 @@ func (m *model) startCodexReviewSlash(text string) tea.Cmd {
 		Args:      append([]string(nil), args...),
 		CWD:       m.cwd,
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
 	m.activeCancel = cancel
 	m.chatCanceled = false
 	return startCodexReview(ctx, m.cwd, args)
@@ -116,7 +120,8 @@ func codexReviewPassed(output string) bool {
 }
 
 func codexReviewFixPrompt(output string, loop codexReviewLoop) string {
-	return fmt.Sprintf("Fix the following Codex review findings from round %d/%d.\n\nReview findings:\n%s\n\nRequirements:\n- Apply the necessary code changes in the current repository.\n- Keep changes focused on the review findings.\n- Do not create commits.\n- After fixing, stop and summarize what changed.", loop.Round, loop.MaxRounds, strings.TrimSpace(output))
+	findings := truncateRunes(strings.TrimSpace(output), maxCodexReviewFixPromptChars)
+	return fmt.Sprintf("Fix the following Codex review findings from round %d/%d.\n\nReview findings:\n%s\n\nRequirements:\n- Apply the necessary code changes in the current repository.\n- Keep changes focused on the review findings.\n- Do not create commits.\n- After fixing, stop and summarize what changed.", loop.Round, loop.MaxRounds, findings)
 }
 
 func (m model) handleCodexReviewDone(msg codexReviewDoneMsg) (tea.Model, tea.Cmd) {
@@ -174,7 +179,8 @@ func (m model) handleCodexReviewDone(msg codexReviewDoneMsg) (tea.Model, tea.Cmd
 	ctx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
 	m.activeCancel = cancel
 	m.chatCanceled = false
-	return m, startReviewFixChatCmd(ctx, m.appAgent(), m.chatMsgs, m.sessionID, loop.CWD, codexReviewFixPrompt(output, loop), nil)
+	m.chatRunID++
+	return m, tea.Batch(startReviewFixChatCmd(ctx, m.appAgent(), m.chatMsgs, m.sessionID, loop.CWD, codexReviewFixPrompt(output, loop), nil), waitForChat(m.chatMsgs), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
 }
 
 func (m model) handleCodexReviewFixDone(msg chatDoneMsg) (tea.Model, tea.Cmd) {
@@ -210,14 +216,25 @@ func (m model) handleCodexReviewFixDone(msg chatDoneMsg) (tea.Model, tea.Cmd) {
 	m.runPulseActive = true
 	m.items = append(m.items, transcriptItem{role: "run-active", text: loop.reviewLabel(), frame: m.runPulseFrame})
 	m.syncViewport(true)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
 	m.activeCancel = cancel
 	m.chatCanceled = false
 	return m, startCodexReview(ctx, loop.CWD, loop.Args)
 }
 
 func formatCodexReviewFindings(output string, loop codexReviewLoop) string {
-	return fmt.Sprintf("第 %d 轮审查发现问题：\n\n%s", max(1, loop.Round), strings.TrimSpace(output))
+	return fmt.Sprintf("第 %d 轮审查发现问题：\n\n%s", max(1, loop.Round), truncateRunes(strings.TrimSpace(output), maxCodexReviewDisplayChars))
+}
+
+func truncateRunes(text string, maxChars int) string {
+	if maxChars <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) <= maxChars {
+		return text
+	}
+	return string(runes[:maxChars]) + fmt.Sprintf("\n\n[已截断：原始内容 %d 字符，仅保留前 %d 字符。]", len(runes), maxChars)
 }
 
 func (m model) appAgent() *agentruntime.Agent {

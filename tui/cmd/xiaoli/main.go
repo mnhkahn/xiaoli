@@ -64,6 +64,10 @@ type chatDoneMsg struct {
 	reviewFix bool
 }
 
+type chatTimeoutMsg struct {
+	runID int
+}
+
 const defaultChatTimeout = 10 * time.Minute
 
 type chatDeltaMsg struct {
@@ -194,6 +198,7 @@ type model struct {
 	chatMsgs             chan tea.Msg
 	activeCancel         context.CancelFunc
 	chatCanceled         bool
+	chatRunID            int
 	input                textinput.Model
 	inputHistory         []string
 	historyIndex         int
@@ -557,6 +562,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		return m, vpCmd
 	case tea.KeyMsg:
+		if msg.String() == "ctrl+c" {
+			if m.activeCancel != nil {
+				m.activeCancel()
+				m.activeCancel = nil
+			}
+			m.chatCanceled = true
+			m.busy = false
+			m.quitting = true
+			return m, tea.Quit
+		}
 		if m.workspacePicker != nil {
 			item, selected, closePicker := m.workspacePicker.handleKey(msg)
 			if selected {
@@ -593,9 +608,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		switch msg.String() {
-		case "ctrl+c":
-			m.quitting = true
-			return m, tea.Quit
 		case "esc":
 			if m.selection.active || m.selection.dragging {
 				m.selection = transcriptSelection{}
@@ -808,7 +820,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
 						m.activeCancel = cancel
 						m.chatCanceled = false
-						return m, tea.Batch(m.startBashFollowupChat(chatCtx, sessionID, prompt, reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events))
+						m.chatRunID++
+						return m, tea.Batch(m.startBashFollowupChat(chatCtx, sessionID, prompt, reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
 					}
 					if err := agentbuiltin.StoreBashApprovalChoice(sessionID, m.pendingBashHash, normalizeBashApprovalChoice(text)); err != nil {
 						m.clearPendingBashState(sessionID, true)
@@ -884,7 +897,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
 			m.activeCancel = cancel
 			m.chatCanceled = false
-			return m, tea.Batch(startChatCmd(chatCtx, m.app.Agent, m.chatMsgs, m.sessionID, m.cwd, text, disabledToolsForPlanMode(m.planMode || planRequest)), waitForChat(m.chatMsgs), waitForEvent(m.events))
+			m.chatRunID++
+			return m, tea.Batch(startChatCmd(chatCtx, m.app.Agent, m.chatMsgs, m.sessionID, m.cwd, text, disabledToolsForPlanMode(m.planMode || planRequest)), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
 		}
 	case chatDeltaMsg:
 		if m.chatCanceled {
@@ -954,6 +968,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshContextUsage()
 		m.syncViewport(true)
 		return m, waitForEvent(m.events)
+	case chatTimeoutMsg:
+		if msg.runID != m.chatRunID || !m.busy {
+			return m, nil
+		}
+		if m.activeCancel != nil {
+			m.activeCancel()
+			m.activeCancel = nil
+		}
+		m.busy = false
+		m.status = "idle"
+		m.chatCanceled = true
+		m.runPulseActive = false
+		m.reviewLoop = codexReviewLoop{}
+		m.items = append(m.items, transcriptItem{role: "error", text: "模型调用超时，已停止当前执行。"})
+		m.syncViewport(true)
+		return m, waitForEvent(m.events)
 	case clipboardImageDoneMsg:
 		if msg.err != nil {
 			m.status = "未检测到剪贴板图片"
@@ -1005,7 +1035,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		chatCtx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
 		m.activeCancel = cancel
 		m.chatCanceled = false
-		return m, tea.Batch(m.startBashFollowupChat(chatCtx, msg.sessionID, prompt, msg.reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events))
+		m.chatRunID++
+		return m, tea.Batch(m.startBashFollowupChat(chatCtx, msg.sessionID, prompt, msg.reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
 	case gitCmsgPrepareMsg:
 		m.busy = false
 		m.status = "idle"
@@ -4349,6 +4380,12 @@ func waitForChat(ch <-chan tea.Msg) tea.Cmd {
 	return func() tea.Msg {
 		return <-ch
 	}
+}
+
+func chatTimeoutCmd(runID int, timeout time.Duration) tea.Cmd {
+	return tea.Tick(timeout+5*time.Second, func(time.Time) tea.Msg {
+		return chatTimeoutMsg{runID: runID}
+	})
 }
 
 func waitForEvent(ch <-chan agentevent.Event) tea.Cmd {

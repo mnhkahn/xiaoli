@@ -214,7 +214,7 @@ func (e *tuiExplorer) handleMouse(msg tea.MouseMsg) bool {
 			e.selected = idx
 			e.ensureSelectionVisible()
 			e.selection = transcriptSelection{}
-			e.activateSelected()
+			e.refreshPreview()
 			return true
 		}
 		return e.handlePreviewSelectionMouse(msg)
@@ -840,11 +840,35 @@ func fileDiff(cwd string, entry explorerEntry) (string, error) {
 		return "untracked file: " + entry.Path + "\n\n" + text, nil
 	}
 	var parts []string
-	if out, err := runGit(cwd, "diff", "--", entry.Path); err == nil && strings.TrimSpace(out) != "" {
-		parts = append(parts, out)
+	if !entry.Staged {
+		if out, err := runGit(cwd, "diff", "--", entry.Path); err == nil && strings.TrimSpace(out) != "" {
+			parts = append(parts, out)
+		}
 	}
-	if out, err := runGit(cwd, "diff", "--cached", "--", entry.Path); err == nil && strings.TrimSpace(out) != "" {
-		parts = append(parts, out)
+	if entry.Staged {
+		if out, err := runGit(cwd, "diff", "--cached", "--", entry.Path); err == nil && strings.TrimSpace(out) != "" {
+			parts = append(parts, out)
+		}
+	}
+	if entry.Staged && strings.Contains(entry.Status, "M") {
+		if out, err := runGit(cwd, "diff", "--", entry.Path); err == nil && strings.TrimSpace(out) != "" {
+			parts = append(parts, out)
+		}
+	}
+	if !entry.Staged && strings.Contains(entry.Status, "M") {
+		if out, err := runGit(cwd, "diff", "--cached", "--", entry.Path); err == nil && strings.TrimSpace(out) != "" {
+			parts = append(parts, out)
+		}
+	}
+	if len(parts) == 0 {
+		if out, err := runGit(cwd, "diff", "--", entry.Path); err == nil && strings.TrimSpace(out) != "" {
+			parts = append(parts, out)
+		}
+	}
+	if len(parts) == 0 {
+		if out, err := runGit(cwd, "diff", "--cached", "--", entry.Path); err == nil && strings.TrimSpace(out) != "" {
+			parts = append(parts, out)
+		}
 	}
 	if len(parts) == 0 {
 		return "No diff for " + entry.Path, nil
