@@ -180,7 +180,7 @@ func (m model) handleCodexReviewDone(msg codexReviewDoneMsg) (tea.Model, tea.Cmd
 	m.activeCancel = cancel
 	m.chatCanceled = false
 	m.chatRunID++
-	return m, tea.Batch(startReviewFixChatCmd(ctx, m.appAgent(), m.chatMsgs, m.sessionID, loop.CWD, codexReviewFixPrompt(output, loop), nil), waitForChat(m.chatMsgs), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
+	return m, tea.Batch(startReviewFixChatCmd(ctx, m.appAgent(), m.chatMsgs, m.sessionID, loop.CWD, codexReviewFixPrompt(output, loop), nil), waitForChat(m.chatMsgs), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(m))
 }
 
 func (m model) handleCodexReviewFixDone(msg chatDoneMsg) (tea.Model, tea.Cmd) {

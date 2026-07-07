@@ -64,7 +64,7 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		m.activeCancel = cancel
 		m.chatCanceled = false
-		return tea.Batch(startGitCmsgCommit(ctx, m.cwd, msg, true), tickRunPulse())
+		return tea.Batch(startGitCmsgCommit(ctx, m.cwd, msg, true), tickRunPulse(), terminalTitleCmd(*m))
 	case choice == "确认提交" || strings.EqualFold(choice, "commit") || isApprove(choice):
 		msg := m.pendingGitCmsg.Message
 		m.pendingGitCmsg = gitCmsgPending{}
@@ -79,7 +79,7 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		m.activeCancel = cancel
 		m.chatCanceled = false
-		return tea.Batch(startGitCmsgCommit(ctx, m.cwd, msg, false), tickRunPulse())
+		return tea.Batch(startGitCmsgCommit(ctx, m.cwd, msg, false), tickRunPulse(), terminalTitleCmd(*m))
 	case choice == "重新生成" || strings.EqualFold(choice, "regenerate"):
 		args := m.pendingGitCmsg.Args
 		m.pendingGitCmsg = gitCmsgPending{}
@@ -94,7 +94,7 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		m.activeCancel = cancel
 		m.chatCanceled = false
-		return tea.Batch(startGitCmsgPrepare(ctx, m.app.Agent, m.cwd, args), tickRunPulse())
+		return tea.Batch(startGitCmsgPrepare(ctx, m.app.Agent, m.cwd, args), tickRunPulse(), terminalTitleCmd(*m))
 	case choice == "取消操作" || isReject(choice):
 		m.pendingGitCmsg = gitCmsgPending{}
 		m.pendingQuestion = ""

@@ -178,6 +178,37 @@ func TestNewModelDefaultsToMouseViewportScrolling(t *testing.T) {
 	}
 }
 
+func TestTerminalTitleStates(t *testing.T) {
+	tests := []struct {
+		name  string
+		model model
+		want  string
+	}{
+		{name: "idle", model: model{}, want: "Xiaoli"},
+		{name: "running", model: model{busy: true, status: "running", runPulseFrame: 1}, want: "⠙ Xiaoli running"},
+		{name: "approval", model: model{status: "waiting approval"}, want: "! Xiaoli approval"},
+		{name: "input", model: model{status: "waiting input"}, want: "! Xiaoli input"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := terminalTitle(tt.model); got != tt.want {
+				t.Fatalf("terminalTitle() = %q, want %q", got, tt.want)
+			}
+			if strings.Contains(terminalTitle(tt.model), "\a") {
+				t.Fatalf("terminalTitle() contains BEL: %q", terminalTitle(tt.model))
+			}
+		})
+	}
+}
+
+func TestTerminalTitleTransientStatesDoNotRingBell(t *testing.T) {
+	for _, title := range []string{terminalDoneTitle, terminalFailedTitle} {
+		if strings.Contains(title, "\a") {
+			t.Fatalf("transient title contains BEL: %q", title)
+		}
+	}
+}
+
 func TestViewConstrainsTranscriptWhenNoPendingPanel(t *testing.T) {
 	input := textinput.New()
 	items := make([]transcriptItem, 0, 40)

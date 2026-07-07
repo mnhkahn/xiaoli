@@ -99,6 +99,8 @@ type eventStreamClosedMsg struct{}
 
 type runPulseTickMsg struct{}
 
+type terminalTitleResetMsg struct{}
+
 type gitSyncTickMsg struct{}
 
 type gitSyncDoneMsg struct {
@@ -129,6 +131,14 @@ const (
 	pastedContentText      = "text"
 	pastedContentImage     = "image"
 )
+
+const (
+	terminalIdleTitle   = "Xiaoli"
+	terminalDoneTitle   = "✓ Xiaoli done"
+	terminalFailedTitle = "× Xiaoli failed"
+)
+
+var terminalRunningFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type pastedContent struct {
 	ID        int
@@ -475,11 +485,48 @@ func newModel(app *localapp.App, resumeSessionID string, logPath string) model {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{textinput.Blink, waitForEvent(m.events)}
+	cmds := []tea.Cmd{textinput.Blink, waitForEvent(m.events), terminalTitleCmd(m)}
 	if m.app != nil && strings.TrimSpace(m.app.Config.DataDir) != "" {
 		cmds = append(cmds, checkForUpdateCmd(m.app.Config.DataDir, buildVersion()))
 	}
 	return tea.Batch(cmds...)
+}
+
+func terminalTitle(m model) string {
+	if m.hasPendingBashConfirm() {
+		return "! Xiaoli approval"
+	}
+	if m.hasPendingOptions() || m.pendingGitCmsg.Active {
+		return "! Xiaoli input"
+	}
+	switch strings.TrimSpace(m.status) {
+	case "waiting approval":
+		return "! Xiaoli approval"
+	case "waiting input":
+		return "! Xiaoli input"
+	}
+	if m.busy || m.runPulseActive {
+		frame := "⠋"
+		if len(terminalRunningFrames) > 0 {
+			frame = terminalRunningFrames[m.runPulseFrame%len(terminalRunningFrames)]
+		}
+		return frame + " Xiaoli running"
+	}
+	return terminalIdleTitle
+}
+
+func terminalTitleCmd(m model) tea.Cmd {
+	return tea.SetWindowTitle(terminalTitle(m))
+}
+
+func terminalTitleTextCmd(title string) tea.Cmd {
+	return tea.SetWindowTitle(title)
+}
+
+func terminalTitleResetCmd() tea.Cmd {
+	return tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg {
+		return terminalTitleResetMsg{}
+	})
 }
 
 func printExitSummary(app *localapp.App, m model, configPath string) {
@@ -806,7 +853,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				m.activeCancel = cancel
 				m.chatCanceled = false
-				return m, startShellCommand(runCtx, m.cwd, command)
+				return m, tea.Batch(startShellCommand(runCtx, m.cwd, command), terminalTitleCmd(m))
 			}
 			m.recordInputHistory(m.input.Value())
 			if strings.EqualFold(text, "/quit") || strings.EqualFold(text, "/exit") {
@@ -927,7 +974,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chatCanceled = false
 			m.chatRunID++
 			text = m.promptWithQueuedUserPrompts(text)
-			return m, tea.Batch(startChatCmd(chatCtx, m.app.Agent, m.chatMsgs, m.sessionID, m.cwd, text, disabledToolsForPlanMode(m.planMode || planRequest)), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
+			return m, tea.Batch(startChatCmd(chatCtx, m.app.Agent, m.chatMsgs, m.sessionID, m.cwd, text, disabledToolsForPlanMode(m.planMode || planRequest)), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(m))
 		}
 	case chatStreamClosedMsg:
 		if m.busy {
@@ -937,6 +984,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamFlushPending = false
 			m.items = append(m.items, transcriptItem{role: "error", text: "模型消息通道已关闭，已停止当前执行。"})
 			m.syncViewport(true)
+			return m, tea.Batch(terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
 		}
 		return m, nil
 	case chatDeltaMsg:
@@ -995,7 +1043,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.recordCurrentSession()
+		doneTitle := terminalDoneTitle
 		if msg.err != nil {
+			doneTitle = terminalFailedTitle
 			m.lastError = msg.err.Error()
 			m.items = append(m.items, transcriptItem{role: "error", text: msg.err.Error()})
 		} else {
@@ -1057,7 +1107,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.activeCancel = cancel
 				m.chatCanceled = false
 				m.chatRunID++
-				return m, tea.Batch(m.startBashFollowupChat(chatCtx, sessionID, prompt, msg.reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
+				return m, tea.Batch(m.startBashFollowupChat(chatCtx, sessionID, prompt, msg.reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(m))
 			}
 			m.status = "idle"
 		}
@@ -1066,7 +1116,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.queuedUserPrompts) > 0 && !m.hasPendingBashConfirm() && !m.hasPendingOptions() {
 			return m.startQueuedUserPromptChat()
 		}
-		return m, waitForEvent(m.events)
+		if m.hasPendingBashConfirm() || m.hasPendingOptions() {
+			return m, tea.Batch(waitForEvent(m.events), terminalTitleCmd(m))
+		}
+		return m, tea.Batch(waitForEvent(m.events), terminalTitleTextCmd(doneTitle), terminalTitleResetCmd())
 	case chatTimeoutMsg:
 		if msg.runID != m.chatRunID || !m.busy {
 			return m, nil
@@ -1083,7 +1136,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reviewLoop = codexReviewLoop{}
 		m.items = append(m.items, transcriptItem{role: "error", text: "模型调用超时，已停止当前执行。"})
 		m.syncViewport(true)
-		return m, waitForEvent(m.events)
+		return m, tea.Batch(waitForEvent(m.events), terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
 	case clipboardImageDoneMsg:
 		if msg.err != nil {
 			m.status = "未检测到剪贴板图片"
@@ -1118,7 +1171,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.queuedUserPrompts) > 0 {
 			return m.startQueuedUserPromptChat()
 		}
-		return m, nil
+		title := terminalDoneTitle
+		if msg.err != nil {
+			title = terminalFailedTitle
+		}
+		return m, tea.Batch(terminalTitleTextCmd(title), terminalTitleResetCmd())
 	case bashApprovalDoneMsg:
 		if m.activeCancel != nil {
 			m.activeCancel()
@@ -1139,7 +1196,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.activeCancel = cancel
 		m.chatCanceled = false
 		m.chatRunID++
-		return m, tea.Batch(m.startBashFollowupChat(chatCtx, msg.sessionID, prompt, msg.reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
+		return m, tea.Batch(m.startBashFollowupChat(chatCtx, msg.sessionID, prompt, msg.reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(m))
 	case gitCmsgPrepareMsg:
 		m.busy = false
 		m.status = "idle"
@@ -1160,7 +1217,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.items = append(m.items, transcriptItem{role: "run-failed", text: "Commit blocked", frame: m.runPulseFrame})
 			m.items = append(m.items, transcriptItem{role: "error", text: msg.err.Error()})
 			m.syncViewport(true)
-			return m, nil
+			return m, tea.Batch(terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
 		}
 		m.pendingGitCmsg = gitCmsgPending{Active: true, Args: msg.args, Message: msg.message}
 		m.pendingQuestion = formatGitCmsgQuestion(msg)
@@ -1169,7 +1226,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.items = append(m.items, transcriptItem{role: "run-done", text: "Commit plan ready", frame: m.runPulseFrame})
 		m.items = append(m.items, transcriptItem{role: "assistant", text: m.pendingQuestion})
 		m.syncViewport(true)
-		return m, nil
+		return m, tea.Batch(terminalTitleTextCmd(terminalDoneTitle), terminalTitleResetCmd())
 	case gitCmsgCommitMsg:
 		m.busy = false
 		m.status = "idle"
@@ -1202,7 +1259,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.items = append(m.items, transcriptItem{role: "system", text: doneText + "\n" + strings.TrimSpace(msg.output)})
 		}
 		m.syncViewport(true)
-		return m, nil
+		title := terminalDoneTitle
+		if msg.err != nil {
+			title = terminalFailedTitle
+		}
+		return m, tea.Batch(terminalTitleTextCmd(title), terminalTitleResetCmd())
 	case codexReviewDoneMsg:
 		return m.handleCodexReviewDone(msg)
 	case gitSyncDoneMsg:
@@ -1262,7 +1323,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.runPulseFrame++
 		m.syncViewport(false)
-		return m, tickRunPulse()
+		return m, tea.Batch(tickRunPulse(), terminalTitleCmd(m))
+	case terminalTitleResetMsg:
+		if m.busy || m.hasPendingBashConfirm() || m.hasPendingOptions() {
+			return m, terminalTitleCmd(m)
+		}
+		return m, terminalTitleCmd(m)
 	case eventStreamClosedMsg:
 		return m, nil
 	case eventMsg:
@@ -1270,7 +1336,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.enqueuePendingToolConfirm(confirm, false, "permission_event")
 			m.refreshContextUsage()
 			m.syncViewport(true)
-			return m, waitForEvent(m.events)
+			return m, tea.Batch(waitForEvent(m.events), terminalTitleCmd(m))
 		}
 		if isSilentPermissionEvent(msg.event) {
 			return m, waitForEvent(m.events)
@@ -1285,14 +1351,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.items = append(m.items, item)
 			m.refreshContextUsage()
 			m.syncViewport(true)
-			return m, tea.Batch(waitForEvent(m.events), tickRunPulse())
+			return m, tea.Batch(waitForEvent(m.events), tickRunPulse(), terminalTitleCmd(m))
 		case "run-done", "run-failed":
 			m.runPulseActive = false
 		}
 		m.items = append(m.items, item)
 		m.refreshContextUsage()
 		m.syncViewport(true)
-		return m, waitForEvent(m.events)
+		switch item.role {
+		case "run-done":
+			return m, tea.Batch(waitForEvent(m.events), terminalTitleTextCmd(terminalDoneTitle), terminalTitleResetCmd())
+		case "run-failed":
+			return m, tea.Batch(waitForEvent(m.events), terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
+		default:
+			return m, waitForEvent(m.events)
+		}
 	}
 
 	var vpCmd tea.Cmd
@@ -3800,7 +3873,7 @@ func (m model) handlePendingBashConfirmInput(text string) (tea.Model, tea.Cmd) {
 		m.input.SetValue("")
 		m.items = append(m.items, transcriptItem{role: "system", text: "已拒绝执行命令。"})
 		m.syncViewport(true)
-		return m, nil
+		return m, terminalTitleCmd(m)
 	}
 	if !isApprove(text) && !isBashApprovalChoice(text) {
 		return m, nil
@@ -3818,7 +3891,7 @@ func (m model) handlePendingBashConfirmInput(text string) (tea.Model, tea.Cmd) {
 		m.clearPendingToolConfirmState(sessionID, true)
 		m.items = append(m.items, transcriptItem{role: "error", text: "待审批命令已失效，请重新发起。"})
 		m.syncViewport(true)
-		return m, nil
+		return m, tea.Batch(terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
 	}
 	if expired {
 		m.publishPermissionReplied(confirm, "expired", "tui_input")
@@ -3832,14 +3905,14 @@ func (m model) handlePendingBashConfirmInput(text string) (tea.Model, tea.Cmd) {
 		m.activeCancel = cancel
 		m.chatCanceled = false
 		m.chatRunID++
-		return m, tea.Batch(m.startBashFollowupChat(chatCtx, sessionID, prompt, reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
+		return m, tea.Batch(m.startBashFollowupChat(chatCtx, sessionID, prompt, reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(m))
 	}
 	if err := agentbuiltin.StoreBashApprovalChoice(sessionID, confirm.BashHash, normalizeBashApprovalChoice(text)); err != nil {
 		m.publishPermissionReplied(confirm, "error", "tui_input")
 		m.clearPendingToolConfirmState(sessionID, true)
 		m.items = append(m.items, transcriptItem{role: "error", text: "保存 Bash 权限失败：" + err.Error()})
 		m.syncViewport(true)
-		return m, nil
+		return m, tea.Batch(terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
 	}
 	m.publishPermissionReplied(confirm, "allow", "tui_input")
 	m.clearPendingToolConfirmState(sessionID, true)
@@ -3850,7 +3923,7 @@ func (m model) handlePendingBashConfirmInput(text string) (tea.Model, tea.Cmd) {
 	runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	m.activeCancel = cancel
 	m.chatCanceled = false
-	return m, startApprovedBashCommand(runCtx, m.cwd, command, sessionID, toolUseID, reviewFix)
+	return m, tea.Batch(startApprovedBashCommand(runCtx, m.cwd, command, sessionID, toolUseID, reviewFix), terminalTitleCmd(m))
 }
 
 func (m *model) enqueuePendingToolConfirm(confirm *agentbuiltin.PendingToolUseConfirm, reviewFix bool, source string) {
@@ -4564,7 +4637,7 @@ func (m *model) startQueuedUserPromptChat() (tea.Model, tea.Cmd) {
 	m.activeCancel = cancel
 	m.chatCanceled = false
 	m.chatRunID++
-	return *m, tea.Batch(startChatCmd(chatCtx, m.appAgent(), m.chatMsgs, m.sessionID, m.cwd, prompt, disabledToolsForPlanMode(m.planMode)), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout))
+	return *m, tea.Batch(startChatCmd(chatCtx, m.appAgent(), m.chatMsgs, m.sessionID, m.cwd, prompt, disabledToolsForPlanMode(m.planMode)), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(*m))
 }
 
 func (m *model) clearInputDraft() {
