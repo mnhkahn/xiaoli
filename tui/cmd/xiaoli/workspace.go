@@ -307,9 +307,9 @@ func newWorkspacePicker(items []workspaceItem, cwd string, width, height int) *w
 		items:          append([]workspaceItem(nil), items...),
 		width:          width,
 		height:         height,
-		currentSummary: currentWorkspaceGitSummary(cwd),
+		currentSummary: cwdDisplayName(cwd),
 	}
-	p.gitByCWD = workspaceGitSummariesForItems(p.items)
+	p.gitByCWD = map[string]string{}
 	if len(p.items) == 0 {
 		p.err = "No recent projects yet"
 		return p
@@ -398,6 +398,7 @@ func (p *workspacePicker) setFeedback(text string) {
 }
 
 func (p *workspacePicker) View() string {
+	defer tracePerf("workspacePicker.View")()
 	if p == nil {
 		return ""
 	}

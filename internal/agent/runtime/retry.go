@@ -40,6 +40,13 @@ var rateLimitGenericPhrases = []string{
 	"retry_after",
 }
 
+var transientTimeoutPhrases = []string{
+	"context deadline exceeded",
+	"client.timeout exceeded",
+	"i/o timeout",
+	"timeout awaiting headers",
+}
+
 func llmShouldRetry(ctx context.Context, retryCtx *adk.RetryContext) *adk.RetryDecision {
 	if retryCtx.Err == nil {
 		return nil
@@ -69,6 +76,9 @@ func llmShouldRetry(ctx context.Context, retryCtx *adk.RetryContext) *adk.RetryD
 		}
 	} else {
 		msg := strings.ToLower(retryCtx.Err.Error())
+		if isTransientTimeoutMessage(msg) {
+			return &adk.RetryDecision{Retry: true}
+		}
 		for _, p := range rateLimitGenericPhrases {
 			if strings.Contains(msg, p) {
 				return &adk.RetryDecision{Retry: true}
@@ -84,6 +94,18 @@ func llmShouldRetry(ctx context.Context, retryCtx *adk.RetryContext) *adk.RetryD
 	}
 
 	return nil
+}
+
+func isTransientTimeoutMessage(msg string) bool {
+	if strings.Contains(msg, "context canceled") {
+		return false
+	}
+	for _, p := range transientTimeoutPhrases {
+		if strings.Contains(msg, p) {
+			return true
+		}
+	}
+	return false
 }
 
 type quotaExceededError struct {
@@ -126,6 +148,9 @@ func isRetryableAgentError(err error) bool {
 	}
 
 	msg := strings.ToLower(err.Error())
+	if isTransientTimeoutMessage(msg) {
+		return true
+	}
 	for _, p := range rateLimitGenericPhrases {
 		if strings.Contains(msg, p) {
 			return true

@@ -1965,8 +1965,8 @@ func TestWorkspacePickerTabSwitchesToNextWorkspace(t *testing.T) {
 
 	nextModel, cmd := got.Update(tea.KeyMsg{Type: tea.KeyTab})
 	got = nextModel.(model)
-	if cmd != nil {
-		t.Fatalf("picker Tab returned command, want nil")
+	if cmd == nil {
+		t.Fatalf("picker Tab returned nil command, want async git refresh")
 	}
 	if got.workspacePicker != nil {
 		t.Fatalf("picker Tab left workspace picker open")
@@ -1979,6 +1979,34 @@ func TestWorkspacePickerTabSwitchesToNextWorkspace(t *testing.T) {
 	}
 	if view := got.viewport.View(); strings.Contains(view, "old workspace transcript") {
 		t.Fatalf("viewport still shows old workspace transcript: %q", view)
+	}
+	if got.gitStatus != "git ..." {
+		t.Fatalf("gitStatus = %q, want loading placeholder", got.gitStatus)
+	}
+}
+
+func TestLocalCDDefersGitRefresh(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+	input := textinput.New()
+	input.SetValue("/cd child")
+	m := model{cwd: root, gitStatus: "old", input: input, width: 100, height: 30, viewport: viewport.New(0, 0)}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatalf("/cd returned nil command, want async git refresh")
+	}
+	if !samePath(got.cwd, child) {
+		t.Fatalf("cwd = %q, want %q", got.cwd, child)
+	}
+	if got.gitStatus != "git ..." {
+		t.Fatalf("gitStatus = %q, want loading placeholder", got.gitStatus)
 	}
 }
 
@@ -2334,14 +2362,11 @@ func TestWorkspaceGitSummaryShowsChangeSize(t *testing.T) {
 
 	p := newWorkspacePicker([]workspaceItem{{CWD: dir, SessionID: "ses_test", Title: "Repo", LastOpened: time.Now()}}, dir, 120, 30)
 	view := stripTestANSI(p.View())
-	if !strings.Contains(view, "current:") || !strings.Contains(view, "changed 3 files") {
-		t.Fatalf("workspace picker view missing git summary:\n%s", view)
+	if strings.Contains(view, "changed 3 files") || strings.Contains(view, "+3 -1") {
+		t.Fatalf("workspace picker eagerly rendered git summary:\n%s", view)
 	}
-	if !strings.Contains(view, "+3 -1") {
-		t.Fatalf("workspace picker row missing compact git line summary:\n%s", view)
-	}
-	if got := p.gitByCWD[workspaceGitSummaryKey(dir)]; !strings.Contains(got, "+3 -1") {
-		t.Fatalf("gitByCWD summary = %q, want compact line summary", got)
+	if len(p.gitByCWD) != 0 {
+		t.Fatalf("workspace picker eagerly computed git summaries: %#v", p.gitByCWD)
 	}
 }
 
@@ -2811,8 +2836,8 @@ func TestDoubleTabExitsExplorerAndOpensWorkspacePicker(t *testing.T) {
 
 	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyTab})
 	got = next.(model)
-	if cmd != nil {
-		t.Fatalf("second tab returned command, want nil")
+	if cmd == nil {
+		t.Fatalf("second tab returned nil command, want async git refresh")
 	}
 	if got.explorer != nil {
 		t.Fatalf("second tab kept explorer open")

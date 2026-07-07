@@ -103,6 +103,11 @@ type terminalTitleResetMsg struct{}
 
 type gitSyncTickMsg struct{}
 
+type gitStatusRefreshMsg struct {
+	cwd   string
+	state gitSyncState
+}
+
 type gitSyncDoneMsg struct {
 	action string
 	output string
@@ -338,10 +343,12 @@ func main() {
 	prompt := flag.String("prompt", "", "extra system prompt appended after AGENT.md/SOUL.md")
 	resumeSession := flag.String("s", "", "session id to resume")
 	showVersion := flag.Bool("version", false, "print TUI version and exit")
+	enablePerf := flag.Bool("perf", false, "write slow TUI render/interaction timings to the log")
 	renderSession := flag.String("render-session", "", "render a session frame and exit")
 	renderWidth := flag.Int("width", 160, "render-session terminal width")
 	renderHeight := flag.Int("height", 40, "render-session terminal height")
 	flag.Parse()
+	perfTraceEnabled = *enablePerf
 
 	if *showVersion {
 		fmt.Println(versionInfo())
@@ -682,20 +689,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			item, selected, closePicker := m.workspacePicker.handleKey(msg)
+			var gitCmd tea.Cmd
 			if selected {
-				m.switchWorkspace(item)
+				gitCmd = m.switchWorkspace(item)
 			}
 			if closePicker {
 				m.workspacePicker = nil
 			}
-			return m, nil
+			return m, gitCmd
 		}
 		if m.explorer != nil && msg.String() == "tab" {
 			if m.consumeDoubleTab() {
 				m.explorer = nil
-				m.refreshGitSync()
+				gitCmd := m.beginGitStatusRefresh()
 				m.openWorkspacePicker()
-				return m, nil
+				return m, gitCmd
 			}
 			m.markTab()
 		}
@@ -704,7 +712,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if handled {
 				m.explorer = next
 				if m.explorer == nil {
-					m.refreshGitSync()
+					gitCmd := m.beginGitStatusRefresh()
+					return m, tea.Batch(cmd, gitCmd)
 				}
 				return m, cmd
 			}
@@ -895,12 +904,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				text = planPrompt(text)
 				planRequest = true
 			}
-			if m.handleLocalCommand(text) {
+			if handled, cmd := m.handleLocalCommandWithCmd(text); handled {
 				m.input.SetValue("")
 				m.status = "idle"
 				m.refreshContextUsage()
 				m.syncViewport(true)
-				return m, nil
+				return m, cmd
 			}
 			if m.shouldBlockStaleBashResponse(text) {
 				m.input.SetValue("")
@@ -1289,6 +1298,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.syncViewport(true)
 		return m, nil
+	case gitStatusRefreshMsg:
+		if samePath(msg.cwd, m.cwd) {
+			m.gitSync = msg.state
+			m.gitStatus = msg.state.Format()
+		}
+		return m, nil
 	case gitSyncTickMsg:
 		if !m.gitSyncFeedback.Loading {
 			return m, nil
@@ -1384,6 +1399,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
+	defer tracePerf("model.View")()
 	if m.quitting {
 		return ""
 	}
@@ -1486,6 +1502,7 @@ func (m model) fullTranscriptView(width int) string {
 }
 
 func (m *model) syncViewport(gotoBottom bool) {
+	defer tracePerf("syncViewport")()
 	if m == nil || m.width <= 0 || m.height <= 0 {
 		return
 	}
@@ -1563,6 +1580,7 @@ func (m model) renderTranscriptContent(width int) string {
 }
 
 func (m model) renderTranscriptContentWithLinks(width int) (string, []transcriptLink) {
+	defer tracePerf("renderTranscriptContentWithLinks")()
 	content, links := m.renderTranscriptItemsWithLinks(width)
 	return content, links
 }
@@ -3332,6 +3350,7 @@ func truncateDisplaySlow(s string, width int) string {
 }
 
 func (m *model) refreshContextUsage() {
+	defer tracePerf("refreshContextUsage")()
 	if m == nil || m.app == nil || m.app.Agent == nil {
 		return
 	}
@@ -4727,35 +4746,40 @@ func (m *model) handleCopyCommand(text string) bool {
 }
 
 func (m *model) handleLocalCommand(text string) bool {
+	handled, _ := m.handleLocalCommandWithCmd(text)
+	return handled
+}
+
+func (m *model) handleLocalCommandWithCmd(text string) (bool, tea.Cmd) {
 	args := strings.Fields(strings.TrimSpace(text))
 	if len(args) == 0 {
-		return false
+		return false, nil
 	}
 	switch strings.ToLower(args[0]) {
 	case "/version":
 		m.items = append(m.items, transcriptItem{role: "system", text: versionInfo()})
-		return true
+		return true, nil
 	case "/upgrade":
 		m.items = append(m.items, transcriptItem{role: "system", text: upgradeMessage(m.updateInfo)})
-		return true
+		return true, nil
 	case "/cd":
 		if len(args) < 2 {
 			m.items = append(m.items, transcriptItem{role: "error", text: "用法：/cd <path>"})
-			return true
+			return true, nil
 		}
 		target, err := resolveCDPath(m.cwd, strings.Join(args[1:], " "))
 		if err != nil {
 			m.items = append(m.items, transcriptItem{role: "error", text: err.Error()})
-			return true
+			return true, nil
 		}
 		if err := m.setCWD(target); err != nil {
 			m.items = append(m.items, transcriptItem{role: "error", text: err.Error()})
-			return true
+			return true, nil
 		}
 		m.items = append(m.items, transcriptItem{role: "system", text: "cwd: " + target})
-		return true
+		return true, m.beginGitStatusRefresh()
 	default:
-		return false
+		return false, nil
 	}
 }
 
@@ -4855,6 +4879,7 @@ func (m *model) consumeDoubleTab() bool {
 }
 
 func (m *model) openWorkspacePicker() {
+	defer tracePerf("openWorkspacePicker")()
 	items := loadWorkspaceSessions(m.workspaceStatePath)
 	m.enrichWorkspaceSessionTitles(items)
 	m.workspacePicker = newWorkspacePicker(items, m.cwd, m.width, m.height)
@@ -4874,17 +4899,18 @@ func (m *model) enrichWorkspaceSessionTitles(items []workspaceItem) {
 	}
 }
 
-func (m *model) switchWorkspace(item workspaceItem) {
+func (m *model) switchWorkspace(item workspaceItem) tea.Cmd {
+	defer tracePerf("switchWorkspace.total")()
 	target := strings.TrimSpace(item.CWD)
 	if target == "" {
-		return
+		return nil
 	}
 	oldSessionID := m.activeSessionID()
 	if err := m.setCWD(target); err != nil {
 		if m.workspacePicker != nil {
 			m.workspacePicker.err = "Project unavailable: " + target
 		}
-		return
+		return nil
 	}
 	nextSessionID := strings.TrimSpace(item.SessionID)
 	if nextSessionID == "" {
@@ -4915,6 +4941,7 @@ func (m *model) switchWorkspace(item workspaceItem) {
 	m.refreshContextUsage()
 	m.recordCurrentSession()
 	m.syncViewport(true)
+	return m.beginGitStatusRefresh()
 }
 
 func (m *model) setCWD(target string) error {
@@ -4941,8 +4968,6 @@ func (m *model) setCWD(target string) error {
 	} else {
 		m.cwd = abs
 	}
-	m.gitSync = gitSyncStateForCWD(m.cwd)
-	m.gitStatus = m.gitSync.Format()
 	m.gitSyncFeedback = gitSyncFeedback{}
 	m.syncAgentRoots()
 	return nil
@@ -5747,6 +5772,27 @@ func parseAheadBehind(head string) (ahead, behind int) {
 func (m *model) refreshGitSync() {
 	m.gitSync = gitSyncStateForCWD(m.cwd)
 	m.gitStatus = m.gitSync.Format()
+}
+
+func (m *model) beginGitStatusRefresh() tea.Cmd {
+	if m == nil || strings.TrimSpace(m.cwd) == "" {
+		return nil
+	}
+	cwd := m.cwd
+	m.gitSync = gitSyncState{}
+	m.gitStatus = "git ..."
+	m.gitSyncFeedback = gitSyncFeedback{}
+	return refreshGitStatusCmd(cwd)
+}
+
+func refreshGitStatusCmd(cwd string) tea.Cmd {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		return gitStatusRefreshMsg{cwd: cwd, state: gitSyncStateForCWD(cwd)}
+	}
 }
 
 func gitSyncAction(state gitSyncState) (string, []string) {
