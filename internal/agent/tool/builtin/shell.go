@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -154,11 +156,11 @@ func NewShellTool(cfg ShellConfig) *ShellTool {
 func (t *ShellTool) Info(context.Context) (*schema.ToolInfo, error) {
 	return &schema.ToolInfo{
 		Name: "bash",
-		Desc: "执行 shell 命令。所有命令需要用户确认后方可执行。支持管道和重定向。不支持交互式命令。",
+		Desc: "执行 shell 命令。命令默认在当前工作目录执行，不要使用 cd 切换目录；访问子目录请使用相对路径。所有命令需要用户确认后方可执行。支持管道和重定向。不支持交互式命令。",
 		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
 			"command": {
 				Type:     schema.String,
-				Desc:     "要执行的 shell 命令",
+				Desc:     "要执行的 shell 命令。默认在当前工作目录执行，不要用 cd；对子目录使用相对路径。",
 				Required: true,
 			},
 		}),
@@ -176,6 +178,11 @@ func (t *ShellTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 	if cmd == "" {
 		return "用法：bash(command=\"要执行的命令\")\n支持管道和重定向，不支持交互式命令。", nil
 	}
+	normalizedCmd, guidance := normalizeBashWorkingDirectoryCommand(cmd)
+	if guidance != "" {
+		return guidance, nil
+	}
+	cmd = normalizedCmd
 
 	sessionID, _ := ctx.Value(SubAgentParentKey).(string)
 	if sessionID != "" && bashCommandAllowed(sessionID, cmd, t.config.PolicyPath) {
@@ -234,6 +241,88 @@ func (t *ShellTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 	}
 
 	return fmt.Sprintf("命令「%s」需要您的确认，已发送审批请求，等待用户回复", cmd), nil
+}
+
+func normalizeBashWorkingDirectoryCommand(cmd string) (string, string) {
+	cmd = strings.TrimSpace(cmd)
+	target, rest, ok := splitLeadingDirectoryChange(cmd)
+	if !ok {
+		return cmd, ""
+	}
+	if strings.TrimSpace(rest) == "" {
+		return "", bashDirectoryChangeGuidance(cmd)
+	}
+	target = unquoteShellWord(strings.TrimSpace(target))
+	if target == "." || target == "./" {
+		return strings.TrimSpace(rest), ""
+	}
+	cwd, err := os.Getwd()
+	if err == nil && sameShellDirectory(cwd, target) {
+		return strings.TrimSpace(rest), ""
+	}
+	return "", bashDirectoryChangeGuidance(cmd)
+}
+
+func splitLeadingDirectoryChange(cmd string) (target, rest string, ok bool) {
+	cmd = strings.TrimSpace(cmd)
+	sep := strings.Index(cmd, "&&")
+	sepLen := 2
+	if semi := strings.Index(cmd, ";"); sep < 0 || semi >= 0 && semi < sep {
+		sep = semi
+		sepLen = 1
+	}
+	if sep < 0 {
+		return "", "", false
+	}
+	prefix := strings.TrimSpace(cmd[:sep])
+	rest = strings.TrimSpace(cmd[sep+sepLen:])
+	fields := strings.Fields(prefix)
+	if len(fields) < 2 {
+		return "", "", false
+	}
+	switch fields[0] {
+	case "cd", "pushd":
+		return strings.Join(fields[1:], " "), rest, true
+	case "popd":
+		return "", rest, true
+	default:
+		return "", "", false
+	}
+}
+
+func sameShellDirectory(cwd, target string) bool {
+	if cwd == "" || target == "" {
+		return false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(cwd, target)
+	}
+	cwdAbs, err := filepath.Abs(cwd)
+	if err == nil {
+		cwd = cwdAbs
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err == nil {
+		target = targetAbs
+	}
+	return filepath.Clean(cwd) == filepath.Clean(target)
+}
+
+func unquoteShellWord(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		if value[0] == '\'' && value[len(value)-1] == '\'' {
+			return strings.ReplaceAll(value[1:len(value)-1], `'\''`, `'`)
+		}
+		if value[0] == '"' && value[len(value)-1] == '"' {
+			return strings.ReplaceAll(value[1:len(value)-1], `\"`, `"`)
+		}
+	}
+	return value
+}
+
+func bashDirectoryChangeGuidance(command string) string {
+	return fmt.Sprintf("bash 工具会在当前工作目录执行命令，不要使用 cd 切换目录。请改用相对路径重新调用 bash，例如 `rg 关键词 子目录/` 或 `go test ./子目录/...`。\n原命令未执行：%s", strings.TrimSpace(command))
 }
 
 func (t *ShellTool) execute(ctx context.Context, cmd string) (string, error) {

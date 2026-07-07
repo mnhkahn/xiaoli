@@ -1101,7 +1101,7 @@ func (a *Agent) toolGuide(interactive bool) string {
 	• websearch — 搜索网络。用于查询实时信息、最新新闻、事件和知识。`)
 	if a.cfg.BashConfig.Enabled {
 		b.WriteString(`
-	• bash — 执行 shell 命令。用于系统诊断、查看状态、运行脚本。需要执行命令时必须调用 bash 工具，不能只描述命令或让用户复制执行。所有命令均需用户确认；确认 UI 只能由 bash 工具触发，禁止手写“等待你确认执行 bash 命令”、tool_use_id、审批面板或类似确认块。`)
+	• bash — 执行 shell 命令。用于系统诊断、查看状态、运行脚本。bash 默认在当前工作目录执行；不要使用 cd 切换目录，访问子目录请使用相对路径。需要执行命令时必须调用 bash 工具，不能只描述命令或让用户复制执行。所有命令均需用户确认；确认 UI 只能由 bash 工具触发，禁止手写“等待你确认执行 bash 命令”、tool_use_id、审批面板或类似确认块。`)
 	}
 	if interactive {
 		b.WriteString(`

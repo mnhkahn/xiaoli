@@ -85,6 +85,47 @@ func TestShellToolStoresPendingToolUseConfirm(t *testing.T) {
 	}
 }
 
+func TestShellToolStripsLeadingCdToCurrentDirectory(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	ctx, confirmHolder := NewToolUseConfirmHolder(context.Background())
+	ctx = context.WithValue(ctx, SubAgentParentKey, "ses_policy_cd_current")
+	tool := NewShellTool(ShellConfig{PolicyPath: filepath.Join(t.TempDir(), "policy.json")})
+
+	if _, err := tool.InvokableRun(ctx, `{"command":"cd `+cwd+` && git status --short"}`); err != nil {
+		t.Fatal(err)
+	}
+
+	confirm := confirmHolder.Get()
+	if confirm == nil {
+		t.Fatal("missing pending bash approval")
+	}
+	if confirm.BashCommand != "git status --short" {
+		t.Fatalf("BashCommand = %q, want cd prefix stripped", confirm.BashCommand)
+	}
+}
+
+func TestShellToolRejectsLeadingCdToOtherAbsoluteDirectory(t *testing.T) {
+	current := t.TempDir()
+	other := t.TempDir()
+	t.Chdir(current)
+	ctx, confirmHolder := NewToolUseConfirmHolder(context.Background())
+	ctx = context.WithValue(ctx, SubAgentParentKey, "ses_policy_cd_other")
+	tool := NewShellTool(ShellConfig{PolicyPath: filepath.Join(t.TempDir(), "policy.json")})
+
+	got, err := tool.InvokableRun(ctx, `{"command":"cd `+other+` && git status --short"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if confirm := confirmHolder.Get(); confirm != nil {
+		t.Fatalf("confirm = %#v, want command rejected before approval", confirm)
+	}
+	if !strings.Contains(got, "不要使用 cd") || !strings.Contains(got, "相对路径") {
+		t.Fatalf("InvokableRun() = %q, want cd guidance", got)
+	}
+}
+
 func TestShellToolKeepsMultiplePendingApprovalsForSession(t *testing.T) {
 	ctx, confirmHolder := NewToolUseConfirmHolder(context.Background())
 	ctx = context.WithValue(ctx, SubAgentParentKey, "ses_policy_multi")

@@ -27,6 +27,9 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/ansi"
+	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
@@ -302,6 +305,8 @@ var (
 	mouseSGRFragmentRE = regexp.MustCompile(`(?:\x1b)?\[<\d+;\d+;\d+[Mm]`)
 	markdownLinkRE     = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^)\s]+)\)`)
 	bareURLRE          = regexp.MustCompile(`https?://[^\s\]\)]+`)
+	markdownStrongRE   = regexp.MustCompile(`\*\*([^*\n]+)\*\*`)
+	markdownEmphRE     = regexp.MustCompile(`(^|[^*])\*([^*\n]+)\*`)
 )
 
 const (
@@ -310,6 +315,14 @@ const (
 )
 
 func main() {
+	// 子命令分发：优先处理不需要经过 flag 包的形式，例如 `xiaoli upgrade ...`。
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "upgrade":
+			os.Exit(runUpgradeCLI(os.Args[2:]))
+		}
+	}
+
 	configPath := flag.String("config", "", "path to local xiaoli settings.json")
 	initConfig := flag.Bool("init", false, "create default local settings and secrets files")
 	prompt := flag.String("prompt", "", "extra system prompt appended after AGENT.md/SOUL.md")
@@ -364,7 +377,7 @@ func main() {
 		return
 	}
 
-	p := tea.NewProgram(newModel(app, *resumeSession, logPath))
+	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithMouseCellMotion())
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "xiaoli: %v\n", err)
@@ -457,7 +470,7 @@ func newModel(app *localapp.App, resumeSessionID string, logPath string) model {
 		streamingIndex:     -1,
 		items:              items,
 		inputHistory:       inputHistory,
-		mouseEnabled:       false,
+		mouseEnabled:       true,
 	}
 }
 
@@ -1317,6 +1330,7 @@ func (m model) View() string {
 	approvalModal := ""
 	if m.hasPendingBashConfirm() {
 		approvalModal = renderPendingToolConfirmModal(m.pendingToolConfirm, m.pendingQuestion, m.pendingOptions, m.pendingChoice, promptW)
+		logger.Debugf("tui approval modal render: session=%s tool_use_id=%s width=%d height=%d modal_height=%d prompt_width=%d", m.pendingToolConfirm.SessionID, m.pendingToolConfirm.ToolUseID, m.width, m.height, renderedHeight(approvalModal), promptW)
 	}
 
 	promptParts := []string{}
@@ -1336,27 +1350,16 @@ func (m model) View() string {
 	if statusH > 0 {
 		status = renderStatusBar(m, max(20, promptW+boxStyle.GetHorizontalFrameSize()))
 	}
-	constrainTranscript := approvalModal != "" || len(promptParts) > 1
 	transcript := ""
-	transcriptH := 0
-	if constrainTranscript {
-		reservedH := renderedHeight(approvalModal) + renderedHeight(prompt) + renderedHeight(status)
-		transcriptBoxH := max(boxStyle.GetVerticalFrameSize()+1, m.height-reservedH)
-		transcriptH = max(1, transcriptBoxH-boxStyle.GetVerticalFrameSize())
-		vp := m.viewport
-		vp.Width = mainW
-		vp.Height = transcriptH
-		transcript = vp.View()
-	} else {
-		transcript = m.fullTranscriptView(mainW)
-	}
+	transcriptH := transcriptViewportHeight(m.height, renderedHeight(approvalModal), renderedHeight(prompt), renderedHeight(status))
+	vp := m.viewport
+	vp.Width = mainW
+	vp.Height = transcriptH
+	transcript = vp.View()
 	if m.selection.active || m.selection.dragging {
 		transcript = renderTranscriptSelectionOverlay(strings.Split(transcript, "\n"), m.selection, mainW)
 	}
-	topStyle := boxStyle.Width(mainW)
-	if constrainTranscript {
-		topStyle = topStyle.Height(transcriptH)
-	}
+	topStyle := boxStyle.Width(mainW).Height(transcriptH)
 	top := topStyle.Render(transcript)
 	parts := []string{top}
 	if approvalModal != "" {
@@ -1381,8 +1384,14 @@ func layoutSizes(width, height int) (mainW, sideW, bodyH, promptW, statusH int) 
 	statusH = 2
 	promptW = max(20, width-boxStyle.GetHorizontalFrameSize())
 	mainW = promptW
-	bodyH = max(8, height-5-statusH)
+	bodyH = transcriptViewportHeight(height, 0, 3, statusH)
 	return mainW, sideW, bodyH, promptW, statusH
+}
+
+func transcriptViewportHeight(totalHeight, approvalHeight, promptHeight, statusHeight int) int {
+	reservedH := approvalHeight + promptHeight + statusHeight
+	transcriptBoxH := max(boxStyle.GetVerticalFrameSize()+1, totalHeight-reservedH)
+	return max(1, transcriptBoxH-boxStyle.GetVerticalFrameSize())
 }
 
 func layoutMainWidth(width, height int) int {
@@ -1513,6 +1522,7 @@ type renderedTranscriptContent struct {
 
 type linkedLine struct {
 	text  string
+	ansi  string
 	links []transcriptLink
 }
 
@@ -1881,27 +1891,96 @@ type inlineTextPart struct {
 
 func renderLinkedText(text string, width int, prefix string) linkedTextResult {
 	parts := parseInlineTextLinks(text)
-	var plain strings.Builder
+	displayText := inlineTextDisplay(parts)
 	linkDisplays := make([]inlineTextPart, 0)
 	for _, part := range parts {
 		if part.url != "" && part.text != "" {
 			linkDisplays = append(linkDisplays, inlineTextPart{text: part.text, url: part.url})
 		}
-		plain.WriteString(part.text)
 	}
-	wrapped := wrapText(plain.String(), width)
-	if prefix != "" {
-		wrapped = wrapWithPrefix(prefix, plain.String(), width)
-	}
-	rawLines := strings.Split(wrapped, "\n")
+	rendered := renderMarkdownANSI(displayText, markdownBodyWidth(width, prefix))
+	rendered = applyMarkdownPrefix(rendered, prefix, width)
+	rawLines := strings.Split(rendered, "\n")
 	lines := make([]linkedLine, len(rawLines))
 	for i, line := range rawLines {
-		lines[i] = linkedLine{text: line}
+		lines[i] = linkedLine{text: ansiEscapeRE.ReplaceAllString(line, ""), ansi: line}
 	}
 	for _, link := range linkDisplays {
 		markFirstLinkMatch(lines, link.text, link.url)
 	}
 	return linkedTextResult{lines: lines}
+}
+
+func inlineTextDisplay(parts []inlineTextPart) string {
+	var b strings.Builder
+	for _, part := range parts {
+		b.WriteString(part.text)
+	}
+	return b.String()
+}
+
+func markdownBodyWidth(width int, prefix string) int {
+	if prefix == "" {
+		return width
+	}
+	return max(1, width-lipgloss.Width(prefix))
+}
+
+func renderMarkdownANSI(text string, width int) string {
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStyles(transcriptMarkdownStyle()),
+		glamour.WithWordWrap(max(1, width)),
+	)
+	if err != nil {
+		return wrapText(text, width)
+	}
+	rendered, err := renderer.Render(text)
+	if err != nil {
+		return wrapText(text, width)
+	}
+	return renderMarkdownInlineEmphasis(strings.Trim(rendered, "\n"))
+}
+
+func transcriptMarkdownStyle() ansi.StyleConfig {
+	style := styles.DarkStyleConfig
+	zero := uint(0)
+	style.Document.Margin = &zero
+	style.CodeBlock.StyleBlock.Margin = &zero
+	style.Table.StyleBlock.Margin = &zero
+	return style
+}
+
+func renderMarkdownInlineEmphasis(text string) string {
+	text = markdownStrongRE.ReplaceAllStringFunc(text, func(match string) string {
+		inner := strings.TrimSuffix(strings.TrimPrefix(match, "**"), "**")
+		return lipgloss.NewStyle().Bold(true).Render(inner)
+	})
+	text = markdownEmphRE.ReplaceAllStringFunc(text, func(match string) string {
+		groups := markdownEmphRE.FindStringSubmatch(match)
+		if len(groups) != 3 {
+			return match
+		}
+		return groups[1] + lipgloss.NewStyle().Italic(true).Render(groups[2])
+	})
+	return text
+}
+
+func applyMarkdownPrefix(rendered, prefix string, width int) string {
+	if prefix != "" {
+		if width <= lipgloss.Width(prefix)+1 {
+			return prefix + rendered
+		}
+		rawLines := strings.Split(rendered, "\n")
+		for i := range rawLines {
+			if i == 0 {
+				rawLines[i] = prefix + rawLines[i]
+			} else {
+				rawLines[i] = strings.Repeat(" ", lipgloss.Width(prefix)) + rawLines[i]
+			}
+		}
+		return strings.Join(rawLines, "\n")
+	}
+	return rendered
 }
 
 func parseInlineTextLinks(text string) []inlineTextPart {
@@ -1979,6 +2058,9 @@ func markFirstLinkMatch(lines []linkedLine, display, url string) {
 func renderStyledLinkedLine(line linkedLine, base lipgloss.Style, width int) string {
 	text := fitDisplay(line.text, width)
 	if len(line.links) == 0 {
+		if line.ansi != "" && line.text == text {
+			return base.Render(line.ansi)
+		}
 		return base.Render(text)
 	}
 	runes := []rune(text)
@@ -2120,7 +2202,7 @@ func renderStatusBar(m model, width int) string {
 	if m.updateInfo.Available() {
 		stateParts = append(stateParts, "update "+m.updateInfo.Latest)
 	}
-	actionParts := []string{"native copy", "Esc clear", "⌃S sync", "⌃T tree", "⌃K diff", "Tab Tab projects", "/cd", "/upgrade", "⌃C quit"}
+	actionParts := []string{"wheel scroll", "drag copy", "Esc clear", "⌃S sync", "⌃T tree", "⌃K diff", "Tab Tab projects", "/cd", "/upgrade", "⌃C quit"}
 	lines := []string{
 		hintStyle.Render(fitDisplay(strings.Join(stateParts, " · "), bodyWidth)),
 		hintStyle.Render(fitDisplay(strings.Join(actionParts, " · "), bodyWidth)),
@@ -2664,7 +2746,8 @@ func sidebarFooterLines(m model, width int) []string {
 	}
 	m.gitStatus = git
 	lines = append(lines, truncateDisplay(gitSyncButtonLabel(m), width))
-	lines = append(lines, "native copy")
+	lines = append(lines, "wheel scroll")
+	lines = append(lines, "drag copy")
 	lines = append(lines, "Esc clear")
 	lines = append(lines, "⌃S sync")
 	lines = append(lines, "⌃T tree")
@@ -3945,6 +4028,9 @@ func containsFakeBashApprovalTranscript(text string) bool {
 		(strings.Contains(trimmed, "tool_use_id:") || strings.Contains(trimmed, "请在下方审批面板选择")) {
 		return true
 	}
+	if containsOrphanApprovalPanelWait(trimmed) {
+		return true
+	}
 	return containsProseBashApprovalRequest(trimmed)
 }
 
@@ -3986,6 +4072,31 @@ func containsProseBashApprovalRequest(text string) bool {
 		return false
 	}
 	for _, marker := range []string{"请批准", "批准即跑", "批准后", "同意后", "确认后", "你确认后", "你批准后", "批准就跑"} {
+		if strings.Contains(trimmed, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsOrphanApprovalPanelWait(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	panelMarkers := []string{"审批面板", "确认面板", "允许面板"}
+	actionMarkers := []string{"点允许", "点确认", "选择允许", "选择确认", "面板确认", "已发起审批", "审批已发出", "请看面板", "留意面板"}
+	hasPanel := false
+	for _, marker := range panelMarkers {
+		if strings.Contains(trimmed, marker) {
+			hasPanel = true
+			break
+		}
+	}
+	if !hasPanel {
+		return false
+	}
+	for _, marker := range actionMarkers {
 		if strings.Contains(trimmed, marker) {
 			return true
 		}

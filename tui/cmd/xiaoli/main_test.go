@@ -171,14 +171,14 @@ func TestStatusBarShowsTwoRowsWithStateAndActions(t *testing.T) {
 	}
 }
 
-func TestNewModelDefaultsToNativeCopy(t *testing.T) {
+func TestNewModelDefaultsToMouseViewportScrolling(t *testing.T) {
 	m := newModel(newTestLocalApp(t, t.TempDir()), "", "")
-	if m.mouseEnabled {
-		t.Fatalf("mouseEnabled = true, want false so terminal-native selection works")
+	if !m.mouseEnabled {
+		t.Fatalf("mouseEnabled = false, want true so wheel scrolls transcript viewport")
 	}
 }
 
-func TestViewRendersFullTranscriptWhenNoPendingPanel(t *testing.T) {
+func TestViewConstrainsTranscriptWhenNoPendingPanel(t *testing.T) {
 	input := textinput.New()
 	items := make([]transcriptItem, 0, 40)
 	for i := 0; i < 40; i++ {
@@ -195,10 +195,13 @@ func TestViewRendersFullTranscriptWhenNoPendingPanel(t *testing.T) {
 	m.syncViewport(true)
 
 	got := stripTestANSI(m.View())
-	for _, want := range []string{"history line 00", "history line 20", "history line 39", ">"} {
+	for _, want := range []string{"history line 39", ">"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("View() missing %q in full transcript:\n%s", want, got)
+			t.Fatalf("View() missing %q in constrained transcript:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "history line 00") {
+		t.Fatalf("View() rendered old transcript head without a pending panel:\n%s", got)
 	}
 }
 
@@ -369,8 +372,8 @@ func TestStartGitSyncFeedbackOnlyUpdatesFooter(t *testing.T) {
 
 func TestStatusBarShowsSelectionMouseHint(t *testing.T) {
 	got := stripTestANSI(renderStatusBar(model{cwd: "/tmp/repo", gitStatus: "main ✓", status: "idle"}, 80))
-	if !strings.Contains(got, "native copy") || !strings.Contains(got, "Esc clear") {
-		t.Fatalf("renderStatusBar(idle) = %q, want native copy hint", got)
+	if !strings.Contains(got, "wheel scroll") || !strings.Contains(got, "drag copy") || !strings.Contains(got, "Esc clear") {
+		t.Fatalf("renderStatusBar(idle) = %q, want mouse viewport hints", got)
 	}
 	got = stripTestANSI(renderStatusBar(model{cwd: "/tmp/repo", gitStatus: "main ✓", selection: transcriptSelection{active: true}, status: "selecting"}, 80))
 	if !strings.Contains(got, "selecting") || !strings.Contains(got, "Esc clear") {
@@ -652,6 +655,36 @@ func TestMarkdownLinkRendersAsUnderlinedTitle(t *testing.T) {
 	}
 	if !strings.Contains(got, "\x1b[4;") && !strings.Contains(got, ";4m") {
 		t.Fatalf("rendered link lacks underline style: %q", got)
+	}
+}
+
+func TestMarkdownBoldItalicRenderWithoutRawMarkers(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	got := renderTranscriptContent([]transcriptItem{{
+		role: "assistant",
+		text: "这是 **重点** 和 *轻声*",
+	}}, 80)
+	plain := stripTestANSI(got)
+	if !strings.Contains(plain, "重点") || !strings.Contains(plain, "轻声") {
+		t.Fatalf("rendered markdown text missing content: %q", plain)
+	}
+	if strings.Contains(plain, "**") || strings.Contains(plain, "*轻声*") {
+		t.Fatalf("rendered markdown leaked emphasis markers: %q", plain)
+	}
+}
+
+func TestMarkdownTableDoesNotLeakSeparatorSyntax(t *testing.T) {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	got := renderTranscriptContent([]transcriptItem{{
+		role: "assistant",
+		text: "| Name | Status |\n| --- | --- |\n| Tool | Ready |",
+	}}, 80)
+	plain := stripTestANSI(got)
+	if !strings.Contains(plain, "Name") || !strings.Contains(plain, "Tool") {
+		t.Fatalf("rendered markdown table missing cells: %q", plain)
+	}
+	if strings.Contains(plain, "| --- | --- |") {
+		t.Fatalf("rendered markdown table leaked separator syntax: %q", plain)
 	}
 }
 
@@ -1283,6 +1316,33 @@ func TestChatDoneRetriesProseBashApprovalWithoutPendingConfirm(t *testing.T) {
 	last := got.items[len(got.items)-1]
 	if last.role != "system" || !strings.Contains(last.text, "模型没有真正调用 bash 工具") || !strings.Contains(last.text, "批准即跑") {
 		t.Fatalf("last item = %#v, want invalid prose approval warning", last)
+	}
+}
+
+func TestChatDoneInvalidatesPanelWaitWithoutPendingConfirm(t *testing.T) {
+	app := newTestLocalApp(t, t.TempDir())
+	m := model{
+		app:            app,
+		input:          textinput.New(),
+		width:          90,
+		height:         24,
+		viewport:       viewport.New(90, 10),
+		streamingIndex: -1,
+		items: []transcriptItem{
+			{role: "run-active", text: "Aligning"},
+			{role: "run-done", text: "Delivered"},
+		},
+	}
+
+	next, _ := m.Update(chatDoneMsg{reply: "等你在审批面板点允许。"})
+	got := next.(model)
+
+	if got.hasPendingBashConfirm() {
+		t.Fatalf("panel wait created pending confirm: %#v", got.pendingToolConfirm)
+	}
+	last := got.items[len(got.items)-1]
+	if last.role != "system" || !strings.Contains(last.text, "模型没有真正调用 bash 工具") || !strings.Contains(last.text, "审批面板") {
+		t.Fatalf("last item = %#v, want invalid panel wait warning", last)
 	}
 }
 
