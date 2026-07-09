@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/mnhkahn/gogogo/logger"
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 	a2a "github.com/mnhkahn/xiaoli/server/internal/a2a"
 )
@@ -81,6 +82,7 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 		if profile.Name == "geek-news" {
 			reply, err = normalizeGeekNewsReply(reply)
 			if err != nil {
+				logger.Infof("[A2A][geek-news][normalize_failed] conversation_id=%s err=%v reply_len=%d reply_preview=%q", turn.ConversationID, err, len(reply), truncateA2ALogValue(reply, 800))
 				return a2a.ConversationReply{}, err
 			}
 		}
@@ -188,6 +190,14 @@ func normalizeGeekNewsReply(reply string) (string, error) {
 		return "", errors.New("generated geek news is invalid json")
 	}
 	return string(body), nil
+}
+
+func truncateA2ALogValue(value string, maxLen int) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\n", "\\n"))
+	if maxLen <= 0 || len(value) <= maxLen {
+		return value
+	}
+	return value[:maxLen] + "...(truncated)"
 }
 
 type rawA2AProfileRequest struct {

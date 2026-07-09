@@ -8,7 +8,7 @@
           "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
           "model": "ark-code-latest",
           "api_key_env": "ARK_API_KEY",
-          "max_tokens": 8192,
+          "max_tokens": 16384,
           "context_length": 131072
         },
         "siliconflow:hunyuan-mt-7b": {
@@ -108,7 +108,7 @@
         "allow_tools": true
       },
       "geek-news": {
-        "model": "",
+        "model": "ark:code-latest",
         "allow_tools": true
       },
       "encouragement": {

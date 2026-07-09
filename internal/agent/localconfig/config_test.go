@@ -101,6 +101,42 @@ func TestRuntimeConfigUsesExtendedLLMTimeout(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigIncludesWorkspaceSkillRoot(t *testing.T) {
+	t.Setenv("LOCAL_TEST_API_KEY", "secret-env")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	body := `{
+		"data_dir": "` + dir + `",
+		"models": {
+			"default": "test",
+			"options": {
+				"test": {
+					"base_url": "https://example.test/v1",
+					"model": "test-model",
+					"api_key_env": "LOCAL_TEST_API_KEY"
+				}
+			}
+		},
+		"skills": {
+			"roots": ["` + filepath.ToSlash(filepath.Join(dir, "global-skills")) + `"]
+		}
+	}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	rt, err := cfg.RuntimeConfig("prompt")
+	if err != nil {
+		t.Fatalf("RuntimeConfig() error = %v", err)
+	}
+	if !containsPath(rt.SkillRoots, filepath.Join(".agents", "skills")) {
+		t.Fatalf("SkillRoots = %#v, want workspace .agents/skills root", rt.SkillRoots)
+	}
+}
+
 func TestRuntimeConfigResolvesSecretsFile(t *testing.T) {
 	dir := t.TempDir()
 	settingsPath := filepath.Join(dir, "settings.json")
@@ -134,6 +170,15 @@ func TestRuntimeConfigResolvesSecretsFile(t *testing.T) {
 	if rt.LLMAPIKey != "secret-file" {
 		t.Fatalf("LLMAPIKey = %q, want secret-file", rt.LLMAPIKey)
 	}
+}
+
+func containsPath(paths []string, want string) bool {
+	for _, path := range paths {
+		if filepath.Clean(path) == filepath.Clean(want) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestEnsureDefaultsWritesSettingsAndSecrets(t *testing.T) {

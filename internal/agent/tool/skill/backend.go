@@ -27,6 +27,7 @@ type BackendConfig struct {
 
 type Backend struct {
 	mu       sync.RWMutex
+	roots    []string
 	maxBytes int64
 	enabled  map[string]bool
 	all      bool
@@ -53,15 +54,28 @@ func NewFileBackend(cfg BackendConfig) (*Backend, error) {
 	}
 	enabled, all := skillAllowlist(cfg.Enabled)
 	backend := &Backend{
+		roots:    cleanSkillRoots(cfg.Roots),
 		maxBytes: maxBytes,
 		enabled:  enabled,
 		all:      all,
 		skills:   map[string]indexedSkill{},
 	}
-	if err := backend.scan(cfg.Roots); err != nil {
+	if err := backend.scan(backend.roots); err != nil {
 		return nil, err
 	}
 	return backend, nil
+}
+
+func cleanSkillRoots(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		out = append(out, root)
+	}
+	return out
 }
 
 func skillAllowlist(items []string) (map[string]bool, bool) {
@@ -148,6 +162,7 @@ func (b *Backend) indexSkill(dst map[string]indexedSkill, dir string) error {
 }
 
 func (b *Backend) List(context.Context) ([]einoskill.FrontMatter, error) {
+	_ = b.Refresh()
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -165,6 +180,7 @@ func (b *Backend) List(context.Context) ([]einoskill.FrontMatter, error) {
 }
 
 func (b *Backend) ListVersions() []SkillFrontMatter {
+	_ = b.Refresh()
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -182,13 +198,22 @@ func (b *Backend) ListVersions() []SkillFrontMatter {
 }
 
 func (b *Backend) Count() int {
+	_ = b.Refresh()
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return len(b.skills)
 }
 
+func (b *Backend) Refresh() error {
+	if b == nil {
+		return nil
+	}
+	return b.scan(b.roots)
+}
+
 func (b *Backend) Get(_ context.Context, name string) (einoskill.Skill, error) {
 	name = strings.TrimSpace(name)
+	_ = b.Refresh()
 	b.mu.RLock()
 	item, ok := b.skills[name]
 	b.mu.RUnlock()

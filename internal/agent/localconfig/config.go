@@ -62,6 +62,8 @@ type SkillConfig struct {
 	GlobalBinDirs []string `json:"global_bin_dirs"`
 }
 
+const workspaceSkillRoot = ".agents/skills"
+
 func DefaultDataDir() string {
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".xiaoli")
@@ -445,7 +447,7 @@ func (c Config) RuntimeConfig(prompt string) (agentruntime.Config, error) {
 		LocalConversationDir:    c.Storage.ConversationDir,
 		LocalHistoryMaxMessages: c.Storage.HistoryMaxMessages,
 		BuiltinWebFetchEnabled:  c.Tools.WebFetch,
-		SkillRoots:              c.Skills.Roots,
+		SkillRoots:              withWorkspaceSkillRoot(c.Skills.Roots),
 		EnabledSkills:           c.Skills.Enabled,
 		SkillExecGlobalBinDirs:  c.Skills.GlobalBinDirs,
 		TaskAllowedRoots:        c.Tools.AllowedRoots,
@@ -508,6 +510,24 @@ func expandPaths(paths []string) []string {
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
 		out = append(out, expandHome(p))
+	}
+	return out
+}
+
+func withWorkspaceSkillRoot(paths []string) []string {
+	out := make([]string, 0, len(paths)+1)
+	seen := map[string]bool{}
+	for _, path := range paths {
+		key := filepath.Clean(strings.TrimSpace(path))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, path)
+	}
+	key := filepath.Clean(workspaceSkillRoot)
+	if !seen[key] {
+		out = append(out, workspaceSkillRoot)
 	}
 	return out
 }

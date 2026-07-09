@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	einoskill "github.com/cloudwego/eino/adk/middlewares/skill"
@@ -62,6 +63,35 @@ func TestFileSkillBackendGetLoadsSkillBodyOnDemand(t *testing.T) {
 	}
 	if got.Name != "holiday" || got.Content != "updated body\n" {
 		t.Fatalf("Get() = %#v, want updated body loaded from disk", got)
+	}
+}
+
+func TestFileSkillBackendRefreshesRelativeRootOnGet(t *testing.T) {
+	workspaceA := t.TempDir()
+	workspaceB := t.TempDir()
+	writeTestSkill(t, filepath.Join(workspaceA, ".agents", "skills"), "workspace-a", "A skill", "A body")
+	writeTestSkill(t, filepath.Join(workspaceB, ".agents", "skills"), "workspace-b", "B skill", "B body")
+
+	t.Chdir(workspaceA)
+	backend, err := NewFileBackend(BackendConfig{
+		Roots:   []string{filepath.Join(".agents", "skills")},
+		Enabled: []string{"*"},
+	})
+	if err != nil {
+		t.Fatalf("NewFileBackend() error = %v", err)
+	}
+
+	if _, err := backend.Get(context.Background(), "workspace-a"); err != nil {
+		t.Fatalf("Get(workspace-a) error = %v", err)
+	}
+
+	t.Chdir(workspaceB)
+	skill, err := backend.Get(context.Background(), "workspace-b")
+	if err != nil {
+		t.Fatalf("Get(workspace-b) error = %v", err)
+	}
+	if strings.TrimSpace(skill.Content) != "B body" {
+		t.Fatalf("Content = %q, want B body", skill.Content)
 	}
 }
 

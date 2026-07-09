@@ -209,6 +209,54 @@ func TestTerminalTitleTransientStatesDoNotRingBell(t *testing.T) {
 	}
 }
 
+func TestTerminalProgressSequences(t *testing.T) {
+	tests := []struct {
+		name  string
+		state terminalProgressState
+		want  string
+	}{
+		{name: "running", state: terminalProgressRunning, want: "\x1b]9;4;3\x07"},
+		{name: "done", state: terminalProgressDone, want: "\x1b]9;4;5;0\x07"},
+		{name: "failed", state: terminalProgressFailed, want: "\x1b]9;4;5;1\x07"},
+		{name: "clear", state: terminalProgressClear, want: "\x1b]9;4;0\x07"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := terminalProgressSequence(tt.state); got != tt.want {
+				t.Fatalf("terminalProgressSequence(%v) = %q, want %q", tt.state, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTerminalProgressStates(t *testing.T) {
+	tests := []struct {
+		name  string
+		model model
+		want  terminalProgressState
+	}{
+		{name: "idle clears progress", model: model{}, want: terminalProgressClear},
+		{name: "busy is indeterminate", model: model{busy: true}, want: terminalProgressRunning},
+		{name: "run pulse is indeterminate", model: model{runPulseActive: true}, want: terminalProgressRunning},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := terminalProgress(tt.model); got != tt.want {
+				t.Fatalf("terminalProgress() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+	if got := terminalProgressForTitle(terminalDoneTitle); got != terminalProgressDone {
+		t.Fatalf("done title progress = %v, want %v", got, terminalProgressDone)
+	}
+	if got := terminalProgressForTitle(terminalFailedTitle); got != terminalProgressFailed {
+		t.Fatalf("failed title progress = %v, want %v", got, terminalProgressFailed)
+	}
+	if got := terminalProgressForTitle(terminalIdleTitle); got != terminalProgressClear {
+		t.Fatalf("idle title progress = %v, want %v", got, terminalProgressClear)
+	}
+}
+
 func TestViewConstrainsTranscriptWhenNoPendingPanel(t *testing.T) {
 	input := textinput.New()
 	items := make([]transcriptItem, 0, 40)
@@ -425,6 +473,39 @@ func TestCtrlKOpensDiffExplorer(t *testing.T) {
 	}
 	if got.input.Value() != "" {
 		t.Fatalf("Ctrl-K input = %q, want empty", got.input.Value())
+	}
+}
+
+func TestCtrlKCommitsWhenCommitPlanIsPending(t *testing.T) {
+	input := textinput.New()
+	m := model{
+		input:           input,
+		cwd:             t.TempDir(),
+		width:           100,
+		height:          30,
+		viewport:        viewport.New(100, 10),
+		pendingGitCmsg:  gitCmsgPending{Active: true, Message: "fix(tui): polish commit flow"},
+		pendingQuestion: "确认提交？",
+		pendingOptions:  []string{"提交并推送", "确认提交", "重新生成", "取消操作"},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatal("Ctrl-K returned nil command, want commit command")
+	}
+	if got.explorer != nil {
+		t.Fatalf("Ctrl-K explorer = %#v, want no diff explorer", got.explorer)
+	}
+	if got.pendingGitCmsg.Active || got.pendingQuestion != "" || got.pendingOptions != nil {
+		t.Fatalf("pending commit state = %#v question=%q options=%#v, want cleared", got.pendingGitCmsg, got.pendingQuestion, got.pendingOptions)
+	}
+	if !got.busy || got.status != "git commit && push" {
+		t.Fatalf("busy/status = %v/%q, want git commit && push", got.busy, got.status)
+	}
+	if len(got.items) == 0 || got.items[len(got.items)-1].role != "run-active" || got.items[len(got.items)-1].text != "Commit and push" {
+		t.Fatalf("last item = %#v, want Commit and push run-active", got.items)
 	}
 }
 
@@ -898,6 +979,188 @@ func TestPendingBashConfirmEnterApprovesWhileBusy(t *testing.T) {
 	}
 }
 
+func TestShiftTabTogglesAutoBashMode(t *testing.T) {
+	m := model{
+		input:    textinput.New(),
+		width:    100,
+		height:   24,
+		viewport: viewport.New(100, 10),
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	got := next.(model)
+
+	if cmd != nil {
+		t.Fatalf("Shift+Tab returned command, want nil")
+	}
+	if !got.autoApproveBash {
+		t.Fatal("autoApproveBash = false, want true")
+	}
+	if last := got.items[len(got.items)-1]; last.role != "system" || !strings.Contains(last.text, "已开启 bash 自动通过模式") {
+		t.Fatalf("last item = %#v, want auto bash enabled message", last)
+	}
+
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	got = next.(model)
+
+	if cmd != nil {
+		t.Fatalf("second Shift+Tab returned command, want nil")
+	}
+	if got.autoApproveBash {
+		t.Fatal("autoApproveBash = true, want false")
+	}
+	if last := got.items[len(got.items)-1]; last.role != "system" || !strings.Contains(last.text, "已关闭 bash 自动通过模式") {
+		t.Fatalf("last item = %#v, want auto bash disabled message", last)
+	}
+}
+
+func TestPendingBashConfirmCtrlAEnablesAutoBashAndApproves(t *testing.T) {
+	ctx, holder := agentbuiltin.NewToolUseConfirmHolder(context.Background())
+	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, "ses_auto_ctrl_a")
+	tool := agentbuiltin.NewShellTool(agentbuiltin.ShellConfig{})
+	if _, err := tool.InvokableRun(ctx, `{"command":"printf auto"}`); err != nil {
+		t.Fatal(err)
+	}
+	confirm := holder.Get()
+	if confirm == nil {
+		t.Fatal("missing pending bash confirm")
+	}
+	t.Cleanup(func() { agentbuiltin.ClearBashApproval("ses_auto_ctrl_a") })
+	m := model{
+		app:                         newTestLocalApp(t, t.TempDir()),
+		input:                       textinput.New(),
+		sessionID:                   "ses_auto_ctrl_a",
+		pendingToolConfirm:          confirm,
+		pendingToolConfirmReviewFix: false,
+		pendingQuestion:             confirm.Question,
+		pendingOptions:              append([]string(nil), confirm.Options...),
+		pendingChoice:               0,
+		busy:                        true,
+		status:                      "running",
+		width:                       100,
+		height:                      24,
+		viewport:                    viewport.New(100, 10),
+		items:                       []transcriptItem{{role: "run-active", text: "Working"}},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatal("Ctrl+A returned nil command, want approved bash command")
+	}
+	if !got.autoApproveBash {
+		t.Fatal("autoApproveBash = false, want true")
+	}
+	if !got.busy || got.status != "bash running" {
+		t.Fatalf("busy/status = %v/%q, want bash running", got.busy, got.status)
+	}
+	if got.pendingToolConfirm != nil {
+		t.Fatalf("pendingToolConfirm = %#v, want cleared", got.pendingToolConfirm)
+	}
+	if got.items[len(got.items)-1].role != "event" || !strings.Contains(got.items[len(got.items)-1].text, "auto-approved bash: printf auto") {
+		t.Fatalf("last item = %#v, want auto-approved bash event", got.items[len(got.items)-1])
+	}
+}
+
+func TestPendingBashConfirmUsesConfirmSessionIDForAutoApprove(t *testing.T) {
+	ctx, holder := agentbuiltin.NewToolUseConfirmHolder(context.Background())
+	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, "ses_confirm_owner")
+	tool := agentbuiltin.NewShellTool(agentbuiltin.ShellConfig{})
+	if _, err := tool.InvokableRun(ctx, `{"command":"printf session"}`); err != nil {
+		t.Fatal(err)
+	}
+	confirm := holder.Get()
+	if confirm == nil {
+		t.Fatal("missing pending bash confirm")
+	}
+	t.Cleanup(func() { agentbuiltin.ClearBashApproval("ses_confirm_owner") })
+	m := model{
+		app:                         newTestLocalApp(t, t.TempDir()),
+		input:                       textinput.New(),
+		sessionID:                   "ses_different_active",
+		pendingToolConfirm:          confirm,
+		pendingToolConfirmReviewFix: false,
+		pendingQuestion:             confirm.Question,
+		pendingOptions:              append([]string(nil), confirm.Options...),
+		pendingChoice:               0,
+		busy:                        true,
+		status:                      "running",
+		width:                       100,
+		height:                      24,
+		viewport:                    viewport.New(100, 10),
+		items:                       []transcriptItem{{role: "run-active", text: "Working"}},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatal("Ctrl+A returned nil command, want approved bash command")
+	}
+	if last := got.items[len(got.items)-1]; last.role != "event" || !strings.Contains(last.text, "auto-approved bash: printf session") {
+		t.Fatalf("last item = %#v, want auto-approved event", last)
+	}
+}
+
+func TestAutoBashPermissionEventApprovesWithoutModal(t *testing.T) {
+	ctx, holder := agentbuiltin.NewToolUseConfirmHolder(context.Background())
+	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, "ses_auto_event")
+	tool := agentbuiltin.NewShellTool(agentbuiltin.ShellConfig{})
+	if _, err := tool.InvokableRun(ctx, `{"command":"printf event"}`); err != nil {
+		t.Fatal(err)
+	}
+	confirm := holder.Get()
+	if confirm == nil {
+		t.Fatal("missing pending bash confirm")
+	}
+	t.Cleanup(func() { agentbuiltin.ClearBashApproval("ses_auto_event") })
+	m := model{
+		app:             newTestLocalApp(t, t.TempDir()),
+		input:           textinput.New(),
+		sessionID:       "ses_auto_event",
+		autoApproveBash: true,
+		busy:            true,
+		status:          "running",
+		width:           100,
+		height:          24,
+		viewport:        viewport.New(100, 10),
+		items:           []transcriptItem{{role: "run-active", text: "Working"}},
+	}
+	event := agentevent.Event{
+		Type:      agentevent.TypePermissionAsked,
+		SessionID: "ses_auto_event",
+		Data: agentevent.PermissionAskedData{
+			RequestID:   confirm.RequestID,
+			SessionID:   confirm.SessionID,
+			ToolName:    confirm.ToolName,
+			ToolUseID:   confirm.ToolUseID,
+			Question:    confirm.Question,
+			Options:     append([]string(nil), confirm.Options...),
+			Input:       map[string]string{"command": confirm.BashCommand},
+			BashHash:    confirm.BashHash,
+			ChannelName: confirm.ChannelName,
+			DeviceID:    confirm.DeviceID,
+		},
+	}
+
+	next, cmd := m.Update(eventMsg{event: event})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatal("permission event returned nil command, want auto-approved bash command")
+	}
+	if got.pendingToolConfirm != nil {
+		t.Fatalf("pendingToolConfirm = %#v, want no visible modal", got.pendingToolConfirm)
+	}
+	if !got.busy || got.status != "bash running" {
+		t.Fatalf("busy/status = %v/%q, want bash running", got.busy, got.status)
+	}
+	if last := got.items[len(got.items)-1]; last.role != "event" || !strings.Contains(last.text, "auto-approved bash: printf event") {
+		t.Fatalf("last item = %#v, want auto-approved event", last)
+	}
+}
+
 func TestBusyEnterQueuesUserPrompt(t *testing.T) {
 	input := textinput.New()
 	input.SetValue("顺手也检查 sitemap")
@@ -1075,30 +1338,30 @@ func TestPendingAskPanelRendersNearInputWithoutViewportSync(t *testing.T) {
 func TestPendingBashConfirmRendersFixedApprovalModal(t *testing.T) {
 	input := textinput.New()
 	m := model{
-		input: input,
-		pendingToolConfirm: &agentbuiltin.PendingToolUseConfirm{
-			ToolName:    "bash",
-			ToolUseID:   "toolu_bash_modal",
-			BashHash:    "hash_modal",
-			BashCommand: "newrelic nrql query --accountId 6119564 --query SELECT",
-		},
-		pendingQuestion: "是否允许执行命令：newrelic nrql query --accountId 6119564 --query SELECT",
-		pendingOptions: []string{
-			"允许一次 :: newrelic nrql query --accountId 6119564 --query SELECT",
-			"本会话允许此命令 :: newrelic nrql query --accountId 6119564 --query SELECT",
-			"拒绝",
-		},
+		input:         input,
 		pendingChoice: 0,
 		width:         100,
 		height:        28,
 		viewport:      viewport.New(100, 10),
 		items:         []transcriptItem{{role: "assistant", text: strings.Repeat("history\n", 20)}},
 	}
+	m.setPendingToolConfirm(&agentbuiltin.PendingToolUseConfirm{
+		ToolName:    "bash",
+		ToolUseID:   "toolu_bash_modal",
+		BashHash:    "hash_modal",
+		BashCommand: "newrelic nrql query --accountId 6119564 --query SELECT",
+		Question:    "是否允许执行命令：newrelic nrql query --accountId 6119564 --query SELECT",
+		Options: []string{
+			"允许一次 :: newrelic nrql query --accountId 6119564 --query SELECT",
+			"本会话允许此命令 :: newrelic nrql query --accountId 6119564 --query SELECT",
+			"拒绝",
+		},
+	}, false)
 	m.syncViewport(true)
 
 	got := stripTestANSI(m.View())
 
-	for _, want := range []string{"BASH APPROVAL", "toolu_bash_modal", "newrelic nrql query", "› 1. 允许一次"} {
+	for _, want := range []string{"BASH APPROVAL", "toolu_bash_modal", "newrelic nrql query", "› 1. 允许一次", "2. 自动通过本轮并执行"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("View() = %q, want fixed approval modal containing %q", got, want)
 		}
@@ -1418,7 +1681,7 @@ func TestChatDoneConsumesPendingToolConfirmBySessionID(t *testing.T) {
 		t.Fatalf("pending panel state = question %q options %#v", got.pendingQuestion, got.pendingOptions)
 	}
 	view := stripTestANSI(got.View())
-	if !strings.Contains(view, "› 1. 允许一次") || !strings.Contains(view, "2. 拒绝") {
+	if !strings.Contains(view, "› 1. 允许一次") || !strings.Contains(view, "2. 自动通过本轮并执行") || !strings.Contains(view, "3. 拒绝") {
 		t.Fatalf("View() = %q, want pending approval panel", view)
 	}
 }
@@ -1620,6 +1883,33 @@ func TestCommitSlashUsesRunEventStart(t *testing.T) {
 	last := m.items[len(m.items)-1]
 	if last.role != "run-active" || last.text != "Preparing commit" || !m.runPulseActive || m.runPulseFrame != 0 {
 		t.Fatalf("/commit event = %#v, want run-active Preparing commit", last)
+	}
+}
+
+func TestGitCmsgCommitSuccessSplitsSummaryAndShellOutput(t *testing.T) {
+	m := model{
+		cwd:      t.TempDir(),
+		width:    100,
+		height:   30,
+		viewport: viewport.New(100, 10),
+		busy:     true,
+		status:   "git commit && push",
+	}
+	output := "🔍 检测 localhost:8090 端口状态...\n✅ sitemap 生成成功，加入暂存区...\n[master fb03079] fix(github-stats): 增强 GitHub releases\nTo github.com:mnhkahn/cyeam_web.git\n   48186e2..fb03079  master -> master\n"
+
+	next, _ := m.Update(gitCmsgCommitMsg{output: output, push: true})
+	got := next.(model)
+
+	if len(got.items) < 3 {
+		t.Fatalf("items = %#v, want run event, summary, and shell output", got.items)
+	}
+	summary := got.items[len(got.items)-2]
+	shell := got.items[len(got.items)-1]
+	if summary.role != "system" || summary.text != "提交并推送完成。" {
+		t.Fatalf("summary item = %#v, want system summary only", summary)
+	}
+	if shell.role != "shell" || shell.text != strings.TrimSpace(output) {
+		t.Fatalf("shell item = %#v, want trimmed shell output", shell)
 	}
 }
 

@@ -143,6 +143,15 @@ const (
 	terminalFailedTitle = "× Xiaoli failed"
 )
 
+type terminalProgressState int
+
+const (
+	terminalProgressClear terminalProgressState = iota
+	terminalProgressRunning
+	terminalProgressDone
+	terminalProgressFailed
+)
+
 var terminalRunningFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type pastedContent struct {
@@ -278,6 +287,7 @@ type model struct {
 	pendingQuestion             string
 	pendingOptions              []string
 	pendingChoice               int
+	autoApproveBash             bool
 	pendingGitCmsg              gitCmsgPending
 	reviewLoop                  codexReviewLoop
 	explorer                    *tuiExplorer
@@ -523,17 +533,61 @@ func terminalTitle(m model) string {
 }
 
 func terminalTitleCmd(m model) tea.Cmd {
-	return tea.SetWindowTitle(terminalTitle(m))
+	return tea.Batch(tea.SetWindowTitle(terminalTitle(m)), terminalProgressCmd(terminalProgress(m)))
 }
 
 func terminalTitleTextCmd(title string) tea.Cmd {
-	return tea.SetWindowTitle(title)
+	return tea.Batch(tea.SetWindowTitle(title), terminalProgressCmd(terminalProgressForTitle(title)))
 }
 
 func terminalTitleResetCmd() tea.Cmd {
 	return tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg {
 		return terminalTitleResetMsg{}
 	})
+}
+
+func terminalProgress(m model) terminalProgressState {
+	if m.busy || m.runPulseActive {
+		return terminalProgressRunning
+	}
+	return terminalProgressClear
+}
+
+func terminalProgressForTitle(title string) terminalProgressState {
+	switch title {
+	case terminalDoneTitle:
+		return terminalProgressDone
+	case terminalFailedTitle:
+		return terminalProgressFailed
+	default:
+		return terminalProgressClear
+	}
+}
+
+func terminalProgressCmd(state terminalProgressState) tea.Cmd {
+	seq := terminalProgressSequence(state)
+	if seq == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		_, _ = fmt.Fprint(os.Stdout, seq)
+		return nil
+	}
+}
+
+func terminalProgressSequence(state terminalProgressState) string {
+	switch state {
+	case terminalProgressRunning:
+		return "\x1b]9;4;3\x07"
+	case terminalProgressDone:
+		return "\x1b]9;4;5;0\x07"
+	case terminalProgressFailed:
+		return "\x1b]9;4;5;1\x07"
+	case terminalProgressClear:
+		return "\x1b]9;4;0\x07"
+	default:
+		return ""
+	}
 }
 
 func printExitSummary(app *localapp.App, m model, configPath string) {
@@ -749,7 +803,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+o":
 			return m, nil
 		case "ctrl+k":
-			if m.busy || m.hasPendingOptions() {
+			if m.busy {
+				return m, nil
+			}
+			if m.pendingGitCmsg.Active {
+				cmd := m.handleGitCmsgChoice("提交并推送")
+				return m, cmd
+			}
+			if m.hasPendingOptions() {
 				return m, nil
 			}
 			m.clearInputDraft()
@@ -793,7 +854,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleVerticalKey(-1)
 		case "down":
 			return m.handleVerticalKey(1)
-		case "left", "shift+tab":
+		case "shift+tab":
+			m.toggleAutoApproveBash()
+			m.syncViewport(true)
+			return m, nil
+		case "ctrl+a":
+			if m.hasPendingBashConfirm() {
+				m.autoApproveBash = true
+				return m.autoApprovePendingBashConfirm()
+			}
+		case "left":
 			if m.movePendingChoice(-1) {
 				m.syncViewport(false)
 				return m, nil
@@ -1041,6 +1111,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.chatCanceled && errors.Is(msg.err, context.Canceled) {
 			m.chatCanceled = false
+			m.autoApproveBash = false
 			m.syncViewport(true)
 			return m, waitForEvent(m.events)
 		}
@@ -1057,6 +1128,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			doneTitle = terminalFailedTitle
 			m.lastError = msg.err.Error()
 			m.items = append(m.items, transcriptItem{role: "error", text: msg.err.Error()})
+			m.autoApproveBash = false
 		} else {
 			updatedIndex := -1
 			if m.streamingIndex >= 0 && m.streamingIndex < len(m.items) {
@@ -1123,11 +1195,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshContextUsage()
 		m.syncViewport(true)
 		if len(m.queuedUserPrompts) > 0 && !m.hasPendingBashConfirm() && !m.hasPendingOptions() {
+			m.autoApproveBash = false
 			return m.startQueuedUserPromptChat()
 		}
 		if m.hasPendingBashConfirm() || m.hasPendingOptions() {
+			if m.autoApproveBash && m.hasPendingBashConfirm() {
+				return m.autoApprovePendingBashConfirm()
+			}
 			return m, tea.Batch(waitForEvent(m.events), terminalTitleCmd(m))
 		}
+		m.autoApproveBash = false
 		return m, tea.Batch(waitForEvent(m.events), terminalTitleTextCmd(doneTitle), terminalTitleResetCmd())
 	case chatTimeoutMsg:
 		if msg.runID != m.chatRunID || !m.busy {
@@ -1143,6 +1220,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.streamFlushPending = false
 		m.runPulseActive = false
 		m.reviewLoop = codexReviewLoop{}
+		m.autoApproveBash = false
 		m.items = append(m.items, transcriptItem{role: "error", text: "模型调用超时，已停止当前执行。"})
 		m.syncViewport(true)
 		return m, tea.Batch(waitForEvent(m.events), terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
@@ -1163,6 +1241,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.chatCanceled && errors.Is(msg.err, context.Canceled) {
 			m.chatCanceled = false
+			m.autoApproveBash = false
 			m.syncViewport(true)
 			return m, nil
 		}
@@ -1178,6 +1257,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.items = append(m.items, msg.transcriptItem())
 		m.syncViewport(true)
 		if len(m.queuedUserPrompts) > 0 {
+			m.autoApproveBash = false
 			return m.startQueuedUserPromptChat()
 		}
 		title := terminalDoneTitle
@@ -1192,6 +1272,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.chatCanceled && errors.Is(msg.err, context.Canceled) {
 			m.chatCanceled = false
+			m.autoApproveBash = false
 			m.syncViewport(true)
 			return m, nil
 		}
@@ -1265,7 +1346,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				doneText = "提交并推送完成。"
 			}
 			m.items = append(m.items, transcriptItem{role: "run-done", text: "Commit delivered", frame: m.runPulseFrame})
-			m.items = append(m.items, transcriptItem{role: "system", text: doneText + "\n" + strings.TrimSpace(msg.output)})
+			m.items = append(m.items, transcriptItem{role: "system", text: doneText})
+			if output := strings.TrimSpace(msg.output); output != "" {
+				m.items = append(m.items, transcriptItem{role: "shell", text: output})
+			}
 		}
 		m.syncViewport(true)
 		title := terminalDoneTitle
@@ -1351,6 +1435,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.enqueuePendingToolConfirm(confirm, false, "permission_event")
 			m.refreshContextUsage()
 			m.syncViewport(true)
+			if m.autoApproveBash && m.hasPendingBashConfirm() {
+				return m.autoApprovePendingBashConfirm()
+			}
 			return m, tea.Batch(waitForEvent(m.events), terminalTitleCmd(m))
 		}
 		if isSilentPermissionEvent(msg.event) {
@@ -2280,6 +2367,9 @@ func renderStatusBar(m model, width int) string {
 	}
 	stateParts := []string{
 		status,
+	}
+	if m.autoApproveBash {
+		stateParts = append(stateParts, "AUTO-BASH")
 	}
 	if m.app != nil && m.app.Agent != nil {
 		if modelName := strings.TrimSpace(m.app.Agent.CurrentLLMModel()); modelName != "" {
@@ -3492,7 +3582,11 @@ func renderPendingToolConfirmModal(confirm *agentbuiltin.PendingToolUseConfirm, 
 	if panel := renderPendingAskPanel("", options, selected, innerWidth); strings.TrimSpace(panel) != "" {
 		lines = append(lines, panel)
 	}
-	lines = append(lines, hintStyle.Render(fitDisplay("Use ↑/↓ or 1-4, Enter to approve, type 拒绝 to reject.", innerWidth)))
+	rangeHint := "1"
+	if len(options) > 1 {
+		rangeHint = fmt.Sprintf("1-%d", len(options))
+	}
+	lines = append(lines, hintStyle.Render(fitDisplay("Use ↑/↓ or "+rangeHint+", Enter to approve, type 拒绝 to reject.", innerWidth)))
 	return approvalBoxStyle.Width(width).Render(strings.Join(lines, "\n"))
 }
 
@@ -3878,6 +3972,25 @@ func (m model) hasPendingBashConfirm() bool {
 	return m.pendingToolConfirm != nil && strings.EqualFold(m.pendingToolConfirm.ToolName, "bash") && strings.TrimSpace(m.pendingToolConfirm.BashHash) != ""
 }
 
+const bashApprovalAutoRun = "自动通过本轮并执行"
+
+func (m *model) toggleAutoApproveBash() {
+	m.autoApproveBash = !m.autoApproveBash
+	if m.autoApproveBash {
+		m.items = append(m.items, transcriptItem{role: "system", text: "已开启 bash 自动通过模式：本轮后续 bash 工具请求将自动按“允许一次”执行。"})
+		return
+	}
+	m.items = append(m.items, transcriptItem{role: "system", text: "已关闭 bash 自动通过模式：后续 bash 工具请求会恢复人工确认。"})
+}
+
+func (m model) autoApprovePendingBashConfirm() (tea.Model, tea.Cmd) {
+	if !m.hasPendingBashConfirm() {
+		return m, nil
+	}
+	m.autoApproveBash = true
+	return m.handlePendingBashConfirmInput(bashApprovalAutoRun)
+}
+
 func (m model) handlePendingBashConfirmInput(text string) (tea.Model, tea.Cmd) {
 	if !m.hasPendingBashConfirm() {
 		return m, nil
@@ -3888,17 +4001,21 @@ func (m model) handlePendingBashConfirmInput(text string) (tea.Model, tea.Cmd) {
 	if isReject(text) {
 		confirm := m.pendingToolConfirm
 		m.publishPermissionReplied(confirm, "reject", "tui_input")
-		m.clearPendingToolConfirmState(m.activeSessionID(), true)
+		m.clearPendingToolConfirmState(m.pendingConfirmSessionID(confirm), true)
 		m.input.SetValue("")
 		m.items = append(m.items, transcriptItem{role: "system", text: "已拒绝执行命令。"})
 		m.syncViewport(true)
 		return m, terminalTitleCmd(m)
 	}
+	autoRun := isAutoBashApprovalChoice(text)
+	if autoRun {
+		m.autoApproveBash = true
+	}
 	if !isApprove(text) && !isBashApprovalChoice(text) {
 		return m, nil
 	}
-	sessionID := m.activeSessionID()
 	confirm := m.pendingToolConfirm
+	sessionID := m.pendingConfirmSessionID(confirm)
 	reviewFix := m.pendingToolConfirmReviewFix
 	command, toolUseID, expired, ok := agentbuiltin.PendingBashApproval(sessionID, confirm.BashHash)
 	if strings.TrimSpace(toolUseID) == "" {
@@ -3937,12 +4054,25 @@ func (m model) handlePendingBashConfirmInput(text string) (tea.Model, tea.Cmd) {
 	m.clearPendingToolConfirmState(sessionID, true)
 	m.busy = true
 	m.status = "bash running"
-	m.items = append(m.items, transcriptItem{role: "event", text: "approved bash: " + command})
+	label := "approved bash: "
+	if autoRun || m.autoApproveBash {
+		label = "auto-approved bash: "
+	}
+	m.items = append(m.items, transcriptItem{role: "event", text: label + command})
 	m.syncViewport(true)
 	runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	m.activeCancel = cancel
 	m.chatCanceled = false
 	return m, tea.Batch(startApprovedBashCommand(runCtx, m.cwd, command, sessionID, toolUseID, reviewFix), terminalTitleCmd(m))
+}
+
+func (m model) pendingConfirmSessionID(confirm *agentbuiltin.PendingToolUseConfirm) string {
+	if confirm != nil {
+		if sessionID := strings.TrimSpace(confirm.SessionID); sessionID != "" {
+			return sessionID
+		}
+	}
+	return m.activeSessionID()
 }
 
 func (m *model) enqueuePendingToolConfirm(confirm *agentbuiltin.PendingToolUseConfirm, reviewFix bool, source string) {
@@ -3994,13 +4124,33 @@ func (m *model) setPendingToolConfirm(confirm *agentbuiltin.PendingToolUseConfir
 		return
 	}
 	m.pendingQuestion = confirm.Question
-	m.pendingOptions = append([]string(nil), confirm.Options...)
+	m.pendingOptions = bashApprovalOptionsWithAutoRun(confirm.Options, confirm)
 	m.pendingChoice = 0
 	if strings.EqualFold(confirm.ToolName, "bash") {
 		m.status = "waiting approval"
 	} else if len(m.pendingOptions) > 0 {
 		m.status = "waiting input"
 	}
+}
+
+func bashApprovalOptionsWithAutoRun(options []string, confirm *agentbuiltin.PendingToolUseConfirm) []string {
+	out := append([]string(nil), options...)
+	if confirm == nil || !strings.EqualFold(confirm.ToolName, "bash") || len(out) == 0 {
+		return out
+	}
+	for _, opt := range out {
+		if pendingOptionValue(opt) == bashApprovalAutoRun {
+			return out
+		}
+	}
+	command := strings.TrimSpace(confirm.BashCommand)
+	option := bashApprovalAutoRun
+	if command != "" {
+		option += " :: " + command
+	}
+	withAuto := []string{out[0], option}
+	withAuto = append(withAuto, out[1:]...)
+	return withAuto
 }
 
 func (m *model) promoteNextPendingToolConfirm(source string) {
@@ -5899,7 +6049,7 @@ func isApprove(text string) bool {
 
 func isBashApprovalChoice(text string) bool {
 	switch strings.TrimSpace(text) {
-	case "允许一次", "本会话允许此命令", "始终允许此命令", "始终允许子命令", "始终允许主命令":
+	case "允许一次", bashApprovalAutoRun, "本会话允许此命令", "始终允许此命令", "始终允许子命令", "始终允许主命令":
 		return true
 	default:
 		return false
@@ -5907,10 +6057,14 @@ func isBashApprovalChoice(text string) bool {
 }
 
 func normalizeBashApprovalChoice(text string) string {
-	if isApprove(text) {
+	if isApprove(text) || isAutoBashApprovalChoice(text) {
 		return "允许一次"
 	}
 	return strings.TrimSpace(text)
+}
+
+func isAutoBashApprovalChoice(text string) bool {
+	return strings.TrimSpace(text) == bashApprovalAutoRun
 }
 
 func isReject(text string) bool {
