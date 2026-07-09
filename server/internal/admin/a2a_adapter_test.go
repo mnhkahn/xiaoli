@@ -1,11 +1,14 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/mnhkahn/gogogo/logger"
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 	a2a "github.com/mnhkahn/xiaoli/server/internal/a2a"
 )
@@ -135,6 +138,40 @@ func TestA2APipelineRejectsInvalidGeekNewsProfileJSON(t *testing.T) {
 		Text:    `{"profile":"geek-news","input":{"date":"2026-06-28"}}`,
 	}); err == nil {
 		t.Fatal("Run() error = nil, want invalid geek-news JSON error")
+	}
+}
+
+func TestA2APipelineLogsRawGeekNewsReplyOnNormalizeFailure(t *testing.T) {
+	rawReply := `{"create_time":1719532800,"summary":"今日科技新闻","news":[{"link":"https://example.com/news","title":"标题","description":"实现"模型自由"","image":"","create_time":1719532800}]}`
+	agent := &fakeA2AAgent{profileReply: rawReply}
+	pipeline := newA2APipeline(agent, nil)
+
+	var logs bytes.Buffer
+	oldLogger := logger.StdLogger
+	logger.StdLogger = logger.NewWriterLogger(&logs, 0, 2)
+	t.Cleanup(func() {
+		logger.StdLogger = oldLogger
+	})
+
+	if _, err := pipeline.Run(context.Background(), a2a.ConversationTurn{
+		Channel:        "a2a",
+		ConversationID: "a2a:partner_a:cyeam_web",
+		Text:           `{"profile":"geek-news","input":{"date":"2026-06-28"}}`,
+	}); err == nil {
+		t.Fatal("Run() error = nil, want invalid geek-news JSON error")
+	}
+
+	got := logs.String()
+	for _, want := range []string{
+		"[A2A][geek-news][normalize_failed]",
+		"reply_len=" + strconv.Itoa(len(rawReply)),
+		"err_offset=",
+		"reply_near=",
+		`实现\"模型自由\"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("logs = %q, want substring %q", got, want)
+		}
 	}
 }
 

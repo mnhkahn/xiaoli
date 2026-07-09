@@ -80,9 +80,11 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 			return a2a.ConversationReply{}, err
 		}
 		if profile.Name == "geek-news" {
-			reply, err = normalizeGeekNewsReply(reply)
+			rawReply := reply
+			reply, err = normalizeGeekNewsReply(rawReply)
 			if err != nil {
-				logger.Infof("[A2A][geek-news][normalize_failed] conversation_id=%s err=%v reply_len=%d reply_preview=%q", turn.ConversationID, err, len(reply), truncateA2ALogValue(reply, 800))
+				errOffset := jsonSyntaxErrorOffset(err)
+				logger.Infof("[A2A][geek-news][normalize_failed] conversation_id=%s err=%v err_offset=%d reply_len=%d reply_near=%q reply_preview=%q", turn.ConversationID, err, errOffset, len(rawReply), truncateA2ALogValueAround(rawReply, errOffset, 400), truncateA2ALogValue(rawReply, 800))
 				return a2a.ConversationReply{}, err
 			}
 		}
@@ -198,6 +200,54 @@ func truncateA2ALogValue(value string, maxLen int) string {
 		return value
 	}
 	return value[:maxLen] + "...(truncated)"
+}
+
+func truncateA2ALogValueAround(value string, offset int64, radius int) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\n", "\\n"))
+	if offset <= 0 || radius <= 0 {
+		return truncateA2ALogValue(value, 800)
+	}
+	target := runeIndexForByteOffset(value, int(offset)-1)
+	runes := []rune(value)
+	start := target - radius
+	if start < 0 {
+		start = 0
+	}
+	end := target + radius
+	if end > len(runes) {
+		end = len(runes)
+	}
+	prefix := ""
+	if start > 0 {
+		prefix = "...(before)"
+	}
+	suffix := ""
+	if end < len(runes) {
+		suffix = "...(after)"
+	}
+	return prefix + string(runes[start:end]) + suffix
+}
+
+func runeIndexForByteOffset(value string, offset int) int {
+	if offset <= 0 {
+		return 0
+	}
+	runeIndex := 0
+	for byteIndex := range value {
+		if byteIndex >= offset {
+			return runeIndex
+		}
+		runeIndex++
+	}
+	return len([]rune(value))
+}
+
+func jsonSyntaxErrorOffset(err error) int64 {
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return syntaxErr.Offset
+	}
+	return 0
 }
 
 type rawA2AProfileRequest struct {
