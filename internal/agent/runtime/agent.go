@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -441,18 +442,85 @@ type ChannelSendersConfig struct {
 }
 
 type PromptProfileRequest struct {
-	Name           string
-	SystemPrompt   string
-	UserText       string
-	ChannelName    string
-	SessionKey     string
-	DisableHistory bool
-	AllowTools     bool
-	// AdditionalTools are request-scoped tools, typically used to collect a
-	// profile's structured final result without exposing them to other chats.
-	AdditionalTools []tool.BaseTool
-	MaxSteps        int
-	Model           string // 可选：强制使用指定模型，为空则用默认
+	Name             string
+	SystemPrompt     string
+	UserText         string
+	ChannelName      string
+	SessionKey       string
+	DisableHistory   bool
+	AllowTools       bool
+	StructuredOutput *PromptProfileStructuredOutput
+	MaxSteps         int
+	Model            string // 可选：强制使用指定模型，为空则用默认
+}
+
+// PromptProfileStructuredOutput describes a request-scoped final output tool.
+// The runtime exposes it as one generic tool and stores its validated result.
+type PromptProfileStructuredOutput struct {
+	ToolName        string
+	ToolDescription string
+	Params          map[string]*schema.ParameterInfo
+	Normalize       func(string) (string, error)
+
+	mu     sync.Mutex
+	result string
+}
+
+func NewPromptProfileStructuredOutput(name, description string, params map[string]*schema.ParameterInfo, normalize func(string) (string, error)) *PromptProfileStructuredOutput {
+	return &PromptProfileStructuredOutput{
+		ToolName:        name,
+		ToolDescription: description,
+		Params:          params,
+		Normalize:       normalize,
+	}
+}
+
+func (s *PromptProfileStructuredOutput) Result() (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.result, s.result != ""
+}
+
+func (s *PromptProfileStructuredOutput) setResult(result string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.result = result
+}
+
+type promptProfileStructuredOutputTool struct {
+	output *PromptProfileStructuredOutput
+}
+
+func newPromptProfileStructuredOutputTool(output *PromptProfileStructuredOutput) *promptProfileStructuredOutputTool {
+	return &promptProfileStructuredOutputTool{output: output}
+}
+
+func (t *promptProfileStructuredOutputTool) Info(context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{
+		Name:        t.output.ToolName,
+		Desc:        t.output.ToolDescription,
+		ParamsOneOf: schema.NewParamsOneOfByParams(t.output.Params),
+	}, nil
+}
+
+func (t *promptProfileStructuredOutputTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+	var canonical bytes.Buffer
+	if err := json.Compact(&canonical, []byte(argumentsInJSON)); err != nil {
+		return "", fmt.Errorf("invalid structured output JSON: %w", err)
+	}
+	result := canonical.String()
+	if t.output.Normalize != nil {
+		var err error
+		result, err = t.output.Normalize(result)
+		if err != nil {
+			return "", fmt.Errorf("invalid structured output: %w", err)
+		}
+	}
+	t.output.setResult(result)
+	return "Structured output captured successfully.", nil
 }
 
 type PromptProfileStreamKind string
@@ -1330,13 +1398,15 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 	var einoTools []tool.BaseTool
 	if req.AllowTools {
 		einoTools = a.subAgentTools(ctx, true, req.ChannelName)
-		einoTools = append(einoTools, req.AdditionalTools...)
-		if len(einoTools) > 0 {
-			cfg.ToolsConfig = adk.ToolsConfig{
-				ToolsNodeConfig: compose.ToolsNodeConfig{
-					Tools: einoTools,
-				},
-			}
+	}
+	if req.StructuredOutput != nil {
+		einoTools = append(einoTools, newPromptProfileStructuredOutputTool(req.StructuredOutput))
+	}
+	if len(einoTools) > 0 {
+		cfg.ToolsConfig = adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: einoTools,
+			},
 		}
 	}
 	if st := traceFromContext(ctx); st != nil {

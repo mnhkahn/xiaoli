@@ -104,28 +104,11 @@ func TestA2APipelineRoutesGeekNewsProfileToPromptProfile(t *testing.T) {
 	if agent.lastProfile.UserText != `{"date":"2026-06-28"}` {
 		t.Fatalf("UserText = %q, want compact date JSON", agent.lastProfile.UserText)
 	}
-	if len(agent.lastProfile.AdditionalTools) != 1 {
-		t.Fatalf("AdditionalTools = %d, want submit tool", len(agent.lastProfile.AdditionalTools))
+	if agent.lastProfile.StructuredOutput == nil {
+		t.Fatal("StructuredOutput = nil, want request-scoped structured output")
 	}
-	info, err := agent.lastProfile.AdditionalTools[0].Info(context.Background())
-	if err != nil || info.Name != "submit_geek_news" {
-		t.Fatalf("AdditionalTools[0] = %#v, %v; want submit_geek_news", info, err)
-	}
-}
-
-func TestGeekNewsSubmitToolReturnsCanonicalJSON(t *testing.T) {
-	holder := &geekNewsOutputHolder{}
-	tool := newGeekNewsSubmitTool(holder)
-	_, err := tool.InvokableRun(context.Background(), `{"create_time":1719532800,"summary":"今日科技新闻","news":[{"link":"https://example.com/news","title":"标题","description":"核心理念是\"Agent 负责记忆\"。","image":"","create_time":1719532800}]}`)
-	if err != nil {
-		t.Fatalf("InvokableRun() error = %v", err)
-	}
-	got, ok := holder.Get()
-	if !ok || !json.Valid([]byte(got)) {
-		t.Fatalf("holder = %q, %v; want valid JSON", got, ok)
-	}
-	if !strings.Contains(got, `核心理念是\"Agent 负责记忆\"。`) {
-		t.Fatalf("holder = %q, want canonical escaped quote", got)
+	if agent.lastProfile.StructuredOutput.ToolName != "structured_output" {
+		t.Fatalf("StructuredOutput.ToolName = %q, want structured_output", agent.lastProfile.StructuredOutput.ToolName)
 	}
 }
 

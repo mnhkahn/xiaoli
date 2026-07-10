@@ -6,9 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
-	"sync"
 
-	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
@@ -79,17 +77,17 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 			MaxSteps:       profile.MaxSteps,
 			Model:          profile.Model,
 		}
-		var structuredOutput *geekNewsOutputHolder
+		var structuredOutput *agentruntime.PromptProfileStructuredOutput
 		if profile.Name == "geek-news" {
-			structuredOutput = &geekNewsOutputHolder{}
-			runnerReq.AdditionalTools = []tool.BaseTool{newGeekNewsSubmitTool(structuredOutput)}
+			structuredOutput = newGeekNewsStructuredOutput()
+			runnerReq.StructuredOutput = structuredOutput
 		}
 		reply, err := p.agent.RunPromptProfile(ctx, runnerReq)
 		if err != nil {
 			return a2a.ConversationReply{}, err
 		}
 		if profile.Name == "geek-news" {
-			if structured, ok := structuredOutput.Get(); ok {
+			if structured, ok := structuredOutput.Result(); ok {
 				reply = structured
 				logger.Infof("[A2A][geek-news][structured_output_ok] conversation_id=%s reply_len=%d", turn.ConversationID, len(reply))
 			} else {
@@ -230,32 +228,7 @@ type geekNewsItem struct {
 	CreateTime  int64  `json:"create_time"`
 }
 
-type geekNewsOutputHolder struct {
-	mu     sync.Mutex
-	result string
-}
-
-func (h *geekNewsOutputHolder) Set(result string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.result = result
-}
-
-func (h *geekNewsOutputHolder) Get() (string, bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.result, h.result != ""
-}
-
-type geekNewsSubmitTool struct {
-	holder *geekNewsOutputHolder
-}
-
-func newGeekNewsSubmitTool(holder *geekNewsOutputHolder) *geekNewsSubmitTool {
-	return &geekNewsSubmitTool{holder: holder}
-}
-
-func (t *geekNewsSubmitTool) Info(context.Context) (*schema.ToolInfo, error) {
+func newGeekNewsStructuredOutput() *agentruntime.PromptProfileStructuredOutput {
 	newsItem := &schema.ParameterInfo{
 		Type: schema.Object,
 		SubParams: map[string]*schema.ParameterInfo{
@@ -266,24 +239,16 @@ func (t *geekNewsSubmitTool) Info(context.Context) (*schema.ToolInfo, error) {
 			"create_time": {Type: schema.Integer, Desc: "新闻创建时间", Required: true},
 		},
 	}
-	return &schema.ToolInfo{
-		Name: "submit_geek_news",
-		Desc: "提交科技新闻的最终结构化结果。完成新闻查询、翻译和整理后必须调用且只调用一次；不要在普通文本中输出 JSON。",
-		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+	return agentruntime.NewPromptProfileStructuredOutput(
+		"structured_output",
+		"提交本次请求的最终结构化结果。完成新闻查询、翻译和整理后必须调用且只调用一次；不要在普通文本中输出 JSON。",
+		map[string]*schema.ParameterInfo{
 			"create_time": {Type: schema.Integer, Desc: "新闻批次创建时间", Required: true},
 			"summary":     {Type: schema.String, Desc: "中文新闻总结", Required: true},
 			"news":        {Type: schema.Array, ElemInfo: newsItem, Desc: "新闻列表", Required: true},
-		}),
-	}, nil
-}
-
-func (t *geekNewsSubmitTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	result, err := normalizeGeekNewsReply(argumentsInJSON)
-	if err != nil {
-		return "", err
-	}
-	t.holder.Set(result)
-	return "科技新闻结构化结果已提交。", nil
+		},
+		normalizeGeekNewsReply,
+	)
 }
 
 const geekNewsJSONRepairPrompt = "你是严格的 JSON 语法修复器。\n" +
@@ -452,8 +417,8 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 				"- 使用 news skill 查询该 date 的完整科技新闻，命令格式优先使用 cyeam news get --date <YYYY-MM-DD>\n" +
 				"- cyeam news get 返回 JSON 信封，data 字段是 JSON 字符串；必须解析 data 内层 JSON\n" +
 				"- 内层 JSON 包含 news、ai_news、date；本 profile 只返回内层的 news 对象\n" +
-				"- 完成新闻查询、翻译和整理后，必须调用 submit_geek_news 工具提交最终结果；不要在普通文本中输出 JSON、Markdown、代码块或解释\n" +
-				"- submit_geek_news 的顶层字段必须是 create_time、news、summary\n" +
+				"- 完成新闻查询、翻译和整理后，必须调用 structured_output 工具提交最终结果；不要在普通文本中输出 JSON、Markdown、代码块或解释\n" +
+				"- structured_output 的顶层字段必须是 create_time、news、summary\n" +
 				"- news 是数组，每条必须包含 link、title、description、image、create_time\n" +
 				"- 必须保留 cyeam 返回的 image 字段作为封面图，不要删除、改名或编造；没有图片时才输出空字符串\n" +
 				"- 必须保留 cyeam 返回的 create_time 时间字段；顶层 create_time 和每条新闻 create_time 都要返回\n" +
