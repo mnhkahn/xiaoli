@@ -448,8 +448,11 @@ type PromptProfileRequest struct {
 	SessionKey     string
 	DisableHistory bool
 	AllowTools     bool
-	MaxSteps       int
-	Model          string // 可选：强制使用指定模型，为空则用默认
+	// AdditionalTools are request-scoped tools, typically used to collect a
+	// profile's structured final result without exposing them to other chats.
+	AdditionalTools []tool.BaseTool
+	MaxSteps        int
+	Model           string // 可选：强制使用指定模型，为空则用默认
 }
 
 type PromptProfileStreamKind string
@@ -1327,6 +1330,7 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 	var einoTools []tool.BaseTool
 	if req.AllowTools {
 		einoTools = a.subAgentTools(ctx, true, req.ChannelName)
+		einoTools = append(einoTools, req.AdditionalTools...)
 		if len(einoTools) > 0 {
 			cfg.ToolsConfig = adk.ToolsConfig{
 				ToolsNodeConfig: compose.ToolsNodeConfig{

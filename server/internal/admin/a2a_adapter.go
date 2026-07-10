@@ -6,7 +6,10 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 
+	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 	a2a "github.com/mnhkahn/xiaoli/server/internal/a2a"
@@ -65,7 +68,7 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 			return a2a.ConversationReply{}, errors.New("unknown profile")
 		}
 		p.applyProfileOverrides(&profile, req.Profile)
-		reply, err := p.agent.RunPromptProfile(ctx, agentruntime.PromptProfileRequest{
+		runnerReq := agentruntime.PromptProfileRequest{
 			Name:           profile.Name,
 			SystemPrompt:   profile.SystemPrompt,
 			UserText:       req.UserText,
@@ -75,22 +78,33 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 			AllowTools:     profile.AllowTools,
 			MaxSteps:       profile.MaxSteps,
 			Model:          profile.Model,
-		})
+		}
+		var structuredOutput *geekNewsOutputHolder
+		if profile.Name == "geek-news" {
+			structuredOutput = &geekNewsOutputHolder{}
+			runnerReq.AdditionalTools = []tool.BaseTool{newGeekNewsSubmitTool(structuredOutput)}
+		}
+		reply, err := p.agent.RunPromptProfile(ctx, runnerReq)
 		if err != nil {
 			return a2a.ConversationReply{}, err
 		}
 		if profile.Name == "geek-news" {
-			rawReply := reply
-			reply, err = normalizeGeekNewsReply(rawReply)
-			if err != nil {
-				errOffset := jsonSyntaxErrorOffset(err)
-				logger.Infof("[A2A][geek-news][normalize_failed] conversation_id=%s err=%v err_offset=%d reply_len=%d reply_near=%q reply_preview=%q", turn.ConversationID, err, errOffset, len(rawReply), truncateA2ALogValueAround(rawReply, errOffset, 400), truncateA2ALogValue(rawReply, 800))
-				repaired, repairErr := p.repairGeekNewsReply(ctx, turn, profile, rawReply, err, errOffset)
-				if repairErr != nil {
-					logger.Infof("[A2A][geek-news][repair_failed] conversation_id=%s original_err=%v repair_err=%v", turn.ConversationID, err, repairErr)
-					return a2a.ConversationReply{}, err
+			if structured, ok := structuredOutput.Get(); ok {
+				reply = structured
+				logger.Infof("[A2A][geek-news][structured_output_ok] conversation_id=%s reply_len=%d", turn.ConversationID, len(reply))
+			} else {
+				rawReply := reply
+				reply, err = normalizeGeekNewsReply(rawReply)
+				if err != nil {
+					errOffset := jsonSyntaxErrorOffset(err)
+					logger.Infof("[A2A][geek-news][normalize_failed] conversation_id=%s err=%v err_offset=%d reply_len=%d reply_near=%q reply_preview=%q", turn.ConversationID, err, errOffset, len(rawReply), truncateA2ALogValueAround(rawReply, errOffset, 400), truncateA2ALogValue(rawReply, 800))
+					repaired, repairErr := p.repairGeekNewsReply(ctx, turn, profile, rawReply, err, errOffset)
+					if repairErr != nil {
+						logger.Infof("[A2A][geek-news][repair_failed] conversation_id=%s original_err=%v repair_err=%v", turn.ConversationID, err, repairErr)
+						return a2a.ConversationReply{}, err
+					}
+					reply = repaired
 				}
-				reply = repaired
 			}
 		}
 		return a2a.ConversationReply{Text: reply}, nil
@@ -214,6 +228,62 @@ type geekNewsItem struct {
 	Description string `json:"description"`
 	Image       string `json:"image"`
 	CreateTime  int64  `json:"create_time"`
+}
+
+type geekNewsOutputHolder struct {
+	mu     sync.Mutex
+	result string
+}
+
+func (h *geekNewsOutputHolder) Set(result string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.result = result
+}
+
+func (h *geekNewsOutputHolder) Get() (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.result, h.result != ""
+}
+
+type geekNewsSubmitTool struct {
+	holder *geekNewsOutputHolder
+}
+
+func newGeekNewsSubmitTool(holder *geekNewsOutputHolder) *geekNewsSubmitTool {
+	return &geekNewsSubmitTool{holder: holder}
+}
+
+func (t *geekNewsSubmitTool) Info(context.Context) (*schema.ToolInfo, error) {
+	newsItem := &schema.ParameterInfo{
+		Type: schema.Object,
+		SubParams: map[string]*schema.ParameterInfo{
+			"link":        {Type: schema.String, Desc: "新闻原始链接", Required: true},
+			"title":       {Type: schema.String, Desc: "中文标题", Required: true},
+			"description": {Type: schema.String, Desc: "中文长描述", Required: true},
+			"image":       {Type: schema.String, Desc: "封面图链接，没有则为空字符串", Required: true},
+			"create_time": {Type: schema.Integer, Desc: "新闻创建时间", Required: true},
+		},
+	}
+	return &schema.ToolInfo{
+		Name: "submit_geek_news",
+		Desc: "提交科技新闻的最终结构化结果。完成新闻查询、翻译和整理后必须调用且只调用一次；不要在普通文本中输出 JSON。",
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"create_time": {Type: schema.Integer, Desc: "新闻批次创建时间", Required: true},
+			"summary":     {Type: schema.String, Desc: "中文新闻总结", Required: true},
+			"news":        {Type: schema.Array, ElemInfo: newsItem, Desc: "新闻列表", Required: true},
+		}),
+	}, nil
+}
+
+func (t *geekNewsSubmitTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
+	result, err := normalizeGeekNewsReply(argumentsInJSON)
+	if err != nil {
+		return "", err
+	}
+	t.holder.Set(result)
+	return "科技新闻结构化结果已提交。", nil
 }
 
 const geekNewsJSONRepairPrompt = "你是严格的 JSON 语法修复器。\n" +
@@ -382,8 +452,8 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 				"- 使用 news skill 查询该 date 的完整科技新闻，命令格式优先使用 cyeam news get --date <YYYY-MM-DD>\n" +
 				"- cyeam news get 返回 JSON 信封，data 字段是 JSON 字符串；必须解析 data 内层 JSON\n" +
 				"- 内层 JSON 包含 news、ai_news、date；本 profile 只返回内层的 news 对象\n" +
-				"- 只输出一个可被 json.Unmarshal 直接解析的 JSON 对象，不要 Markdown，不要代码块，不要解释\n" +
-				"- JSON 顶层字段必须是 create_time、news、summary\n" +
+				"- 完成新闻查询、翻译和整理后，必须调用 submit_geek_news 工具提交最终结果；不要在普通文本中输出 JSON、Markdown、代码块或解释\n" +
+				"- submit_geek_news 的顶层字段必须是 create_time、news、summary\n" +
 				"- news 是数组，每条必须包含 link、title、description、image、create_time\n" +
 				"- 必须保留 cyeam 返回的 image 字段作为封面图，不要删除、改名或编造；没有图片时才输出空字符串\n" +
 				"- 必须保留 cyeam 返回的 create_time 时间字段；顶层 create_time 和每条新闻 create_time 都要返回\n" +
