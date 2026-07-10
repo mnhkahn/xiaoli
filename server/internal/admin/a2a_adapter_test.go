@@ -18,14 +18,24 @@ type fakeA2AAgent struct {
 	profileStreamCalls int
 	subAgentCalls      int
 	lastProfile        agentruntime.PromptProfileRequest
+	profileRequests    []agentruntime.PromptProfileRequest
 	lastSubAgent       string
 	lastSubSessionKey  string
 	profileReply       string
+	profileReplies     []string
 }
 
 func (f *fakeA2AAgent) RunPromptProfile(ctx context.Context, req agentruntime.PromptProfileRequest) (string, error) {
 	f.profileCalls++
 	f.lastProfile = req
+	f.profileRequests = append(f.profileRequests, req)
+	if len(f.profileReplies) > 0 {
+		idx := f.profileCalls - 1
+		if idx >= len(f.profileReplies) {
+			idx = len(f.profileReplies) - 1
+		}
+		return f.profileReplies[idx], nil
+	}
 	if f.profileReply != "" {
 		return f.profileReply, nil
 	}
@@ -138,6 +148,45 @@ func TestA2APipelineRejectsInvalidGeekNewsProfileJSON(t *testing.T) {
 		Text:    `{"profile":"geek-news","input":{"date":"2026-06-28"}}`,
 	}); err == nil {
 		t.Fatal("Run() error = nil, want invalid geek-news JSON error")
+	}
+}
+
+func TestA2APipelineRepairsInvalidGeekNewsProfileJSONOnce(t *testing.T) {
+	agent := &fakeA2AAgent{profileReplies: []string{
+		`{"create_time":1719532800,"summary":"今日科技新闻","news":[{"link":"https://example.com/news","title":"标题","description":"核心理念是"Agent 负责记忆，人类专注创新"。","image":"","create_time":1719532800}]}`,
+		`{"create_time":1719532800,"summary":"今日科技新闻","news":[{"link":"https://example.com/news","title":"标题","description":"核心理念是\"Agent 负责记忆，人类专注创新\"。","image":"","create_time":1719532800}]}`,
+	}}
+	pipeline := newA2APipeline(agent, nil)
+
+	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{
+		Channel:        "a2a",
+		ConversationID: "a2a:partner_a:cyeam_web",
+		Text:           `{"profile":"geek-news","input":{"date":"2026-06-28"}}`,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !json.Valid([]byte(reply.Text)) {
+		t.Fatalf("reply = %q, want valid JSON", reply.Text)
+	}
+	if agent.profileCalls != 2 {
+		t.Fatalf("profileCalls = %d, want original + repair", agent.profileCalls)
+	}
+	if len(agent.profileRequests) != 2 {
+		t.Fatalf("profileRequests = %d, want 2", len(agent.profileRequests))
+	}
+	repair := agent.profileRequests[1]
+	if repair.Name != "geek-news-json-repair" {
+		t.Fatalf("repair.Name = %q, want geek-news-json-repair", repair.Name)
+	}
+	if repair.AllowTools {
+		t.Fatal("repair.AllowTools = true, want false")
+	}
+	if !repair.DisableHistory {
+		t.Fatal("repair.DisableHistory = false, want true")
+	}
+	if !strings.Contains(repair.UserText, "invalid_json") || !strings.Contains(repair.UserText, "err_offset") {
+		t.Fatalf("repair.UserText = %q, want invalid_json and err_offset", repair.UserText)
 	}
 }
 

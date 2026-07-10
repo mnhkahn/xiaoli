@@ -85,7 +85,12 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 			if err != nil {
 				errOffset := jsonSyntaxErrorOffset(err)
 				logger.Infof("[A2A][geek-news][normalize_failed] conversation_id=%s err=%v err_offset=%d reply_len=%d reply_near=%q reply_preview=%q", turn.ConversationID, err, errOffset, len(rawReply), truncateA2ALogValueAround(rawReply, errOffset, 400), truncateA2ALogValue(rawReply, 800))
-				return a2a.ConversationReply{}, err
+				repaired, repairErr := p.repairGeekNewsReply(ctx, turn, profile, rawReply, err, errOffset)
+				if repairErr != nil {
+					logger.Infof("[A2A][geek-news][repair_failed] conversation_id=%s original_err=%v repair_err=%v", turn.ConversationID, err, repairErr)
+					return a2a.ConversationReply{}, err
+				}
+				reply = repaired
 			}
 		}
 		return a2a.ConversationReply{Text: reply}, nil
@@ -95,6 +100,41 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 		return a2a.ConversationReply{}, err
 	}
 	return a2a.ConversationReply{Text: reply}, nil
+}
+
+func (p *a2aPipeline) repairGeekNewsReply(ctx context.Context, turn a2a.ConversationTurn, profile a2aPromptProfileSpec, rawReply string, parseErr error, errOffset int64) (string, error) {
+	payload := map[string]any{
+		"error":        parseErr.Error(),
+		"err_offset":   errOffset,
+		"error_near":   truncateA2ALogValueAround(rawReply, errOffset, 600),
+		"invalid_json": rawReply,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	reply, err := p.agent.RunPromptProfile(ctx, agentruntime.PromptProfileRequest{
+		Name:           "geek-news-json-repair",
+		SystemPrompt:   geekNewsJSONRepairPrompt,
+		UserText:       string(body),
+		ChannelName:    turn.Channel,
+		SessionKey:     turn.ConversationID + ":json-repair",
+		DisableHistory: true,
+		AllowTools:     false,
+		MaxSteps:       1,
+		Model:          profile.Model,
+	})
+	if err != nil {
+		return "", err
+	}
+	repaired, err := normalizeGeekNewsReply(reply)
+	if err != nil {
+		errOffset := jsonSyntaxErrorOffset(err)
+		logger.Infof("[A2A][geek-news][repair_normalize_failed] conversation_id=%s err=%v err_offset=%d reply_len=%d reply_near=%q reply_preview=%q", turn.ConversationID, err, errOffset, len(reply), truncateA2ALogValueAround(reply, errOffset, 400), truncateA2ALogValue(reply, 800))
+		return "", err
+	}
+	logger.Infof("[A2A][geek-news][repair_ok] conversation_id=%s original_len=%d repaired_len=%d", turn.ConversationID, len(rawReply), len(reply))
+	return repaired, nil
 }
 
 func (p *a2aPipeline) RunStream(ctx context.Context, turn a2a.ConversationTurn, emit func(a2a.ConversationStreamEvent) bool) (a2a.ConversationReply, error) {
@@ -175,6 +215,17 @@ type geekNewsItem struct {
 	Image       string `json:"image"`
 	CreateTime  int64  `json:"create_time"`
 }
+
+const geekNewsJSONRepairPrompt = "你是严格的 JSON 语法修复器。\n" +
+	"输入是一个 JSON 对象，包含 error、err_offset、error_near、invalid_json。\n" +
+	"任务：只修复 invalid_json 的 JSON 语法，让它可以被标准 json.Unmarshal 解析。\n" +
+	"硬性要求：\n" +
+	"- 只输出修复后的 JSON 对象，不要 Markdown，不要代码块，不要解释\n" +
+	"- 不要新增、删除、总结或改写任何新闻内容\n" +
+	"- 顶层字段必须保持 create_time、news、summary\n" +
+	"- news 数组每条字段必须保持 link、title、description、image、create_time\n" +
+	"- 如果字符串内容里有英文双引号，必须转义为 \\\" 或替换为中文引号 “ ”\n" +
+	"- 不要调用工具，不要访问外部数据"
 
 func normalizeGeekNewsReply(reply string) (string, error) {
 	var news geekNewsReply
