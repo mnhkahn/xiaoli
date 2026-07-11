@@ -17,6 +17,18 @@ For local development from this repository:
 go install ./tui/cmd/xiaoli
 ```
 
+To always run the newest code from a local checkout, configure its absolute path
+once in your shell profile:
+
+```bash
+export XIAOLI_SOURCE=/absolute/path/to/xiaoli
+```
+
+With this variable set, `xiaoli` builds the checkout into the user cache and
+starts that fresh binary on every launch. The normal Go build cache keeps
+unchanged launches fast. This mode accepts local absolute paths only; it does
+not download or execute remote source code.
+
 Initialize local settings and secrets:
 
 ```bash

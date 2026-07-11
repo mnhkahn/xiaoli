@@ -209,6 +209,18 @@ func TestTerminalTitleTransientStatesDoNotRingBell(t *testing.T) {
 	}
 }
 
+func TestTerminalTabTitleSequenceUsesOSC1(t *testing.T) {
+	const title = "⠋ Xiaoli running"
+	got := terminalTabTitleSequence(title)
+	want := "\x1b]1;" + title + "\x07"
+	if got != want {
+		t.Fatalf("terminalTabTitleSequence() = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "\x1b]2;") {
+		t.Fatalf("terminal tab title sequence uses OSC 2: %q", got)
+	}
+}
+
 func TestTerminalProgressSequences(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -473,6 +485,62 @@ func TestCtrlKOpensDiffExplorer(t *testing.T) {
 	}
 	if got.input.Value() != "" {
 		t.Fatalf("Ctrl-K input = %q, want empty", got.input.Value())
+	}
+}
+
+func TestCtrlKInDiffStartsCommitWithoutClosingExplorer(t *testing.T) {
+	input := textinput.New()
+	m := model{
+		app:      newTestLocalApp(t, t.TempDir()),
+		input:    input,
+		cwd:      t.TempDir(),
+		width:    100,
+		height:   30,
+		viewport: viewport.New(100, 10),
+		explorer: &tuiExplorer{mode: explorerDiff},
+	}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatal("Ctrl-K in diff returned nil command, want commit preparation")
+	}
+	if got.explorer == nil || got.explorer.mode != explorerDiff {
+		t.Fatalf("Ctrl-K in diff explorer = %#v, want diff explorer kept open", got.explorer)
+	}
+	if !got.autoCommitGitCmsg || !got.busy || got.status != "commit" {
+		t.Fatalf("auto/busy/status = %v/%v/%q, want true/true/commit", got.autoCommitGitCmsg, got.busy, got.status)
+	}
+}
+
+func TestGitCmsgPrepareAutoCommitsFromDiffShortcut(t *testing.T) {
+	input := textinput.New()
+	m := model{
+		input:             input,
+		cwd:               t.TempDir(),
+		width:             100,
+		height:            30,
+		viewport:          viewport.New(100, 10),
+		busy:              true,
+		autoCommitGitCmsg: true,
+		explorer:          &tuiExplorer{mode: explorerDiff},
+	}
+
+	next, cmd := m.Update(gitCmsgPrepareMsg{args: "", message: "fix(tui): 快捷提交"})
+	got := next.(model)
+
+	if cmd == nil {
+		t.Fatal("auto commit preparation returned nil command, want git commit")
+	}
+	if got.autoCommitGitCmsg || got.pendingGitCmsg.Active || got.pendingQuestion != "" || got.pendingOptions != nil {
+		t.Fatalf("commit state = auto:%v pending:%#v question:%q options:%#v, want cleared", got.autoCommitGitCmsg, got.pendingGitCmsg, got.pendingQuestion, got.pendingOptions)
+	}
+	if !got.busy || got.status != "git commit" {
+		t.Fatalf("busy/status = %v/%q, want true/git commit", got.busy, got.status)
+	}
+	if got.explorer == nil || got.explorer.mode != explorerDiff {
+		t.Fatalf("explorer = %#v, want diff explorer kept open", got.explorer)
 	}
 }
 
@@ -2130,6 +2198,62 @@ func TestChatTimeoutStopsBusyRun(t *testing.T) {
 	}
 	if len(got.items) == 0 || got.items[len(got.items)-1].role != "error" {
 		t.Fatalf("timeout items = %#v, want error", got.items)
+	}
+}
+
+func TestStaleChatDoneCannotCancelActiveChat(t *testing.T) {
+	staleCanceled := false
+	activeCanceled := false
+	m := model{
+		busy:            true,
+		status:          "running",
+		chatRunID:       2,
+		activeChatRunID: 2,
+		activeCancel:    func() { activeCanceled = true },
+	}
+
+	next, _ := m.Update(chatDoneMsg{runID: 1, cancel: func() { staleCanceled = true }})
+	got := next.(model)
+	if !staleCanceled {
+		t.Fatal("stale chat did not release its own context")
+	}
+	if activeCanceled {
+		t.Fatal("stale chat canceled the active chat")
+	}
+	if got.activeChatRunID != 2 || !got.busy {
+		t.Fatalf("active chat was changed: runID=%d busy=%v", got.activeChatRunID, got.busy)
+	}
+}
+
+func TestBashFollowupWaitsForActiveChat(t *testing.T) {
+	oldStart := startChatCmd
+	var started int
+	startChatCmd = func(ctx context.Context, agent *agentruntime.Agent, out chan<- tea.Msg, sessionID, cwd, text string, disabledTools []string) tea.Cmd {
+		started++
+		return func() tea.Msg { return nil }
+	}
+	t.Cleanup(func() { startChatCmd = oldStart })
+	m := model{
+		app:             newTestLocalApp(t, t.TempDir()),
+		input:           textinput.New(),
+		busy:            true,
+		status:          "running",
+		chatRunID:       1,
+		activeChatRunID: 1,
+		chatMsgs:        make(chan tea.Msg, 2),
+		events:          make(chan agentevent.Event),
+	}
+
+	next, _ := m.Update(bashApprovalDoneMsg{command: "git status", sessionID: "ses_test", toolUseID: "toolu_1"})
+	got := next.(model)
+	if started != 0 || len(got.pendingBashFollowups) != 1 {
+		t.Fatalf("bash followup started while chat was active: started=%d queue=%d", started, len(got.pendingBashFollowups))
+	}
+
+	next, _ = got.Update(chatDoneMsg{runID: 1})
+	got = next.(model)
+	if started != 1 || len(got.pendingBashFollowups) != 0 || got.activeChatRunID != 2 {
+		t.Fatalf("queued followup was not started serially: started=%d queue=%d runID=%d", started, len(got.pendingBashFollowups), got.activeChatRunID)
 	}
 }
 

@@ -176,18 +176,24 @@ func (m model) handleCodexReviewDone(msg codexReviewDoneMsg) (tea.Model, tea.Cmd
 	m.runPulseActive = true
 	m.items = append(m.items, transcriptItem{role: "run-active", text: loop.fixLabel(), frame: m.runPulseFrame})
 	m.syncViewport(true)
-	ctx, cancel := context.WithTimeout(context.Background(), defaultChatTimeout)
-	m.activeCancel = cancel
-	m.chatCanceled = false
-	m.chatRunID++
+	ctx := m.beginChatContext()
 	return m, tea.Batch(startReviewFixChatCmd(ctx, m.appAgent(), m.chatMsgs, m.sessionID, loop.CWD, codexReviewFixPrompt(output, loop), nil), waitForChat(m.chatMsgs), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(m))
 }
 
 func (m model) handleCodexReviewFixDone(msg chatDoneMsg) (tea.Model, tea.Cmd) {
 	loop := m.reviewLoop
 	m.streamFlushPending = false
-	if m.activeCancel != nil {
-		m.activeCancel()
+	if msg.runID != 0 && msg.runID != m.activeChatRunID {
+		if msg.cancel != nil {
+			msg.cancel()
+		}
+		return m, nil
+	}
+	if msg.cancel != nil {
+		msg.cancel()
+	}
+	if msg.runID != 0 && msg.runID == m.activeChatRunID {
+		m.activeChatRunID = 0
 		m.activeCancel = nil
 	}
 	if m.chatCanceled && errors.Is(msg.err, context.Canceled) {
