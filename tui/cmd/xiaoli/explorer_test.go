@@ -153,6 +153,31 @@ func TestDiffExplorerHandlesSpaceForStageToggle(t *testing.T) {
 	}
 }
 
+func TestDiffExplorerKeyboardSwitchesToPreviewAndScrolls(t *testing.T) {
+	ex := &tuiExplorer{
+		mode:       explorerDiff,
+		width:      100,
+		height:     16,
+		entries:    []explorerEntry{{Path: "a.go", Status: " M"}},
+		selected:   0,
+		preview:    strings.Repeat("diff line\n", 40),
+		previewRaw: strings.Repeat("diff line\n", 40),
+	}
+
+	_, _, handled := ex.handleKey(tea.KeyMsg{Type: tea.KeyRight})
+	if !handled || !ex.focusRight {
+		t.Fatalf("right = handled:%v focusRight:%v, want preview focus", handled, ex.focusRight)
+	}
+	_, _, handled = ex.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	if !handled || ex.rightScroll != 1 || ex.selected != 0 {
+		t.Fatalf("down = handled:%v scroll:%d selected:%d, want scroll only", handled, ex.rightScroll, ex.selected)
+	}
+	_, _, handled = ex.handleKey(tea.KeyMsg{Type: tea.KeyLeft})
+	if !handled || ex.focusRight {
+		t.Fatalf("left = handled:%v focusRight:%v, want file list focus", handled, ex.focusRight)
+	}
+}
+
 func TestDiffExplorerPreviewDragSelectsRightPane(t *testing.T) {
 	ex := &tuiExplorer{
 		mode:       explorerDiff,

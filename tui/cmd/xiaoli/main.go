@@ -1382,7 +1382,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
 		}
 		m.pendingGitCmsg = gitCmsgPending{Active: true, Args: msg.args, Message: msg.message}
-		m.pendingQuestion = formatGitCmsgQuestion(msg, m.width)
+		// The confirmation panel has its own frame and horizontal padding. Format
+		// the commit stat for its actual inner width so a +/− column never wraps
+		// ahead of the next file name.
+		m.pendingQuestion = formatGitCmsgQuestion(msg, max(20, m.width-boxStyle.GetHorizontalFrameSize()-2))
 		m.pendingOptions = []string{"提交并推送", "确认提交", "重新生成", "取消操作"}
 		m.pendingChoice = 0
 		if autoCommit {
@@ -3627,7 +3630,9 @@ func renderPendingAskPanel(question string, options []string, selected int, widt
 	}
 	var lines []string
 	if question != "" {
-		lines = append(lines, titleStyle.Render(fitDisplay(pendingQuestionDisplay(question), width)))
+		for _, line := range strings.Split(pendingQuestionDisplay(question), "\n") {
+			lines = append(lines, titleStyle.Render(fitDisplay(line, width)))
+		}
 		lines = append(lines, "")
 	}
 	for i, opt := range options {
@@ -3683,6 +3688,11 @@ func renderPendingToolConfirmModal(confirm *agentbuiltin.PendingToolUseConfirm, 
 
 func pendingQuestionDisplay(question string) string {
 	question = strings.TrimSpace(question)
+	if strings.HasPrefix(question, "生成的提交信息是否符合要求？") {
+		// Commit confirmations deliberately contain a multi-line file stat. Keep
+		// that layout instead of flattening it into one truncated sentence.
+		return question
+	}
 	const bashPrefix = "是否允许执行命令："
 	if strings.HasPrefix(question, bashPrefix) {
 		command := strings.TrimSpace(strings.TrimPrefix(question, bashPrefix))

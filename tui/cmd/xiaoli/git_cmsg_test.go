@@ -148,6 +148,20 @@ func TestFormatGitCmsgQuestionShowsNumstatOnce(t *testing.T) {
 	}
 }
 
+func TestPendingQuestionDisplayPreservesCommitStatLayout(t *testing.T) {
+	question := formatGitCmsgQuestion(gitCmsgPrepareMsg{
+		message: "feat(tui): 优化提交统计",
+		stat:    "10\t0\tinternal/agent/localconfig/config.go\n2\t3\ttui/cmd/xiaoli/main.go\n",
+	}, 80)
+	got := pendingQuestionDisplay(question)
+	if got != question {
+		t.Fatalf("pendingQuestionDisplay() changed commit layout:\n%s", got)
+	}
+	if !strings.Contains(got, "internal/agent/localconfig/config.go") || !strings.Contains(got, "+10") {
+		t.Fatalf("pendingQuestionDisplay() = %q, want file and delta on preserved rows", got)
+	}
+}
+
 func mustRunGit(t *testing.T, cwd string, args ...string) {
 	t.Helper()
 	if out, err := runGitCombined(cwd, args...); err != nil {

@@ -90,6 +90,31 @@ func (e *tuiExplorer) handleKey(msg tea.KeyMsg) (*tuiExplorer, tea.Cmd, bool) {
 	if e == nil {
 		return e, nil, false
 	}
+	if e.mode == explorerDiff && e.focusRight {
+		switch msg.String() {
+		case "tab", "h", "left":
+			e.focusRight = false
+			return e, nil, true
+		case "up", "k":
+			e.scrollPreview(-1)
+			return e, nil, true
+		case "down", "j":
+			e.scrollPreview(1)
+			return e, nil, true
+		case "pgup", "ctrl+u":
+			e.scrollPreview(-e.previewHeight())
+			return e, nil, true
+		case "pgdown", "ctrl+d", "space":
+			e.scrollPreview(e.previewHeight())
+			return e, nil, true
+		case "home":
+			e.rightScroll = 0
+			return e, nil, true
+		case "end":
+			e.rightScroll = max(0, len(e.previewLines())-e.previewHeight())
+			return e, nil, true
+		}
+	}
 	if e.mode == explorerTree && e.focusRight && e.editor != nil {
 		if msg.String() == "tab" {
 			e.focusRight = false
@@ -105,11 +130,19 @@ func (e *tuiExplorer) handleKey(msg tea.KeyMsg) (*tuiExplorer, tea.Cmd, bool) {
 	case "q", "esc":
 		return nil, nil, true
 	case "tab":
+		if e.mode == explorerDiff {
+			e.focusRight = true
+			return e, nil, true
+		}
 		if e.mode == explorerTree && e.editor != nil {
 			e.focusRight = true
 			return e, nil, true
 		}
 	case "l", "right":
+		if e.mode == explorerDiff {
+			e.focusRight = true
+			return e, nil, true
+		}
 		if e.mode == explorerTree && e.selected >= 0 && e.selected < len(e.entries) {
 			entry := e.entries[e.selected]
 			if entry.IsDir {
@@ -122,7 +155,7 @@ func (e *tuiExplorer) handleKey(msg tea.KeyMsg) (*tuiExplorer, tea.Cmd, bool) {
 			return e, nil, true
 		}
 	case "h", "left":
-		if e.mode == explorerTree {
+		if e.mode == explorerTree || e.mode == explorerDiff {
 			e.focusRight = false
 			return e, nil, true
 		}
@@ -213,6 +246,7 @@ func (e *tuiExplorer) handleMouse(msg tea.MouseMsg) bool {
 			}
 			e.selected = idx
 			e.ensureSelectionVisible()
+			e.focusRight = false
 			e.selection = transcriptSelection{}
 			e.refreshPreview()
 			return true
@@ -336,7 +370,11 @@ func (e *tuiExplorer) View() string {
 		title = "Xiaoli /tree"
 	}
 	header := titleStyle.Render(title) + "  " + hintStyle.Render("cwd: "+compactPath(e.cwd, max(12, width-28)))
-	help := hintStyle.Render("tree: j/k move · l/tab edit · editor: i insert · :w save · q close")
+	helpText := "tree: j/k move · l/tab edit · editor: i insert · :w save · q close"
+	if e.mode == explorerDiff {
+		helpText = "diff: j/k choose file · →/l view diff · ←/h return · preview: j/k scroll · space stage · q close"
+	}
+	help := hintStyle.Render(helpText)
 
 	left := e.renderLeft(leftContentWidth, bodyHeight)
 	right := e.renderRight(rightContentWidth, bodyHeight)
@@ -658,6 +696,14 @@ func (e *tuiExplorer) moveSelection(delta int) {
 	e.selected = clamp(e.selected+delta, 0, len(e.entries)-1)
 	e.ensureSelectionVisible()
 	e.refreshPreview()
+}
+
+func (e *tuiExplorer) scrollPreview(delta int) {
+	if e == nil || delta == 0 {
+		return
+	}
+	e.rightScroll = clamp(e.rightScroll+delta, 0, max(0, len(e.previewLines())-e.previewHeight()))
+	e.selection = transcriptSelection{}
 }
 
 func (e *tuiExplorer) ensureSelectionVisible() {
