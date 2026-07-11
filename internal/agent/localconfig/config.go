@@ -16,13 +16,31 @@ import (
 const defaultLLMTimeout = 240 * time.Second
 
 type Config struct {
-	DataDir string        `json:"data_dir"`
-	Models  ModelConfig   `json:"models"`
-	Storage StorageConfig `json:"storage"`
-	Tools   ToolConfig    `json:"tools"`
-	Skills  SkillConfig   `json:"skills"`
+	DataDir    string            `json:"data_dir"`
+	Models     ModelConfig       `json:"models"`
+	MCPServers []MCPServerConfig `json:"mcp_servers"`
+	Storage    StorageConfig     `json:"storage"`
+	Tools      ToolConfig        `json:"tools"`
+	Skills     SkillConfig       `json:"skills"`
 
 	secrets map[string]string
+}
+
+// MCPServerConfig defines a remote MCP endpoint available to the local TUI.
+// Secret values are read from the environment or secrets.json via their *_env fields.
+type MCPServerConfig struct {
+	Name       string `json:"name"`
+	URL        string `json:"url"`
+	URLEnv     string `json:"url_env"`
+	APIKeyEnv  string `json:"api_key_env"`
+	AuthType   string `json:"auth_type"`
+	HeaderName string `json:"header_name"`
+
+	TokenURL        string `json:"token_url"`
+	ClientIDEnv     string `json:"client_id_env"`
+	ClientSecretEnv string `json:"client_secret_env"`
+	RefreshTokenEnv string `json:"refresh_token_env"`
+	Scope           string `json:"scope"`
 }
 
 type ModelConfig struct {
@@ -434,6 +452,7 @@ func (c Config) RuntimeConfig(prompt string) (agentruntime.Config, error) {
 	if !ok {
 		return agentruntime.Config{}, fmt.Errorf("local config model %q is not configured", c.Models.Default)
 	}
+	mcpEndpoints := c.mcpEndpoints()
 	return agentruntime.Config{
 		LLMURL:                  selected.BaseURL,
 		LLMAPIKey:               selected.APIKey,
@@ -446,6 +465,7 @@ func (c Config) RuntimeConfig(prompt string) (agentruntime.Config, error) {
 		LocalMemoryFile:         c.Storage.MemoryFile,
 		LocalConversationDir:    c.Storage.ConversationDir,
 		LocalHistoryMaxMessages: c.Storage.HistoryMaxMessages,
+		ExternalMCPEndpoints:    mcpEndpoints,
 		BuiltinWebFetchEnabled:  c.Tools.WebFetch,
 		SkillRoots:              withWorkspaceSkillRoot(c.Skills.Roots),
 		EnabledSkills:           c.Skills.Enabled,
@@ -460,6 +480,69 @@ func (c Config) RuntimeConfig(prompt string) (agentruntime.Config, error) {
 		LogDir:   filepath.Join(c.DataDir, "logs"),
 		Timezone: "Asia/Shanghai",
 	}, nil
+}
+
+func (c Config) mcpEndpoints() []agentruntime.MCPEndpoint {
+	endpoints := make([]agentruntime.MCPEndpoint, 0, len(c.MCPServers))
+	for _, server := range c.MCPServers {
+		url := strings.TrimSpace(server.URL)
+		if server.URLEnv != "" {
+			url = c.secretValue(server.URLEnv)
+		}
+		if url == "" {
+			continue
+		}
+
+		auth := strings.TrimSpace(server.AuthType)
+		if auth == agentruntime.MCPAuthOAuth {
+			clientID := c.secretValue(server.ClientIDEnv)
+			if clientID == "" || strings.TrimSpace(server.TokenURL) == "" {
+				continue
+			}
+			endpoints = append(endpoints, agentruntime.MCPEndpoint{
+				Name:         strings.TrimSpace(server.Name),
+				URL:          url,
+				Auth:         agentruntime.MCPAuthOAuth,
+				TokenURL:     strings.TrimSpace(server.TokenURL),
+				ClientID:     clientID,
+				ClientSecret: c.secretValue(server.ClientSecretEnv),
+				RefreshToken: c.secretValue(server.RefreshTokenEnv),
+				Scope:        strings.TrimSpace(server.Scope),
+			})
+			continue
+		}
+
+		key := c.secretValue(server.APIKeyEnv)
+		if server.APIKeyEnv != "" && key == "" {
+			continue
+		}
+		if auth == "" {
+			if key == "" {
+				auth = agentruntime.MCPAuthNone
+			} else {
+				auth = agentruntime.MCPAuthQuery
+			}
+		}
+		endpoints = append(endpoints, agentruntime.MCPEndpoint{
+			Name:    strings.TrimSpace(server.Name),
+			URL:     url,
+			APIKey:  key,
+			Auth:    auth,
+			HeaderN: strings.TrimSpace(server.HeaderName),
+		})
+	}
+	return endpoints
+}
+
+func (c Config) secretValue(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return strings.TrimSpace(c.secrets[name])
 }
 
 func (c Config) LoadPrompt(extra string) (string, error) {

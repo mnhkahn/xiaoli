@@ -803,6 +803,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.markTab()
 		}
 		if m.explorer != nil && m.explorer.mode == explorerDiff && msg.String() == "ctrl+k" {
+			m.explorer = nil
+			// Diff inspection remains available while an agent is running, but a
+			// commit would mutate the workspace and must wait for it to finish.
 			if m.busy || m.hasPendingOptions() {
 				return m, nil
 			}
@@ -858,14 +861,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+o":
 			return m, nil
 		case "ctrl+k":
-			if m.busy {
-				return m, nil
-			}
 			if m.pendingGitCmsg.Active {
+				if m.busy {
+					return m, nil
+				}
 				cmd := m.handleGitCmsgChoice("提交并推送")
 				return m, cmd
 			}
-			if m.hasPendingOptions() {
+			if m.hasPendingOptions() && !m.busy {
 				return m, nil
 			}
 			m.clearInputDraft()
@@ -2588,7 +2591,7 @@ func renderWelcomeCommands(width int) string {
 		{Key: "/upgrade", Text: "show upgrade command"},
 		{Key: "Ctrl+S", Text: "git sync"},
 		{Key: "Ctrl+T", Text: "open tree"},
-		{Key: "Ctrl+K", Text: "open diff"},
+		{Key: "Ctrl+K", Text: "diff / commit"},
 	}
 	if width <= 0 {
 		width = 40
@@ -5829,6 +5832,10 @@ func toolEventDetail(name string, data map[string]any) string {
 	switch name {
 	case "bash":
 		return argString(args, "command")
+	case "webfetch":
+		return argString(args, "url")
+	case "websearch":
+		return argString(args, "query")
 	case "read_file", "edit_file":
 		return argString(args, "path")
 	case "glob":

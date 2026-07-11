@@ -70,6 +70,10 @@
       "url": "https://api.githubcopilot.com/mcp/",
       "auth_type": "bearer",
       "api_key_env": "GITHUB_PERSONAL_ACCESS_TOKEN"
+    },
+    {
+      "name": "xiaohongshu",
+      "url": "http://localhost:18060/mcp"
     }
   ],
   "storage": {
@@ -101,7 +105,12 @@
       "log_outputs": true,
       "max_value_length": 800
     },
-    "allowed_skills": ["holiday", "cyeam-cli", "news", "ai-models"],
+    "allowed_skills": [
+      "holiday",
+      "cyeam-cli",
+      "news",
+      "ai-models"
+    ],
     "profiles": {
       "architect": {
         "model": "ark:code-latest",

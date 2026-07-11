@@ -488,7 +488,7 @@ func TestCtrlKOpensDiffExplorer(t *testing.T) {
 	}
 }
 
-func TestCtrlKInDiffStartsCommitWithoutClosingExplorer(t *testing.T) {
+func TestCtrlKInDiffClosesExplorerAndStartsCommit(t *testing.T) {
 	input := textinput.New()
 	m := model{
 		app:      newTestLocalApp(t, t.TempDir()),
@@ -506,8 +506,8 @@ func TestCtrlKInDiffStartsCommitWithoutClosingExplorer(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("Ctrl-K in diff returned nil command, want commit preparation")
 	}
-	if got.explorer == nil || got.explorer.mode != explorerDiff {
-		t.Fatalf("Ctrl-K in diff explorer = %#v, want diff explorer kept open", got.explorer)
+	if got.explorer != nil {
+		t.Fatalf("Ctrl-K in diff explorer = %#v, want explorer closed", got.explorer)
 	}
 	if !got.autoCommitGitCmsg || !got.busy || got.status != "commit" {
 		t.Fatalf("auto/busy/status = %v/%v/%q, want true/true/commit", got.autoCommitGitCmsg, got.busy, got.status)
@@ -540,7 +540,30 @@ func TestGitCmsgPrepareAutoCommitsFromDiffShortcut(t *testing.T) {
 		t.Fatalf("busy/status = %v/%q, want true/git commit", got.busy, got.status)
 	}
 	if got.explorer == nil || got.explorer.mode != explorerDiff {
-		t.Fatalf("explorer = %#v, want diff explorer kept open", got.explorer)
+		t.Fatalf("explorer = %#v, want diff explorer unchanged", got.explorer)
+	}
+}
+
+func TestCtrlKOpensAndClosesDiffWhileAgentIsBusy(t *testing.T) {
+	input := textinput.New()
+	m := model{input: input, cwd: t.TempDir(), width: 100, height: 30, busy: true, status: "working"}
+
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	got := next.(model)
+	if cmd != nil {
+		t.Fatal("Ctrl-K while busy returned command, want view-only")
+	}
+	if got.explorer == nil || got.explorer.mode != explorerDiff || !got.busy || got.status != "working" {
+		t.Fatalf("open diff while busy = explorer:%#v busy:%v status:%q", got.explorer, got.busy, got.status)
+	}
+
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
+	got = next.(model)
+	if cmd != nil {
+		t.Fatal("second Ctrl-K while busy returned command, want view-only")
+	}
+	if got.explorer != nil || !got.busy || got.status != "working" {
+		t.Fatalf("close diff while busy = explorer:%#v busy:%v status:%q", got.explorer, got.busy, got.status)
 	}
 }
 
@@ -2345,6 +2368,8 @@ func TestToolEventsRenderFileOperationDetails(t *testing.T) {
 		{name: "glob", args: `{"pattern":"**/*.go"}`, want: "Tracing glob: **/*.go"},
 		{name: "grep", args: `{"pattern":"toolEvent","glob":"**/*.go"}`, want: `Tracing grep: "toolEvent" in **/*.go`},
 		{name: "file_write", args: `{"filename":"report.md"}`, want: "Tracing file_write: report.md"},
+		{name: "webfetch", args: `{"url":"https://example.com/article"}`, want: "Tracing webfetch: https://example.com/article"},
+		{name: "websearch", args: `{"query":"latest AI news"}`, want: "Tracing websearch: latest AI news"},
 	}
 	for _, tc := range cases {
 		item := eventTranscriptItem(agentevent.Event{

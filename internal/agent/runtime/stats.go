@@ -462,6 +462,37 @@ type toolCounter struct {
 	eventBus agentevent.Publisher
 }
 
+type toolRunTracker struct {
+	mu    sync.Mutex
+	count int
+}
+
+type toolRunTrackerKey struct{}
+
+func withToolRunTracker(ctx context.Context) (context.Context, *toolRunTracker) {
+	tracker := &toolRunTracker{}
+	return context.WithValue(ctx, toolRunTrackerKey{}, tracker), tracker
+}
+
+func recordToolRun(ctx context.Context) {
+	tracker, _ := ctx.Value(toolRunTrackerKey{}).(*toolRunTracker)
+	if tracker == nil {
+		return
+	}
+	tracker.mu.Lock()
+	tracker.count++
+	tracker.mu.Unlock()
+}
+
+func (t *toolRunTracker) Count() int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.count
+}
+
 func newToolCounter(inner tool.InvokableTool, recorder *Recorder, category string, eventBus agentevent.Publisher) *toolCounter {
 	info, _ := inner.Info(context.Background())
 	toolName := "unknown"
@@ -477,6 +508,7 @@ func (w *toolCounter) Info(ctx context.Context) (*schema.ToolInfo, error) {
 
 func (w *toolCounter) InvokableRun(ctx context.Context, argumentsInJSON string, opts ...tool.Option) (string, error) {
 	w.recorder.RecordToolCall(w.toolName)
+	recordToolRun(ctx)
 	st := traceFromContext(ctx)
 	step := 0
 	start := time.Now()

@@ -77,6 +77,10 @@ type Agent struct {
 
 const defaultAgentMaxIterations = 200
 
+const maxExecutionChecklistContinuations = 6
+
+type executionChecklistContinuationKey struct{}
+
 // noopEventPublisher is a no-op event publisher for backward compatibility
 type noopEventPublisher struct{}
 
@@ -989,6 +993,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	ctx, commitRequestHolder = agentbuiltin.NewCommitRequestHolder(ctx)
 	var sendStatus *agentbuiltin.ChannelSendStatus
 	ctx, sendStatus = agentbuiltin.NewChannelSendStatus(ctx)
+	ctx, toolRuns := withToolRunTracker(ctx)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, memoryID)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentDeviceIDKey, deviceID)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentChannelKey, channelName)
@@ -1191,12 +1196,63 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	for _, confirm := range confirms {
 		a.storeToolUseConfirm(ctx, conversationID, confirm)
 	}
+	if shouldContinueExecutionChecklist(ctx, history, userText, toolRuns.Count(), ask, confirms, sendStatus) {
+		logger.Infof("execution checklist continuing: memory=%s tools=%d pass=%d", memoryID, toolRuns.Count(), executionChecklistContinuationCount(ctx)+1)
+		return a.ChatWithContextOptions(
+			context.WithValue(ctx, executionChecklistContinuationKey{}, executionChecklistContinuationCount(ctx)+1),
+			conversationID,
+			deviceID,
+			"系统续办：用户的编号执行清单尚未确认全部完成。你刚完成了一项工具操作；除非明确受阻或需要用户确认，请立即继续执行下一项。不要总结或结束。",
+			opts,
+		)
+	}
 
 	_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunCompleted, memoryID, map[string]any{
 		"message_len": len(result.Content),
 		"history_len": len(updated),
 	})
 	return result.Content, nil
+}
+
+func shouldContinueExecutionChecklist(ctx context.Context, history []*schema.Message, userText string, toolRuns int, ask *agentbuiltin.AskData, confirms []*agentbuiltin.PendingToolUseConfirm, sendStatus *agentbuiltin.ChannelSendStatus) bool {
+	return toolRuns > 0 &&
+		ask == nil &&
+		len(confirms) == 0 &&
+		(sendStatus == nil || !sendStatus.Sent()) &&
+		executionChecklistContinuationCount(ctx) < maxExecutionChecklistContinuations &&
+		hasExecutionChecklist(history, userText)
+}
+
+func executionChecklistContinuationCount(ctx context.Context) int {
+	count, _ := ctx.Value(executionChecklistContinuationKey{}).(int)
+	return count
+}
+
+func hasExecutionChecklist(history []*schema.Message, userText string) bool {
+	if isExecutionChecklistText(userText) {
+		return true
+	}
+	for _, message := range history {
+		if message != nil && message.Role == schema.User && isExecutionChecklistText(message.Content) {
+			return true
+		}
+	}
+	return false
+}
+
+func isExecutionChecklistText(text string) bool {
+	text = strings.TrimSpace(text)
+	if strings.Contains(text, "执行清单") {
+		return true
+	}
+	items := 0
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if len(line) >= 3 && line[0] >= '1' && line[0] <= '9' && (strings.HasPrefix(line[1:], ".") || strings.HasPrefix(line[1:], "、") || strings.HasPrefix(line[1:], "）") || strings.HasPrefix(line[1:], ")")) {
+			items++
+		}
+	}
+	return items >= 2
 }
 
 func (a *Agent) completeAfterChannelSend(ctx context.Context, conversationID string, memoryID string, usingSession bool, channelName string, channelUser string, epochToday string, history []*schema.Message, userText string, askHolder *agentbuiltin.AskDataHolder, toolUseConfirmHolder *agentbuiltin.ToolUseConfirmHolder) string {

@@ -172,6 +172,49 @@ func TestRuntimeConfigResolvesSecretsFile(t *testing.T) {
 	}
 }
 
+func TestRuntimeConfigLoadsMCPServers(t *testing.T) {
+	dir := t.TempDir()
+	settingsPath := filepath.Join(dir, "settings.json")
+	body := `{
+		"data_dir": "` + dir + `",
+		"models": {
+			"default": "test",
+			"options": {
+				"test": {"base_url": "https://example.test/v1", "model": "test-model"}
+			}
+		},
+		"mcp_servers": [
+			{"name": "xiaohongshu", "url": "http://localhost:18060/mcp"},
+			{"name": "protected", "url": "https://mcp.example.test", "auth_type": "bearer", "api_key_env": "MCP_TEST_TOKEN"},
+			{"name": "missing-token", "url": "https://skip.example.test", "api_key_env": "MISSING_TOKEN"}
+		]
+	}`
+	if err := os.WriteFile(settingsPath, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secrets.json"), []byte(`{"MCP_TEST_TOKEN":"secret-token"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := cfg.RuntimeConfig("prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rt.ExternalMCPEndpoints) != 2 {
+		t.Fatalf("ExternalMCPEndpoints = %#v, want two valid endpoints", rt.ExternalMCPEndpoints)
+	}
+	if got := rt.ExternalMCPEndpoints[0]; got.Name != "xiaohongshu" || got.URL != "http://localhost:18060/mcp" || got.Auth != "none" {
+		t.Fatalf("xiaohongshu endpoint = %#v", got)
+	}
+	if got := rt.ExternalMCPEndpoints[1]; got.Name != "protected" || got.Auth != "bearer" || got.APIKey != "secret-token" {
+		t.Fatalf("protected endpoint = %#v", got)
+	}
+}
+
 func containsPath(paths []string, want string) bool {
 	for _, path := range paths {
 		if filepath.Clean(path) == filepath.Clean(want) {
