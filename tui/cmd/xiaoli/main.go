@@ -1343,6 +1343,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.activeChatRunID != 0 {
 			return m, tea.Batch(waitForChat(m.chatMsgs), waitForEvent(m.events))
 		}
+		// "自动通过本轮" must also cover confirmations that were already
+		// queued when the mode was enabled. Run the next one before starting a
+		// follow-up chat, so it never flashes another approval modal.
+		if m.autoApproveBash && m.hasPendingBashConfirm() {
+			return m.autoApprovePendingBashConfirm()
+		}
 		return m, tea.Batch(m.startNextBashFollowup(), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(m))
 	case gitCmsgPrepareMsg:
 		autoCommit := m.autoCommitGitCmsg

@@ -1906,6 +1906,58 @@ func TestPendingToolConfirmQueuePromotesAfterCurrentClear(t *testing.T) {
 	}
 }
 
+func TestAutoBashApprovalRunsQueuedConfirmWithoutShowingAnotherModal(t *testing.T) {
+	ctx, holder := agentbuiltin.NewToolUseConfirmHolder(context.Background())
+	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, "ses_auto_queue")
+	tool := agentbuiltin.NewShellTool(agentbuiltin.ShellConfig{})
+	for _, command := range []string{"printf first", "printf second"} {
+		if _, err := tool.InvokableRun(ctx, `{"command":"`+command+`"}`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	confirms := holder.All()
+	if len(confirms) != 2 {
+		t.Fatalf("confirm count = %d, want 2", len(confirms))
+	}
+	t.Cleanup(func() { agentbuiltin.ClearBashApproval("ses_auto_queue") })
+
+	m := model{
+		input:                   textinput.New(),
+		sessionID:               "ses_auto_queue",
+		pendingToolConfirm:      confirms[0],
+		pendingToolConfirmQueue: []pendingToolConfirmQueueItem{{confirm: confirms[1]}},
+		autoApproveBash:         true,
+		width:                   90,
+		height:                  24,
+		viewport:                viewport.New(90, 10),
+	}
+
+	next, firstCmd := m.autoApprovePendingBashConfirm()
+	if firstCmd == nil {
+		t.Fatal("first auto approval returned nil command")
+	}
+	afterFirst := next.(model)
+	if afterFirst.pendingToolConfirm == nil || afterFirst.pendingToolConfirm.ToolUseID != confirms[1].ToolUseID {
+		t.Fatalf("pending confirm = %#v, want queued second confirm promoted", afterFirst.pendingToolConfirm)
+	}
+
+	next, secondCmd := afterFirst.Update(bashApprovalDoneMsg{command: "printf first", sessionID: "ses_auto_queue", toolUseID: confirms[0].ToolUseID})
+	got := next.(model)
+
+	if secondCmd == nil {
+		t.Fatal("queued auto approval returned nil command")
+	}
+	if got.pendingToolConfirm != nil {
+		t.Fatalf("pending confirm = %#v, want queued command auto-approved", got.pendingToolConfirm)
+	}
+	if !got.busy || got.status != "bash running" {
+		t.Fatalf("busy/status = %v/%q, want bash running", got.busy, got.status)
+	}
+	if last := got.items[len(got.items)-1]; last.role != "event" || !strings.Contains(last.text, "auto-approved bash: printf second") {
+		t.Fatalf("last item = %#v, want queued command auto-approved", last)
+	}
+}
+
 func TestPermissionAskedEventDeduplicatesPendingToolConfirm(t *testing.T) {
 	m := model{
 		input:    textinput.New(),
