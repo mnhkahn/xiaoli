@@ -128,6 +128,26 @@ func TestFormatGitCmsgCommitErrorIncludesGitOutput(t *testing.T) {
 	}
 }
 
+func TestFormatGitCmsgQuestionShowsNumstatOnce(t *testing.T) {
+	got := formatGitCmsgQuestion(gitCmsgPrepareMsg{
+		message: "feat(tui): 优化提交统计",
+		files:   "a.go\nb.go\n",
+		stat:    "10\t0\ta.go\n2\t3\tb.go\n",
+	}, 80)
+	plain := ansiEscapeRE.ReplaceAllString(got, "")
+	if strings.Contains(plain, "文件：") || strings.Contains(plain, "|") {
+		t.Fatalf("formatGitCmsgQuestion() = %q, want no duplicate file section or pipe", plain)
+	}
+	for _, want := range []string{"a.go", "+10", "b.go", "+2", "-3", "2 个文件", "+12"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("formatGitCmsgQuestion() = %q, want %q", plain, want)
+		}
+	}
+	if strings.Contains(plain, "-0") || strings.Contains(plain, "+0") {
+		t.Fatalf("formatGitCmsgQuestion() = %q, want zero deltas hidden", plain)
+	}
+}
+
 func mustRunGit(t *testing.T, cwd string, args ...string) {
 	t.Helper()
 	if out, err := runGitCombined(cwd, args...); err != nil {

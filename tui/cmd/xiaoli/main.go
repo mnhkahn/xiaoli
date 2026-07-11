@@ -140,9 +140,9 @@ const (
 )
 
 const (
-	terminalIdleTitle   = "Xiaoli"
-	terminalDoneTitle   = "✓ Xiaoli done"
-	terminalFailedTitle = "× Xiaoli failed"
+	terminalIdleTitle   = "[ Xiaoli ]"
+	terminalDoneTitle   = "[✓✓ DONE] Xiaoli"
+	terminalFailedTitle = "[×× FAILED] Xiaoli"
 )
 
 type terminalProgressState int
@@ -535,23 +535,23 @@ func (m model) Init() tea.Cmd {
 
 func terminalTitle(m model) string {
 	if m.hasPendingBashConfirm() {
-		return "! Xiaoli approval"
+		return "[!! APPROVAL] Xiaoli"
 	}
 	if m.hasPendingOptions() || m.pendingGitCmsg.Active {
-		return "! Xiaoli input"
+		return "[?? INPUT] Xiaoli"
 	}
 	switch strings.TrimSpace(m.status) {
 	case "waiting approval":
-		return "! Xiaoli approval"
+		return "[!! APPROVAL] Xiaoli"
 	case "waiting input":
-		return "! Xiaoli input"
+		return "[?? INPUT] Xiaoli"
 	}
 	if m.busy || m.runPulseActive {
 		frame := "⠋"
 		if len(terminalRunningFrames) > 0 {
 			frame = terminalRunningFrames[m.runPulseFrame%len(terminalRunningFrames)]
 		}
-		return frame + " Xiaoli running"
+		return "[" + frame + " RUNNING] Xiaoli"
 	}
 	return terminalIdleTitle
 }
@@ -1252,6 +1252,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.status = "idle"
 		}
+		if !m.hasPendingBashConfirm() && !m.hasPendingOptions() && m.app.Agent.ConsumeCommitRequest(channelUser) != nil {
+			if cmd := m.startGitCmsgSlash("/commit"); cmd != nil {
+				m.busy = true
+				m.status = "commit"
+				m.appendRunActiveEvent("Preparing commit")
+				m.syncViewport(true)
+				return m, tea.Batch(cmd, tickRunPulse(), waitForEvent(m.events), terminalTitleCmd(m))
+			}
+		}
 		m.refreshContextUsage()
 		m.syncViewport(true)
 		if len(m.queuedUserPrompts) > 0 && !m.hasPendingBashConfirm() && !m.hasPendingOptions() {
@@ -1370,7 +1379,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
 		}
 		m.pendingGitCmsg = gitCmsgPending{Active: true, Args: msg.args, Message: msg.message}
-		m.pendingQuestion = formatGitCmsgQuestion(msg)
+		m.pendingQuestion = formatGitCmsgQuestion(msg, m.width)
 		m.pendingOptions = []string{"提交并推送", "确认提交", "重新生成", "取消操作"}
 		m.pendingChoice = 0
 		if autoCommit {
@@ -5064,7 +5073,7 @@ func disabledToolsForPlanMode(planMode bool) []string {
 	if !planMode {
 		return nil
 	}
-	return []string{"edit_file", "file_write", "bash", "channel_send"}
+	return []string{"edit_file", "file_write", "bash", "channel_send", "commit"}
 }
 
 func resolveCDPath(cwd, raw string) (string, error) {

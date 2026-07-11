@@ -22,6 +22,7 @@ const (
 	ToolInspectRecentImage
 	ToolFileWrite
 	ToolCodeFiles
+	ToolCommit
 )
 
 type ToolOptions struct {

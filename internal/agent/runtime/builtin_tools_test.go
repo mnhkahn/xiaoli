@@ -87,7 +87,7 @@ func TestToolGuideRequiresRealBashToolUse(t *testing.T) {
 
 	got := agent.toolGuide(true)
 
-	for _, want := range []string{"必须调用 bash 工具", "禁止手写", "等待你确认执行 bash 命令"} {
+	for _, want := range []string{"必须调用 bash 工具", "禁止手写", "等待你确认执行 bash 命令", "任务结束后仍必须给出可核验的简短摘要", "完全静默"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("toolGuide() = %q, want %q", got, want)
 		}

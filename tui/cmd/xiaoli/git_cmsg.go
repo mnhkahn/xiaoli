@@ -5,10 +5,12 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 	"github.com/mnhkahn/xiaoli/internal/agent/slash"
 )
@@ -169,7 +171,7 @@ func prepareGitCmsgDiff(ctx context.Context, cwd, args string) (string, string, 
 	if bad := suspiciousGitFiles(files); len(bad) > 0 {
 		return "", "", "", fmt.Errorf("暂存区包含疑似不应提交的文件，请先处理后再运行 /commit：\n%s", strings.Join(bad, "\n"))
 	}
-	stat, err := runGitCombinedContext(ctx, cwd, "diff", "--cached", "--stat")
+	stat, err := runGitCombinedContext(ctx, cwd, "diff", "--cached", "--numstat")
 	if err != nil {
 		return "", "", "", fmt.Errorf("读取暂存统计失败：%v\n%s", err, strings.TrimSpace(stat))
 	}
@@ -251,18 +253,85 @@ func formatGitCmsgCommitError(err error, output string) string {
 	return msg
 }
 
-func formatGitCmsgQuestion(msg gitCmsgPrepareMsg) string {
+func formatGitCmsgQuestion(msg gitCmsgPrepareMsg, width int) string {
 	var b strings.Builder
 	b.WriteString("生成的提交信息是否符合要求？\n\n")
 	fmt.Fprintf(&b, "%s\n\n", msg.message)
-	if strings.TrimSpace(msg.files) != "" {
-		b.WriteString("文件：\n")
-		b.WriteString(strings.TrimSpace(msg.files))
-		b.WriteString("\n\n")
-	}
 	if strings.TrimSpace(msg.stat) != "" {
 		b.WriteString("统计：\n")
-		b.WriteString(strings.TrimSpace(msg.stat))
+		b.WriteString(formatGitNumstat(msg.stat, width))
+	}
+	return b.String()
+}
+
+var (
+	gitAdditionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("82"))
+	gitDeletionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
+)
+
+func formatGitNumstat(stat string, width int) string {
+	type row struct {
+		path      string
+		additions int
+		deletions int
+		binary    bool
+	}
+	var rows []row
+	totalAdditions, totalDeletions := 0, 0
+	for _, line := range strings.Split(strings.TrimSpace(stat), "\n") {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		item := row{path: parts[2]}
+		if parts[0] == "-" || parts[1] == "-" {
+			item.binary = true
+		} else {
+			item.additions, _ = strconv.Atoi(parts[0])
+			item.deletions, _ = strconv.Atoi(parts[1])
+			totalAdditions += item.additions
+			totalDeletions += item.deletions
+		}
+		rows = append(rows, item)
+	}
+	if len(rows) == 0 {
+		return strings.TrimSpace(stat)
+	}
+
+	pathWidth := max(24, width-18)
+	var b strings.Builder
+	for i, item := range rows {
+		path := truncateDisplay(item.path, pathWidth)
+		b.WriteString(path)
+		b.WriteString(strings.Repeat(" ", max(2, pathWidth-lipgloss.Width(path)+2)))
+		if item.binary {
+			b.WriteString("binary")
+		} else {
+			var deltas []string
+			if item.additions > 0 {
+				deltas = append(deltas, gitAdditionStyle.Render("+"+strconv.Itoa(item.additions)))
+			}
+			if item.deletions > 0 {
+				deltas = append(deltas, gitDeletionStyle.Render("-"+strconv.Itoa(item.deletions)))
+			}
+			if len(deltas) == 0 {
+				deltas = append(deltas, "0")
+			}
+			b.WriteString(strings.Join(deltas, "  "))
+		}
+		if i < len(rows)-1 {
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString("\n\n")
+	fmt.Fprintf(&b, "%d 个文件", len(rows))
+	if totalAdditions > 0 {
+		b.WriteString("，")
+		b.WriteString(gitAdditionStyle.Render("+" + strconv.Itoa(totalAdditions)))
+	}
+	if totalDeletions > 0 {
+		b.WriteString(" ")
+		b.WriteString(gitDeletionStyle.Render("-" + strconv.Itoa(totalDeletions)))
 	}
 	return b.String()
 }

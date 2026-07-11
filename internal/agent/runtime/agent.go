@@ -64,6 +64,8 @@ type Agent struct {
 	askDataMu        sync.Mutex
 	toolUseConfirms  map[string][]*agentbuiltin.PendingToolUseConfirm
 	toolUseConfirmMu sync.Mutex
+	commitRequests   map[string]*agentbuiltin.CommitRequest
+	commitRequestMu  sync.Mutex
 	taskTool         *agentbuiltin.TaskTool
 	eventBus         agentevent.Publisher
 	channelSendTool  tool.InvokableTool
@@ -631,6 +633,26 @@ func (a *Agent) ConsumeAskData(conversationID string) *agentbuiltin.AskData {
 	return d
 }
 
+func (a *Agent) storeCommitRequest(conversationID string, request *agentbuiltin.CommitRequest) {
+	if request == nil {
+		return
+	}
+	a.commitRequestMu.Lock()
+	defer a.commitRequestMu.Unlock()
+	if a.commitRequests == nil {
+		a.commitRequests = make(map[string]*agentbuiltin.CommitRequest)
+	}
+	a.commitRequests[conversationID] = request
+}
+
+func (a *Agent) ConsumeCommitRequest(conversationID string) *agentbuiltin.CommitRequest {
+	a.commitRequestMu.Lock()
+	defer a.commitRequestMu.Unlock()
+	request := a.commitRequests[conversationID]
+	delete(a.commitRequests, conversationID)
+	return request
+}
+
 func (a *Agent) storeToolUseConfirm(ctx context.Context, conversationID string, d *agentbuiltin.PendingToolUseConfirm) {
 	if d == nil {
 		return
@@ -963,6 +985,8 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	ctx, askHolder = agentbuiltin.NewAskDataHolder(ctx)
 	var toolUseConfirmHolder *agentbuiltin.ToolUseConfirmHolder
 	ctx, toolUseConfirmHolder = agentbuiltin.NewToolUseConfirmHolder(ctx)
+	var commitRequestHolder *agentbuiltin.CommitRequestHolder
+	ctx, commitRequestHolder = agentbuiltin.NewCommitRequestHolder(ctx)
 	var sendStatus *agentbuiltin.ChannelSendStatus
 	ctx, sendStatus = agentbuiltin.NewChannelSendStatus(ctx)
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, memoryID)
@@ -1161,6 +1185,9 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	if ask != nil {
 		a.storeAskData(conversationID, ask)
 	}
+	if request := commitRequestHolder.Get(); request != nil {
+		a.storeCommitRequest(conversationID, request)
+	}
 	for _, confirm := range confirms {
 		a.storeToolUseConfirm(ctx, conversationID, confirm)
 	}
@@ -1205,6 +1232,10 @@ func (a *Agent) toolGuide(interactive bool) string {
 	var b strings.Builder
 	b.WriteString(`=== 工具使用指引 ===
 根据任务场景选择最合适的工具：
+
+完成操作后的回复规则：
+• 用户同意“后续操作静默”时，仅压缩执行过程中的逐步播报；任务结束后仍必须给出可核验的简短摘要，说明做了什么、每项结果以及关键产物或失败原因。
+• 只有用户明确要求“完全静默”或“不需要任何结果”时，才可以省略最终摘要。
 
 	• webfetch — 获取网页内容。用于读取 URL、查看网页、获取公开信息。支持 markdown/text/html 格式。不支持需要登录的页面。
 	• websearch — 搜索网络。用于查询实时信息、最新新闻、事件和知识。`)
@@ -2133,6 +2164,9 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 	}
 
 	filter := agentbuiltin.ToolWebSearch | agentbuiltin.ToolAskUserQuestion
+	if channelName == "tui" {
+		filter |= agentbuiltin.ToolCommit
+	}
 	if a.cfg.BuiltinWebFetchEnabled {
 		filter |= agentbuiltin.ToolWebFetch
 	}

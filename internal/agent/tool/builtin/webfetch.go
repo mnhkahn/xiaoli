@@ -113,6 +113,9 @@ func NewFilteredTools(filters ToolFilter, opts ToolOptions) []tool.BaseTool {
 			NewEditFileTool(cfg),
 		)
 	}
+	if filters&ToolCommit != 0 {
+		tools = append(tools, NewCommitTool())
+	}
 	return tools
 }
 

@@ -184,10 +184,10 @@ func TestTerminalTitleStates(t *testing.T) {
 		model model
 		want  string
 	}{
-		{name: "idle", model: model{}, want: "Xiaoli"},
-		{name: "running", model: model{busy: true, status: "running", runPulseFrame: 1}, want: "⠙ Xiaoli running"},
-		{name: "approval", model: model{status: "waiting approval"}, want: "! Xiaoli approval"},
-		{name: "input", model: model{status: "waiting input"}, want: "! Xiaoli input"},
+		{name: "idle", model: model{}, want: "[ Xiaoli ]"},
+		{name: "running", model: model{busy: true, status: "running", runPulseFrame: 1}, want: "[⠙ RUNNING] Xiaoli"},
+		{name: "approval", model: model{status: "waiting approval"}, want: "[!! APPROVAL] Xiaoli"},
+		{name: "input", model: model{status: "waiting input"}, want: "[?? INPUT] Xiaoli"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -210,7 +210,7 @@ func TestTerminalTitleTransientStatesDoNotRingBell(t *testing.T) {
 }
 
 func TestTerminalTabTitleSequenceUsesOSC1(t *testing.T) {
-	const title = "⠋ Xiaoli running"
+	const title = "[⠋ RUNNING] Xiaoli"
 	got := terminalTabTitleSequence(title)
 	want := "\x1b]1;" + title + "\x07"
 	if got != want {
