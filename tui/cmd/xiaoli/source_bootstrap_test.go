@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSourceBootstrapSkipsWithoutSource(t *testing.T) {
@@ -45,11 +47,13 @@ func TestSourceBootstrapBuildsAndRunsFreshBinary(t *testing.T) {
 	}
 
 	cache := t.TempDir()
+	var status bytes.Buffer
 	var builtSource, builtOutput, ranBinary string
 	var ranArgs, ranEnv []string
 	result := runSourceBootstrap(sourceBootstrapDeps{
 		Args:    []string{"xiaoli", "-version"},
 		Environ: []string{"KEEP=yes"},
+		Stderr:  &status,
 		Getenv: func(name string) string {
 			if name == sourceEnvName {
 				return source
@@ -92,6 +96,65 @@ func TestSourceBootstrapBuildsAndRunsFreshBinary(t *testing.T) {
 	if _, err := os.Stat(wantBinary); err != nil {
 		t.Fatalf("installed source binary missing: %v", err)
 	}
+	plainStatus := ansiEscapeRE.ReplaceAllString(status.String(), "")
+	if !strings.Contains(plainStatus, "Checking source changes") || !strings.Contains(plainStatus, "recompiling Xiaoli") || !strings.Contains(plainStatus, "Recompiled in") {
+		t.Fatalf("source build status = %q, want checking, compiling, and completed messages", plainStatus)
+	}
+}
+
+func TestSourceBootstrapReportsAndSkipsUnchangedSource(t *testing.T) {
+	source := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(source, "tui", "cmd", "xiaoli"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, relative := range []string{"go.mod", filepath.Join("tui", "cmd", "xiaoli", "main.go")} {
+		if err := os.WriteFile(filepath.Join(source, relative), []byte("test"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cache := t.TempDir()
+	target := filepath.Join(cache, "xiaoli", "source-build", sourceBinaryName())
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("cached binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var status bytes.Buffer
+	var ranBinary string
+	result := runSourceBootstrap(sourceBootstrapDeps{
+		Args:   []string{"xiaoli", "-version"},
+		Stderr: &status,
+		Getenv: func(name string) string {
+			if name == sourceEnvName {
+				return source
+			}
+			return ""
+		},
+		UserCacheDir: func() (string, error) { return cache, nil },
+		NeedsBuild:   func(string, string) (bool, error) { return false, nil },
+		Build: func(string, string) error {
+			t.Fatal("Build called for unchanged source")
+			return nil
+		},
+		Run: func(binary string, _ []string, _ []string) error {
+			ranBinary = binary
+			return nil
+		},
+	})
+
+	if !result.Handled || result.ExitCode != 0 || result.Err != nil {
+		t.Fatalf("result = %#v, want successful cached bootstrap", result)
+	}
+	if ranBinary != target {
+		t.Fatalf("ran binary = %q, want cached %q", ranBinary, target)
+	}
+	plainStatus := ansiEscapeRE.ReplaceAllString(status.String(), "")
+	if !strings.Contains(plainStatus, "Checking source changes") || !strings.Contains(plainStatus, "Source unchanged; skipping rebuild") {
+		t.Fatalf("source build status = %q, want checking and skipped messages", plainStatus)
+	}
 }
 
 func TestSourceBootstrapSkipsBootstrappedChild(t *testing.T) {
@@ -108,6 +171,33 @@ func TestSourceBootstrapSkipsBootstrappedChild(t *testing.T) {
 	})
 	if result.Handled || result.Err != nil {
 		t.Fatalf("result = %#v, want bootstrapped child skipped", result)
+	}
+}
+
+func TestSourceNeedsRebuildDetectsNewerInput(t *testing.T) {
+	source := t.TempDir()
+	input := filepath.Join(source, "tui", "main.go")
+	if err := os.MkdirAll(filepath.Dir(input), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(input, []byte("package main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), sourceBinaryName())
+	if err := os.WriteFile(target, []byte("binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	newer := time.Now().Add(time.Minute)
+	if err := os.Chtimes(input, newer, newer); err != nil {
+		t.Fatal(err)
+	}
+	rebuild, err := sourceNeedsRebuild(source, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rebuild {
+		t.Fatal("sourceNeedsRebuild() = false, want true for newer source input")
 	}
 }
 
