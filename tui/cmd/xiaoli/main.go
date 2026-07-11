@@ -2862,7 +2862,7 @@ func cleanReleaseNoteLine(line string) string {
 		return ""
 	}
 	lower := strings.ToLower(line)
-	if strings.Contains(lower, "full changelog") {
+	if strings.Contains(lower, "full changelog") || strings.Contains(lower, "[skip ci]") {
 		return ""
 	}
 	for _, prefix := range []string{"- ", "* ", "+ "} {

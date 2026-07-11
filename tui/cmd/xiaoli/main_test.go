@@ -3617,7 +3617,7 @@ func TestLatestReleaseFromJSONExtractsNotes(t *testing.T) {
 	got, err := latestReleaseFromJSON([]byte(`{
 		"tag_name":"v0.10.0",
 		"html_url":"https://github.com/mnhkahn/xiaoli/releases/tag/v0.10.0",
-		"body":"## What's Changed\n- Add dynamic welcome notes\n- Improve TUI layout\n\nFull changelog: https://example.test"
+		"body":"## What's Changed\n- Add dynamic welcome notes\n- update changelog [skip ci]\n- Improve TUI layout\n\nFull changelog: https://example.test"
 	}`))
 	if err != nil {
 		t.Fatalf("latestReleaseFromJSON error = %v", err)
