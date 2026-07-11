@@ -50,6 +50,11 @@ type tuiExplorer struct {
 	err         string
 }
 
+// explorerPreviewMouseTop is the terminal mouse row at which the preview
+// content starts. Mouse coordinates are already relative to the explorer
+// content area, so the pane title and spacer must not be counted again.
+const explorerPreviewMouseTop = 2
+
 func newTreeExplorer(cwd string, width, height int) *tuiExplorer {
 	ex := &tuiExplorer{
 		mode:      explorerTree,
@@ -326,7 +331,7 @@ func (e *tuiExplorer) previewMousePoint(msg tea.MouseMsg) (selectionPoint, bool)
 	rightContentWidth := max(12, rightTotalWidth-boxStyle.GetHorizontalFrameSize())
 	previewHeight := max(0, max(4, e.height-5-boxStyle.GetVerticalFrameSize())-3)
 	x := msg.X - e.leftWidth - 2
-	y := msg.Y - 4
+	y := msg.Y - explorerPreviewMouseTop
 	point := selectionPoint{x: x, y: e.rightScroll + y}
 	if x < 0 {
 		point.x = 0
@@ -346,8 +351,8 @@ func (e *tuiExplorer) previewMousePoint(msg tea.MouseMsg) (selectionPoint, bool)
 	}
 	ok := msg.X >= e.leftWidth+2 &&
 		msg.X < e.leftWidth+2+rightContentWidth &&
-		msg.Y >= 4 &&
-		msg.Y < 4+previewHeight &&
+		msg.Y >= explorerPreviewMouseTop &&
+		msg.Y < explorerPreviewMouseTop+previewHeight &&
 		len(e.previewLines()) > 0
 	return point, ok
 }

@@ -187,8 +187,8 @@ func TestDiffExplorerPreviewDragSelectsRightPane(t *testing.T) {
 		preview:    "diff --git a/a.go b/a.go\n+added line\n-removed line",
 		previewRaw: "diff --git a/a.go b/a.go\n+added line\n-removed line",
 	}
-	press := tea.MouseMsg{Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: ex.leftWidth + 2, Y: 5}
-	motion := tea.MouseMsg{Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: ex.leftWidth + 8, Y: 5}
+	press := tea.MouseMsg{Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: ex.leftWidth + 2, Y: explorerPreviewMouseTop + 1}
+	motion := tea.MouseMsg{Type: tea.MouseLeft, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: ex.leftWidth + 8, Y: explorerPreviewMouseTop + 1}
 
 	if !ex.handleMouse(press) || !ex.selection.dragging {
 		t.Fatalf("press did not start right pane selection: %#v", ex.selection)
