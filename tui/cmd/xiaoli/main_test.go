@@ -184,10 +184,10 @@ func TestTerminalTitleStates(t *testing.T) {
 		model model
 		want  string
 	}{
-		{name: "idle", model: model{}, want: "[ Xiaoli ]"},
-		{name: "running", model: model{busy: true, status: "running", runPulseFrame: 1}, want: "[⠙ RUNNING] Xiaoli"},
-		{name: "approval", model: model{status: "waiting approval"}, want: "[!! APPROVAL] Xiaoli"},
-		{name: "input", model: model{status: "waiting input"}, want: "[?? INPUT] Xiaoli"},
+		{name: "idle", model: model{cwd: "/Users/test/code/alpha"}, want: "alpha"},
+		{name: "running", model: model{cwd: "/Users/test/code/alpha", busy: true, status: "running", runPulseFrame: 1}, want: "alpha"},
+		{name: "approval", model: model{cwd: "/Users/test/code/alpha", status: "waiting approval"}, want: "alpha"},
+		{name: "input", model: model{cwd: "/Users/test/code/alpha", status: "waiting input"}, want: "alpha"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -198,6 +198,22 @@ func TestTerminalTitleStates(t *testing.T) {
 				t.Fatalf("terminalTitle() contains BEL: %q", terminalTitle(tt.model))
 			}
 		})
+	}
+}
+
+func TestTerminalProjectName(t *testing.T) {
+	tests := []struct {
+		cwd  string
+		want string
+	}{
+		{cwd: "/Users/test/code/alpha", want: "alpha"},
+		{cwd: "/Users/test/code/alpha/", want: "alpha"},
+		{cwd: "", want: "-"},
+	}
+	for _, tt := range tests {
+		if got := terminalProjectName(tt.cwd); got != tt.want {
+			t.Fatalf("terminalProjectName(%q) = %q, want %q", tt.cwd, got, tt.want)
+		}
 	}
 }
 

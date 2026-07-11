@@ -154,8 +154,6 @@ const (
 	terminalProgressFailed
 )
 
-var terminalRunningFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
 type pastedContent struct {
 	ID        int
 	Type      string
@@ -534,26 +532,15 @@ func (m model) Init() tea.Cmd {
 }
 
 func terminalTitle(m model) string {
-	if m.hasPendingBashConfirm() {
-		return "[!! APPROVAL] Xiaoli"
+	return terminalProjectName(m.cwd)
+}
+
+func terminalProjectName(cwd string) string {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return "-"
 	}
-	if m.hasPendingOptions() || m.pendingGitCmsg.Active {
-		return "[?? INPUT] Xiaoli"
-	}
-	switch strings.TrimSpace(m.status) {
-	case "waiting approval":
-		return "[!! APPROVAL] Xiaoli"
-	case "waiting input":
-		return "[?? INPUT] Xiaoli"
-	}
-	if m.busy || m.runPulseActive {
-		frame := "⠋"
-		if len(terminalRunningFrames) > 0 {
-			frame = terminalRunningFrames[m.runPulseFrame%len(terminalRunningFrames)]
-		}
-		return "[" + frame + " RUNNING] Xiaoli"
-	}
-	return terminalIdleTitle
+	return filepath.Base(filepath.Clean(cwd))
 }
 
 func terminalTitleCmd(m model) tea.Cmd {
@@ -561,7 +548,7 @@ func terminalTitleCmd(m model) tea.Cmd {
 }
 
 func terminalTitleTextCmd(title string) tea.Cmd {
-	return tea.Batch(terminalTabTitleCmd(title), terminalProgressCmd(terminalProgressForTitle(title)))
+	return terminalProgressCmd(terminalProgressForTitle(title))
 }
 
 // terminalTabTitleCmd updates the title of the current terminal tab without
