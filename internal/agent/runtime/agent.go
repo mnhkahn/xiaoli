@@ -462,8 +462,10 @@ type PromptProfileStructuredOutput struct {
 	Params          map[string]*schema.ParameterInfo
 	Normalize       func(string) (string, error)
 
-	mu     sync.Mutex
-	result string
+	mu         sync.Mutex
+	result     string
+	failureRaw string
+	failureErr error
 }
 
 func NewPromptProfileStructuredOutput(name, description string, params map[string]*schema.ParameterInfo, normalize func(string) (string, error)) *PromptProfileStructuredOutput {
@@ -484,10 +486,56 @@ func (s *PromptProfileStructuredOutput) Result() (string, bool) {
 	return s.result, s.result != ""
 }
 
+// Failure returns the raw arguments and validation error from the latest
+// failed structured output attempt. Callers may use it for diagnostics or a
+// profile-specific repair path after the agent run fails.
+func (s *PromptProfileStructuredOutput) Failure() (string, error, bool) {
+	if s == nil {
+		return "", nil, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failureRaw, s.failureErr, s.failureErr != nil
+}
+
 func (s *PromptProfileStructuredOutput) setResult(result string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.result = result
+	s.failureRaw = ""
+	s.failureErr = nil
+}
+
+func (s *PromptProfileStructuredOutput) setFailure(raw string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.result = ""
+	s.failureRaw = raw
+	s.failureErr = err
+}
+
+// Capture validates, normalizes, and stores one structured output attempt.
+// The unmodified arguments are retained when validation fails so the caller
+// can report the exact model output or route it through a repair workflow.
+func (s *PromptProfileStructuredOutput) Capture(argumentsInJSON string) (string, error) {
+	var canonical bytes.Buffer
+	if err := json.Compact(&canonical, []byte(argumentsInJSON)); err != nil {
+		wrapped := fmt.Errorf("invalid structured output JSON: %w", err)
+		s.setFailure(argumentsInJSON, wrapped)
+		return "", wrapped
+	}
+	result := canonical.String()
+	if s.Normalize != nil {
+		var err error
+		result, err = s.Normalize(result)
+		if err != nil {
+			wrapped := fmt.Errorf("invalid structured output: %w", err)
+			s.setFailure(argumentsInJSON, wrapped)
+			return "", wrapped
+		}
+	}
+	s.setResult(result)
+	return result, nil
 }
 
 type promptProfileStructuredOutputTool struct {
@@ -507,19 +555,9 @@ func (t *promptProfileStructuredOutputTool) Info(context.Context) (*schema.ToolI
 }
 
 func (t *promptProfileStructuredOutputTool) InvokableRun(_ context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
-	var canonical bytes.Buffer
-	if err := json.Compact(&canonical, []byte(argumentsInJSON)); err != nil {
-		return "", fmt.Errorf("invalid structured output JSON: %w", err)
+	if _, err := t.output.Capture(argumentsInJSON); err != nil {
+		return "", err
 	}
-	result := canonical.String()
-	if t.output.Normalize != nil {
-		var err error
-		result, err = t.output.Normalize(result)
-		if err != nil {
-			return "", fmt.Errorf("invalid structured output: %w", err)
-		}
-	}
-	t.output.setResult(result)
 	return "Structured output captured successfully.", nil
 }
 

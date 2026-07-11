@@ -14,21 +14,26 @@ import (
 )
 
 type fakeA2AAgent struct {
-	profileCalls       int
-	profileStreamCalls int
-	subAgentCalls      int
-	lastProfile        agentruntime.PromptProfileRequest
-	profileRequests    []agentruntime.PromptProfileRequest
-	lastSubAgent       string
-	lastSubSessionKey  string
-	profileReply       string
-	profileReplies     []string
+	profileCalls        int
+	profileStreamCalls  int
+	subAgentCalls       int
+	lastProfile         agentruntime.PromptProfileRequest
+	profileRequests     []agentruntime.PromptProfileRequest
+	lastSubAgent        string
+	lastSubSessionKey   string
+	profileReply        string
+	profileReplies      []string
+	structuredArguments string
 }
 
 func (f *fakeA2AAgent) RunPromptProfile(ctx context.Context, req agentruntime.PromptProfileRequest) (string, error) {
 	f.profileCalls++
 	f.lastProfile = req
 	f.profileRequests = append(f.profileRequests, req)
+	if req.StructuredOutput != nil && f.structuredArguments != "" {
+		_, err := req.StructuredOutput.Capture(f.structuredArguments)
+		return "", err
+	}
 	if len(f.profileReplies) > 0 {
 		idx := f.profileCalls - 1
 		if idx >= len(f.profileReplies) {
@@ -193,6 +198,51 @@ func TestA2APipelineRepairsInvalidGeekNewsProfileJSONOnce(t *testing.T) {
 	}
 	if !strings.Contains(repair.UserText, "invalid_json") || !strings.Contains(repair.UserText, "err_offset") {
 		t.Fatalf("repair.UserText = %q, want invalid_json and err_offset", repair.UserText)
+	}
+}
+
+func TestA2APipelineRepairsInvalidStructuredOutputArguments(t *testing.T) {
+	rawArguments := `{"create_time":1719532800,"summary":"今日科技新闻","news":[{"link":"https://example.com/news","title":"标题","description":"采用"UI"设计","image":"","create_time":1719532800}]}`
+	repaired := `{"create_time":1719532800,"summary":"今日科技新闻","news":[{"link":"https://example.com/news","title":"标题","description":"采用中文界面设计","image":"","create_time":1719532800}]}`
+	agent := &fakeA2AAgent{
+		structuredArguments: rawArguments,
+		profileReplies:      []string{repaired},
+	}
+	pipeline := newA2APipeline(agent, nil)
+
+	var logs bytes.Buffer
+	oldLogger := logger.StdLogger
+	logger.StdLogger = logger.NewWriterLogger(&logs, 0, 2)
+	t.Cleanup(func() {
+		logger.StdLogger = oldLogger
+	})
+
+	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{
+		Channel:        "a2a",
+		ConversationID: "a2a:partner_a:cyeam_web",
+		Text:           `{"profile":"geek-news","input":{"date":"2026-06-28"}}`,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !json.Valid([]byte(reply.Text)) {
+		t.Fatalf("reply = %q, want repaired valid JSON", reply.Text)
+	}
+	if agent.profileCalls != 2 {
+		t.Fatalf("profileCalls = %d, want structured output attempt + repair", agent.profileCalls)
+	}
+	gotLogs := logs.String()
+	for _, want := range []string{
+		"[A2A][geek-news][structured_output_invalid]",
+		"invalid character 'U'",
+		"err_offset=",
+		"args_near=",
+		"args_preview=",
+		"[A2A][geek-news][structured_output_repaired]",
+	} {
+		if !strings.Contains(gotLogs, want) {
+			t.Fatalf("logs = %q, want substring %q", gotLogs, want)
+		}
 	}
 }
 

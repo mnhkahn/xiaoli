@@ -751,6 +751,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.focus = focusTranscript
+		layout := m.mainViewLayout()
+		m.viewport.Width = layout.mainW
+		m.viewport.Height = layout.transcriptH
 		var vpCmd tea.Cmd
 		m.viewport, vpCmd = m.viewport.Update(msg)
 		return m, vpCmd
@@ -1561,16 +1564,44 @@ func (m model) View() string {
 		m.explorer.resize(m.width, m.height)
 		return m.explorer.View()
 	}
-	mainW, _, _, promptW, statusH := layoutSizes(m.width, m.height)
-
-	approvalModal := ""
-	if m.hasPendingBashConfirm() {
-		approvalModal = renderPendingToolConfirmModal(m.pendingToolConfirm, m.pendingQuestion, m.pendingOptions, m.pendingChoice, promptW)
-		logger.Debugf("tui approval modal render: session=%s tool_use_id=%s width=%d height=%d modal_height=%d prompt_width=%d", m.pendingToolConfirm.SessionID, m.pendingToolConfirm.ToolUseID, m.width, m.height, renderedHeight(approvalModal), promptW)
+	layout := m.mainViewLayout()
+	vp := m.transcriptViewport(layout)
+	transcript := vp.View()
+	if m.selection.active || m.selection.dragging {
+		transcript = renderTranscriptSelectionOverlay(strings.Split(transcript, "\n"), m.selection, layout.mainW)
 	}
+	topStyle := boxStyle.Width(layout.mainW).Height(layout.transcriptH)
+	top := topStyle.Render(transcript)
+	parts := []string{top}
+	if layout.approvalModal != "" {
+		parts = append(parts, layout.approvalModal)
+	}
+	parts = append(parts, layout.prompt)
+	if layout.status != "" {
+		parts = append(parts, layout.status)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+}
 
+// mainViewLayout is the single source of truth for the main screen geometry.
+// Mouse hit-testing and clipboard extraction must use this exact layout too:
+// the prompt can grow when suggestions, options, or an approval modal appear.
+type mainViewLayout struct {
+	mainW, transcriptH int
+	approvalModal      string
+	prompt             string
+	status             string
+}
+
+func (m model) mainViewLayout() mainViewLayout {
+	mainW, _, _, promptW, statusH := layoutSizes(m.width, m.height)
+	layout := mainViewLayout{mainW: mainW}
+	if m.hasPendingBashConfirm() {
+		layout.approvalModal = renderPendingToolConfirmModal(m.pendingToolConfirm, m.pendingQuestion, m.pendingOptions, m.pendingChoice, promptW)
+		logger.Debugf("tui approval modal render: session=%s tool_use_id=%s width=%d height=%d modal_height=%d prompt_width=%d", m.pendingToolConfirm.SessionID, m.pendingToolConfirm.ToolUseID, m.width, m.height, renderedHeight(layout.approvalModal), promptW)
+	}
 	promptParts := []string{}
-	if approvalModal == "" && (m.hasPendingOptions() || strings.TrimSpace(m.pendingQuestion) != "") {
+	if layout.approvalModal == "" && (m.hasPendingOptions() || strings.TrimSpace(m.pendingQuestion) != "") {
 		if panel := renderPendingAskPanel(m.pendingQuestion, m.pendingOptions, m.pendingChoice, promptW-2); strings.TrimSpace(panel) != "" {
 			promptParts = append(promptParts, panel)
 		}
@@ -1581,31 +1612,19 @@ func (m model) View() string {
 		promptParts = append(promptParts, renderSlashSuggestions(suggestions, promptW-2))
 	}
 	promptParts = append(promptParts, m.input.View())
-	prompt := boxStyle.Width(promptW).Render(strings.Join(promptParts, "\n"))
-	status := ""
+	layout.prompt = boxStyle.Width(promptW).Render(strings.Join(promptParts, "\n"))
 	if statusH > 0 {
-		status = renderStatusBar(m, max(20, promptW+boxStyle.GetHorizontalFrameSize()))
+		layout.status = renderStatusBar(m, max(20, promptW+boxStyle.GetHorizontalFrameSize()))
 	}
-	transcript := ""
-	transcriptH := transcriptViewportHeight(m.height, renderedHeight(approvalModal), renderedHeight(prompt), renderedHeight(status))
+	layout.transcriptH = transcriptViewportHeight(m.height, renderedHeight(layout.approvalModal), renderedHeight(layout.prompt), renderedHeight(layout.status))
+	return layout
+}
+
+func (m model) transcriptViewport(layout mainViewLayout) viewport.Model {
 	vp := m.viewport
-	vp.Width = mainW
-	vp.Height = transcriptH
-	transcript = vp.View()
-	if m.selection.active || m.selection.dragging {
-		transcript = renderTranscriptSelectionOverlay(strings.Split(transcript, "\n"), m.selection, mainW)
-	}
-	topStyle := boxStyle.Width(mainW).Height(transcriptH)
-	top := topStyle.Render(transcript)
-	parts := []string{top}
-	if approvalModal != "" {
-		parts = append(parts, approvalModal)
-	}
-	parts = append(parts, prompt)
-	if status != "" {
-		parts = append(parts, status)
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, parts...)
+	vp.Width = layout.mainW
+	vp.Height = layout.transcriptH
+	return vp
 }
 
 func renderedHeight(s string) int {
@@ -1653,18 +1672,18 @@ func (m *model) syncViewport(gotoBottom bool) {
 	if m == nil || m.width <= 0 || m.height <= 0 {
 		return
 	}
-	mainW, _, bodyH, _, _ := layoutSizes(m.width, m.height)
-	if mainW <= 0 || bodyH <= 0 {
+	layout := m.mainViewLayout()
+	if layout.mainW <= 0 || layout.transcriptH <= 0 {
 		return
 	}
 	atBottom := m.viewport.AtBottom()
-	m.viewport.Width = mainW
-	m.viewport.Height = bodyH
-	key := m.transcriptCacheKey(mainW)
+	m.viewport.Width = layout.mainW
+	m.viewport.Height = layout.transcriptH
+	key := m.transcriptCacheKey(layout.mainW)
 	content := m.transcriptCache.content
 	if key != m.transcriptCache.key {
 		links := []transcriptLink(nil)
-		content, links = m.renderTranscriptContentWithLinks(mainW)
+		content, links = m.renderTranscriptContentWithLinks(layout.mainW)
 		m.transcriptCache = transcriptRenderCache{
 			key:     key,
 			content: content,
@@ -1672,10 +1691,10 @@ func (m *model) syncViewport(gotoBottom bool) {
 		}
 		m.transcriptLinks = links
 		m.viewport.SetContent(content)
-		logger.Debugf("tui viewport sync: cache_miss=true goto_bottom=%v items=%d content_len=%d height=%d", gotoBottom, len(m.items), len([]rune(content)), bodyH)
+		logger.Debugf("tui viewport sync: cache_miss=true goto_bottom=%v items=%d content_len=%d height=%d", gotoBottom, len(m.items), len([]rune(content)), layout.transcriptH)
 	} else {
 		m.transcriptLinks = m.transcriptCache.links
-		logger.Debugf("tui viewport sync: cache_miss=false goto_bottom=%v items=%d height=%d", gotoBottom, len(m.items), bodyH)
+		logger.Debugf("tui viewport sync: cache_miss=false goto_bottom=%v items=%d height=%d", gotoBottom, len(m.items), layout.transcriptH)
 	}
 	if gotoBottom || atBottom {
 		m.viewport.GotoBottom()
@@ -3003,8 +3022,8 @@ func isMouseWheel(msg tea.MouseMsg) bool {
 }
 
 func (m model) mouseInMainViewport(msg tea.MouseMsg) bool {
-	mainW, _, bodyH, _, _ := layoutSizes(m.width, m.height)
-	return msg.X >= 0 && msg.X < mainW && msg.Y >= 0 && msg.Y < bodyH
+	layout := m.mainViewLayout()
+	return msg.X >= 0 && msg.X < layout.mainW && msg.Y >= 0 && msg.Y < layout.transcriptH+boxStyle.GetVerticalFrameSize()
 }
 
 func (m model) mouseInInputArea(msg tea.MouseMsg) bool {
@@ -3025,7 +3044,7 @@ func (m *model) handleTranscriptSelectionMouse(msg tea.MouseMsg) (bool, tea.Cmd)
 			m.selection.focus = point
 		}
 		m.selection.dragging = false
-		lines := plainTranscriptLines(m.viewport.View())
+		lines := plainTranscriptLines(m.transcriptViewport(m.mainViewLayout()).View())
 		text := selectedTranscriptText(lines, m.selection)
 		m.selection.text = text
 		if strings.TrimSpace(text) == "" {
@@ -3068,7 +3087,7 @@ func (m *model) handleTranscriptSelectionMouse(msg tea.MouseMsg) (bool, tea.Cmd)
 }
 
 func (m model) transcriptMousePoint(msg tea.MouseMsg) (selectionPoint, bool) {
-	mainW, _, bodyH, _, _ := layoutSizes(m.width, m.height)
+	layout := m.mainViewLayout()
 	x := msg.X - 2
 	y := msg.Y - 1
 	point := selectionPoint{x: x, y: y}
@@ -3078,15 +3097,15 @@ func (m model) transcriptMousePoint(msg tea.MouseMsg) (selectionPoint, bool) {
 	if y < 0 {
 		point.y = 0
 	}
-	maxX := max(0, mainW-3)
-	maxY := max(0, bodyH-2)
+	maxX := max(0, layout.mainW-3)
+	maxY := max(0, layout.transcriptH-1)
 	if point.x > maxX {
 		point.x = maxX
 	}
 	if point.y > maxY {
 		point.y = maxY
 	}
-	return point, msg.X >= 2 && msg.X < mainW-1 && msg.Y >= 1 && msg.Y < bodyH
+	return point, msg.X >= 2 && msg.X < layout.mainW-1 && msg.Y >= 1 && msg.Y < layout.transcriptH+1
 }
 
 func (m model) transcriptLinkAt(msg tea.MouseMsg) (string, bool) {

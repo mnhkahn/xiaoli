@@ -1,6 +1,10 @@
 package admin
 
-import "testing"
+import (
+	"testing"
+
+	agentsession "github.com/mnhkahn/xiaoli/internal/agent/session"
+)
 
 func TestSettingsReminderDefaultChannelDefaultsToLark(t *testing.T) {
 	got := (settingsConfig{}).reminderDefaultChannel()
@@ -53,5 +57,45 @@ func TestReminderDeliveryChannelKeepsDefinitionChannel(t *testing.T) {
 
 	if got := srv.reminderDeliveryChannel("wechat"); got != "wechat" {
 		t.Fatalf("reminderDeliveryChannel(\"wechat\") = %q, want %q", got, "wechat")
+	}
+}
+
+func TestReminderDeliveryChannelsSkipsUnsupportedWechat(t *testing.T) {
+	cfg := testConfig()
+	cfg.ReminderDefaultChannel = "lark"
+	srv := NewServer(cfg)
+
+	got := srv.reminderDeliveryChannels("wechat")
+	want := []string{"lark"}
+	if len(got) != len(want) {
+		t.Fatalf("reminderDeliveryChannels(wechat) = %#v, want %#v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("reminderDeliveryChannels(wechat) = %#v, want %#v", got, want)
+		}
+	}
+}
+
+func TestReminderLarkTargetUsesChannelOpenID(t *testing.T) {
+	target, err := reminderLarkTargetFromChannels([]agentsession.ChannelEntry{
+		{ChannelName: string(ChannelWechatText), ChannelUser: "wechat-user"},
+		{ChannelName: string(ChannelLarkText), ChannelUser: "ou_lark_user"},
+	})
+	if err != nil {
+		t.Fatalf("reminderLarkTargetFromChannels() error = %v", err)
+	}
+	if target != "ou_lark_user" {
+		t.Fatalf("reminderLarkTargetFromChannels() = %q, want lark open ID", target)
+	}
+}
+
+func TestReminderLarkTargetRejectsAmbiguousChannels(t *testing.T) {
+	_, err := reminderLarkTargetFromChannels([]agentsession.ChannelEntry{
+		{ChannelName: string(ChannelLarkText), ChannelUser: "ou_first"},
+		{ChannelName: string(ChannelLarkText), ChannelUser: "ou_second"},
+	})
+	if err == nil {
+		t.Fatal("reminderLarkTargetFromChannels() error = nil, want ambiguity error")
 	}
 }

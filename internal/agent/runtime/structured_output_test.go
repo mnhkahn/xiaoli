@@ -40,11 +40,22 @@ func TestPromptProfileStructuredOutputCapturesNormalizedResult(t *testing.T) {
 func TestPromptProfileStructuredOutputRejectsInvalidJSON(t *testing.T) {
 	output := NewPromptProfileStructuredOutput("structured_output", "Return a structured result.", nil, nil)
 	tool := newPromptProfileStructuredOutputTool(output)
+	raw := `{"answer":"采用"UI"设计"}`
 
-	if _, err := tool.InvokableRun(context.Background(), `{"answer":`); err == nil {
+	if _, err := tool.InvokableRun(context.Background(), raw); err == nil {
 		t.Fatal("InvokableRun() error = nil, want invalid JSON error")
 	}
 	if _, ok := output.Result(); ok {
 		t.Fatal("Result() ok = true after invalid JSON")
+	}
+	failureRaw, failureErr, ok := output.Failure()
+	if !ok {
+		t.Fatal("Failure() ok = false after invalid JSON")
+	}
+	if failureRaw != raw {
+		t.Fatalf("Failure() raw = %q, want exact tool arguments %q", failureRaw, raw)
+	}
+	if !strings.Contains(failureErr.Error(), "invalid character 'U'") {
+		t.Fatalf("Failure() err = %v, want invalid character U", failureErr)
 	}
 }

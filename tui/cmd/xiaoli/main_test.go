@@ -820,6 +820,33 @@ func TestTranscriptMousePointIncludesLastVisibleLine(t *testing.T) {
 	}
 }
 
+func TestTranscriptMousePointUsesDynamicPromptHeight(t *testing.T) {
+	input := textinput.New()
+	m := model{
+		input:           input,
+		pendingQuestion: strings.Repeat("是否允许执行这项操作？", 12),
+		pendingOptions:  []string{"允许一次", "拒绝"},
+		width:           80,
+		height:          30,
+	}
+	layout := m.mainViewLayout()
+	_, _, staticH, _, _ := layoutSizes(m.width, m.height)
+	if layout.transcriptH >= staticH {
+		t.Fatalf("dynamic transcript height = %d, want less than fixed height %d", layout.transcriptH, staticH)
+	}
+
+	// Screen row 1 is the top content row inside the border. The last
+	// visible row must map to the last row in the dynamically rendered
+	// viewport, not to the old fixed-height viewport.
+	point, ok := m.transcriptMousePoint(tea.MouseMsg{X: 2, Y: layout.transcriptH})
+	if !ok {
+		t.Fatal("transcriptMousePoint(last dynamic visible line) ok = false")
+	}
+	if point.y != layout.transcriptH-1 {
+		t.Fatalf("transcriptMousePoint().y = %d, want %d", point.y, layout.transcriptH-1)
+	}
+}
+
 func TestMarkdownLinkRendersAsUnderlinedTitle(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	got := renderTranscriptContent([]transcriptItem{{

@@ -28,6 +28,7 @@ import (
 	agentwechat "github.com/mnhkahn/xiaoli/internal/agent/channel/wechat"
 	agentmedia "github.com/mnhkahn/xiaoli/internal/agent/media"
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
+	agentsession "github.com/mnhkahn/xiaoli/internal/agent/session"
 	agentslash "github.com/mnhkahn/xiaoli/internal/agent/slash"
 	agentbuiltin "github.com/mnhkahn/xiaoli/internal/agent/tool/builtin"
 	agentworkflow "github.com/mnhkahn/xiaoli/internal/agent/workflow"
@@ -1699,19 +1700,24 @@ func (s *AdminServer) runSpeakAction(ctx context.Context, def agentworkflow.Defi
 
 // sendReminderByChannel 根据 channel 发送提醒到对应的渠道
 func (s *AdminServer) sendReminderByChannel(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
-	channel := s.reminderDeliveryChannel(def.Channel)
-
-	switch channel {
-	case "esp32":
-		return s.sendReminderToESP32(ctx, def, scheduledAt)
-	case "lark":
-		return s.sendReminderToLark(ctx, def, scheduledAt)
-	case "wechat":
-		// TODO: 微信提醒需要保存 context token，暂未实现
-		return s.sendReminderToWechat(ctx, def, scheduledAt)
-	default:
-		return s.sendReminderToLark(ctx, def, scheduledAt)
+	var failures []string
+	for _, channel := range s.reminderDeliveryChannels(def.Channel) {
+		var err error
+		switch channel {
+		case "esp32":
+			err = s.sendReminderToESP32(ctx, def, scheduledAt)
+		case "lark":
+			err = s.sendReminderToLark(ctx, def, scheduledAt)
+		default:
+			continue
+		}
+		if err == nil {
+			logger.Infof("[reminder] %q delivered via %s at %s", def.ID, channel, scheduledAt.Format(time.RFC3339))
+			return nil
+		}
+		failures = append(failures, channel+": "+err.Error())
 	}
+	return fmt.Errorf("reminder delivery failed: %s", strings.Join(failures, "; "))
 }
 
 func (s *AdminServer) reminderDeliveryChannel(channel string) string {
@@ -1721,52 +1727,99 @@ func (s *AdminServer) reminderDeliveryChannel(channel string) string {
 	return normalizeReminderDeliveryChannel(s.cfg.ReminderDefaultChannel, defaultReminderChannel)
 }
 
+// reminderDeliveryChannels returns supported delivery channels in priority
+// order. A reminder's Channel is its creation source, not proof that the
+// source can push a scheduled message. WeChat has no proactive reminder
+// sender, so WeChat-originated reminders fall back to Lark only: they must
+// never be redirected to an unrelated ESP32 device.
+func (s *AdminServer) reminderDeliveryChannels(channel string) []string {
+	primary := s.reminderDeliveryChannel(channel)
+	if primary == "wechat" {
+		return []string{"lark"}
+	}
+	switch primary {
+	case "esp32":
+		// Device-originated reminders may still use the historical Lark
+		// fallback when the originating device is offline.
+		return []string{"esp32", "lark"}
+	case "lark":
+		return []string{"lark"}
+	default:
+		return []string{"lark"}
+	}
+}
+
 // sendReminderToESP32 发送提醒到 ESP32 设备语音播报
 func (s *AdminServer) sendReminderToESP32(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
-	if err := s.runSpeakAction(ctx, def, scheduledAt); err == nil {
-		return nil
-	}
-	// ESP32 不在线，fallback 到飞书（如果有配置）
-	if s.cfg.LarkAppID != "" && s.cfg.LarkAppToken != "" && def.SenderID != "" {
-		if err := s.sendReminderLarkMessage(ctx, def); err == nil {
-			logger.Infof("[reminder] %q fallback to lark message: %q", def.ID, def.Name)
-			return nil
-		}
-	}
-	// 都失败了，返回错误让下次重试
-	return fmt.Errorf("ESP32 offline and lark message failed")
+	return s.runSpeakAction(ctx, def, scheduledAt)
 }
 
 // sendReminderToLark 发送提醒到飞书，使用机器人 API 给用户发消息
-func (s *AdminServer) sendReminderToLark(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
-	if def.SenderID == "" {
-		return fmt.Errorf("lark reminder missing sender_id")
+func (s *AdminServer) sendReminderToLark(ctx context.Context, def agentworkflow.Definition, _ time.Time) error {
+	target, err := s.reminderLarkTarget(ctx, def)
+	if err != nil {
+		return err
 	}
 	if s.cfg.LarkAppID == "" || s.cfg.LarkAppToken == "" {
 		return fmt.Errorf("lark app not configured")
 	}
-	if err := s.sendReminderLarkMessage(ctx, def); err == nil {
-		logger.Infof("[reminder] %q sent via lark message: %q", def.ID, def.Name)
-		return nil
+	if err := s.sendReminderLarkMessage(ctx, target, def); err != nil {
+		return fmt.Errorf("lark direct message failed: %w", err)
 	}
-	return fmt.Errorf("lark message send failed")
-}
-
-// sendReminderToWechat 发送提醒到微信（暂未实现）
-func (s *AdminServer) sendReminderToWechat(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
-	// TODO: 微信提醒需要保存 context token，暂未实现
-	// fallback 到 ESP32，如果也失败返回错误
-	if err := s.runSpeakAction(ctx, def, scheduledAt); err == nil {
-		return nil
-	}
-	return fmt.Errorf("wechat reminder not implemented and ESP32 offline")
+	return nil
 }
 
 // sendReminderLarkMessage 使用飞书机器人 API 发送提醒文本
-func (s *AdminServer) sendReminderLarkMessage(ctx context.Context, def agentworkflow.Definition) error {
+func (s *AdminServer) sendReminderLarkMessage(ctx context.Context, target string, def agentworkflow.Definition) error {
 	cli := s.newLarkClient()
 	text := metadataString(def.Metadata, "text", def.Name)
-	return cli.CreateTextMessage(ctx, def.SenderID, "🔔 提醒："+text)
+	return cli.CreateTextMessage(ctx, target, "🔔 提醒："+text)
+}
+
+func (s *AdminServer) reminderLarkTarget(ctx context.Context, def agentworkflow.Definition) (string, error) {
+	if target := metadataString(def.Metadata, "lark_recipient_id", ""); target != "" {
+		return target, nil
+	}
+	if def.Channel == "lark" {
+		if def.SenderID == "" {
+			return "", fmt.Errorf("lark reminder missing sender_id")
+		}
+		return def.SenderID, nil
+	}
+	if s.agent == nil || s.agent.SessionManager() == nil {
+		return "", fmt.Errorf("no active lark channel")
+	}
+	entries, err := s.agent.SessionManager().ListChannels(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list lark channels: %w", err)
+	}
+	return reminderLarkTargetFromChannels(entries)
+}
+
+// reminderLarkTargetFromChannels resolves the direct-message recipient from
+// the persisted Channel registry. A reminder created in another channel (such
+// as WeChat) must use this Open ID instead of reusing its source user ID.
+func reminderLarkTargetFromChannels(entries []agentsession.ChannelEntry) (string, error) {
+	targets := make([]string, 0, 1)
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		if entry.ChannelName != string(ChannelLarkText) || strings.TrimSpace(entry.ChannelUser) == "" {
+			continue
+		}
+		target := strings.TrimSpace(entry.ChannelUser)
+		if !seen[target] {
+			seen[target] = true
+			targets = append(targets, target)
+		}
+	}
+	switch len(targets) {
+	case 0:
+		return "", fmt.Errorf("no active lark channel")
+	case 1:
+		return targets[0], nil
+	default:
+		return "", fmt.Errorf("multiple active lark channels; set lark_recipient_id")
+	}
 }
 
 // runNotifyAction 发送飞书通知（webhook）

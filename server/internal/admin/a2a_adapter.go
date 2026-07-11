@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 
@@ -84,7 +85,22 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 		}
 		reply, err := p.agent.RunPromptProfile(ctx, runnerReq)
 		if err != nil {
-			return a2a.ConversationReply{}, err
+			if profile.Name != "geek-news" || structuredOutput == nil {
+				return a2a.ConversationReply{}, err
+			}
+			rawArguments, structuredErr, ok := structuredOutput.Failure()
+			if !ok {
+				return a2a.ConversationReply{}, err
+			}
+			errOffset := jsonSyntaxErrorOffset(structuredErr)
+			logger.Infof("[A2A][geek-news][structured_output_invalid] conversation_id=%s agent_err=%v err=%v err_offset=%d args_len=%d args_near=%q args_preview=%q", turn.ConversationID, err, structuredErr, errOffset, len(rawArguments), truncateA2ALogValueAround(rawArguments, errOffset, 400), truncateA2ALogValue(rawArguments, 800))
+			repaired, repairErr := p.repairGeekNewsReply(ctx, turn, profile, rawArguments, structuredErr, errOffset)
+			if repairErr != nil {
+				logger.Infof("[A2A][geek-news][structured_output_repair_failed] conversation_id=%s agent_err=%v structured_err=%v repair_err=%v", turn.ConversationID, err, structuredErr, repairErr)
+				return a2a.ConversationReply{}, fmt.Errorf("repair invalid structured output: %w", repairErr)
+			}
+			logger.Infof("[A2A][geek-news][structured_output_repaired] conversation_id=%s args_len=%d reply_len=%d", turn.ConversationID, len(rawArguments), len(repaired))
+			reply = repaired
 		}
 		if profile.Name == "geek-news" {
 			if structured, ok := structuredOutput.Result(); ok {
