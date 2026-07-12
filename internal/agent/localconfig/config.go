@@ -41,6 +41,7 @@ type MCPServerConfig struct {
 	ClientSecretEnv string `json:"client_secret_env"`
 	RefreshTokenEnv string `json:"refresh_token_env"`
 	Scope           string `json:"scope"`
+	Timeout         string `json:"timeout"`
 }
 
 type ModelConfig struct {
@@ -508,6 +509,7 @@ func (c Config) mcpEndpoints() []agentruntime.MCPEndpoint {
 				ClientSecret: c.secretValue(server.ClientSecretEnv),
 				RefreshToken: c.secretValue(server.RefreshTokenEnv),
 				Scope:        strings.TrimSpace(server.Scope),
+				Timeout:      parseMCPTimeout(server.Timeout),
 			})
 			continue
 		}
@@ -529,9 +531,18 @@ func (c Config) mcpEndpoints() []agentruntime.MCPEndpoint {
 			APIKey:  key,
 			Auth:    auth,
 			HeaderN: strings.TrimSpace(server.HeaderName),
+			Timeout: parseMCPTimeout(server.Timeout),
 		})
 	}
 	return endpoints
+}
+
+func parseMCPTimeout(raw string) time.Duration {
+	d, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 func (c Config) secretValue(name string) string {

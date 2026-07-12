@@ -1070,8 +1070,8 @@ func TestPendingBashConfirmEnterApprovesWhileBusy(t *testing.T) {
 	ctx, holder := agentbuiltin.NewToolUseConfirmHolder(context.Background())
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, "ses_enter_busy")
 	tool := agentbuiltin.NewShellTool(agentbuiltin.ShellConfig{})
-	if _, err := tool.InvokableRun(ctx, `{"command":"printf approved"}`); err != nil {
-		t.Fatal(err)
+	if _, err := tool.InvokableRun(ctx, `{"command":"printf approved"}`); err == nil {
+		t.Fatal("InvokableRun() error = nil, want approval interrupt")
 	}
 	confirm := holder.Get()
 	if confirm == nil {
@@ -1152,8 +1152,8 @@ func TestPendingBashConfirmCtrlAEnablesAutoBashAndApproves(t *testing.T) {
 	ctx, holder := agentbuiltin.NewToolUseConfirmHolder(context.Background())
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, "ses_auto_ctrl_a")
 	tool := agentbuiltin.NewShellTool(agentbuiltin.ShellConfig{})
-	if _, err := tool.InvokableRun(ctx, `{"command":"printf auto"}`); err != nil {
-		t.Fatal(err)
+	if _, err := tool.InvokableRun(ctx, `{"command":"printf auto"}`); err == nil {
+		t.Fatal("InvokableRun() error = nil, want approval interrupt")
 	}
 	confirm := holder.Get()
 	if confirm == nil {
@@ -1201,8 +1201,8 @@ func TestPendingBashConfirmUsesConfirmSessionIDForAutoApprove(t *testing.T) {
 	ctx, holder := agentbuiltin.NewToolUseConfirmHolder(context.Background())
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, "ses_confirm_owner")
 	tool := agentbuiltin.NewShellTool(agentbuiltin.ShellConfig{})
-	if _, err := tool.InvokableRun(ctx, `{"command":"printf session"}`); err != nil {
-		t.Fatal(err)
+	if _, err := tool.InvokableRun(ctx, `{"command":"printf session"}`); err == nil {
+		t.Fatal("InvokableRun() error = nil, want approval interrupt")
 	}
 	confirm := holder.Get()
 	if confirm == nil {
@@ -1241,8 +1241,8 @@ func TestAutoBashPermissionEventApprovesWithoutModal(t *testing.T) {
 	ctx, holder := agentbuiltin.NewToolUseConfirmHolder(context.Background())
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, "ses_auto_event")
 	tool := agentbuiltin.NewShellTool(agentbuiltin.ShellConfig{})
-	if _, err := tool.InvokableRun(ctx, `{"command":"printf event"}`); err != nil {
-		t.Fatal(err)
+	if _, err := tool.InvokableRun(ctx, `{"command":"printf event"}`); err == nil {
+		t.Fatal("InvokableRun() error = nil, want approval interrupt")
 	}
 	confirm := holder.Get()
 	if confirm == nil {
@@ -1502,6 +1502,29 @@ func TestPendingBashConfirmRendersFixedApprovalModal(t *testing.T) {
 	}
 	if strings.Contains(stripTestANSI(m.viewport.View()), "BASH APPROVAL") {
 		t.Fatalf("viewport contains approval modal; want modal outside transcript viewport")
+	}
+}
+
+func TestPendingBashConfirmFallsBackToSelectableOptions(t *testing.T) {
+	input := textinput.New()
+	m := model{
+		input:    input,
+		width:    100,
+		height:   28,
+		viewport: viewport.New(100, 10),
+	}
+	m.setPendingToolConfirm(&agentbuiltin.PendingToolUseConfirm{
+		ToolName:    "bash",
+		ToolUseID:   "toolu_bash_missing_options",
+		BashHash:    "hash_missing_options",
+		BashCommand: "git status --short",
+	}, false)
+
+	got := stripTestANSI(m.View())
+	for _, want := range []string{"› 1. 允许一次", "2. 自动通过本轮并执行", "3. 拒绝"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("View() = %q, want fallback approval option %q", got, want)
+		}
 	}
 }
 
@@ -1911,8 +1934,8 @@ func TestAutoBashApprovalRunsQueuedConfirmWithoutShowingAnotherModal(t *testing.
 	ctx = context.WithValue(ctx, agentbuiltin.SubAgentParentKey, "ses_auto_queue")
 	tool := agentbuiltin.NewShellTool(agentbuiltin.ShellConfig{})
 	for _, command := range []string{"printf first", "printf second"} {
-		if _, err := tool.InvokableRun(ctx, `{"command":"`+command+`"}`); err != nil {
-			t.Fatal(err)
+		if _, err := tool.InvokableRun(ctx, `{"command":"`+command+`"}`); err == nil {
+			t.Fatalf("InvokableRun(%q) error = nil, want approval interrupt", command)
 		}
 	}
 	confirms := holder.All()

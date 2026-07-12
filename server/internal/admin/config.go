@@ -451,6 +451,8 @@ type settingsMCPServer struct {
 	ClientSecretEnv string `json:"client_secret_env,omitempty"`
 	RefreshTokenEnv string `json:"refresh_token_env,omitempty"`
 	Scope           string `json:"scope,omitempty"`
+	// Timeout 是一次 MCP 调用（包含同服务的排队等待）的上限。
+	Timeout string `json:"timeout,omitempty"`
 
 	// stdio 模式（如 docker run）
 	Command string            `json:"command,omitempty"`
@@ -751,6 +753,7 @@ func (s settingsConfig) mcpEndpoints() []agentruntime.MCPEndpoint {
 				ClientSecret: clientSecret,
 				RefreshToken: refreshToken,
 				Scope:        strings.TrimSpace(server.Scope),
+				Timeout:      parseMCPTimeout(server.Timeout),
 			})
 			continue
 		}
@@ -774,9 +777,18 @@ func (s settingsConfig) mcpEndpoints() []agentruntime.MCPEndpoint {
 			APIKey:  key,
 			Auth:    auth,
 			HeaderN: strings.TrimSpace(server.HeaderName),
+			Timeout: parseMCPTimeout(server.Timeout),
 		})
 	}
 	return out
+}
+
+func parseMCPTimeout(raw string) time.Duration {
+	d, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 func (s settingsConfig) webFetchEnabled() bool {

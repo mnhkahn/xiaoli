@@ -4226,8 +4226,16 @@ func (m *model) setPendingToolConfirm(confirm *agentbuiltin.PendingToolUseConfir
 
 func bashApprovalOptionsWithAutoRun(options []string, confirm *agentbuiltin.PendingToolUseConfirm) []string {
 	out := append([]string(nil), options...)
-	if confirm == nil || !strings.EqualFold(confirm.ToolName, "bash") || len(out) == 0 {
+	if confirm == nil || !strings.EqualFold(confirm.ToolName, "bash") {
 		return out
+	}
+	if len(out) == 0 {
+		command := strings.TrimSpace(confirm.BashCommand)
+		allowOnce := "允许一次"
+		if command != "" {
+			allowOnce += " :: " + command
+		}
+		out = []string{allowOnce, "拒绝"}
 	}
 	for _, opt := range out {
 		if pendingOptionValue(opt) == bashApprovalAutoRun {

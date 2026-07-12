@@ -14,24 +14,33 @@ import (
 )
 
 type fakeA2AAgent struct {
-	profileCalls        int
-	profileStreamCalls  int
-	subAgentCalls       int
-	lastProfile         agentruntime.PromptProfileRequest
-	profileRequests     []agentruntime.PromptProfileRequest
-	lastSubAgent        string
-	lastSubSessionKey   string
-	profileReply        string
-	profileReplies      []string
-	structuredArguments string
+	profileCalls            int
+	profileStreamCalls      int
+	subAgentCalls           int
+	lastProfile             agentruntime.PromptProfileRequest
+	profileRequests         []agentruntime.PromptProfileRequest
+	lastSubAgent            string
+	lastSubSessionKey       string
+	profileReply            string
+	profileReplies          []string
+	structuredArguments     string
+	structuredArgumentQueue []string
 }
 
 func (f *fakeA2AAgent) RunPromptProfile(ctx context.Context, req agentruntime.PromptProfileRequest) (string, error) {
 	f.profileCalls++
 	f.lastProfile = req
 	f.profileRequests = append(f.profileRequests, req)
-	if req.StructuredOutput != nil && f.structuredArguments != "" {
-		_, err := req.StructuredOutput.Capture(f.structuredArguments)
+	if req.StructuredOutput != nil && (f.structuredArguments != "" || len(f.structuredArgumentQueue) > 0) {
+		arguments := f.structuredArguments
+		if len(f.structuredArgumentQueue) > 0 {
+			idx := f.profileCalls - 1
+			if idx >= len(f.structuredArgumentQueue) {
+				idx = len(f.structuredArgumentQueue) - 1
+			}
+			arguments = f.structuredArgumentQueue[idx]
+		}
+		_, err := req.StructuredOutput.Capture(arguments)
 		return "", err
 	}
 	if len(f.profileReplies) > 0 {
@@ -45,6 +54,23 @@ func (f *fakeA2AAgent) RunPromptProfile(ctx context.Context, req agentruntime.Pr
 		return f.profileReply, nil
 	}
 	return "profile reply", nil
+}
+
+type fakeGeekNewsFetcher struct {
+	batch geekNewsReply
+	err   error
+}
+
+func (f fakeGeekNewsFetcher) Fetch(context.Context, string) (geekNewsReply, error) {
+	return f.batch, f.err
+}
+
+func fiveSourceNews() []geekNewsItem {
+	items := make([]geekNewsItem, 5)
+	for i := range items {
+		items[i] = geekNewsItem{Link: "https://example.com/" + strconv.Itoa(i), Title: "source " + strconv.Itoa(i), Description: "source description", CreateTime: 1719532800 + int64(i)}
+	}
+	return items
 }
 
 func (f *fakeA2AAgent) RunPromptProfileStream(ctx context.Context, req agentruntime.PromptProfileRequest, emit func(agentruntime.PromptProfileStreamEvent) bool) (agentruntime.PromptProfileStreamReply, error) {
@@ -114,6 +140,52 @@ func TestA2APipelineRoutesGeekNewsProfileToPromptProfile(t *testing.T) {
 	}
 	if agent.lastProfile.StructuredOutput.ToolName != "structured_output" {
 		t.Fatalf("StructuredOutput.ToolName = %q, want structured_output", agent.lastProfile.StructuredOutput.ToolName)
+	}
+}
+
+func TestA2APipelineBuildsGeekNewsDeterministicallyFromCLIItems(t *testing.T) {
+	items := fiveSourceNews()
+	agent := &fakeA2AAgent{structuredArgumentQueue: []string{
+		`{"title":"中文 0","description":"中文说明 0"}`,
+		`{"title":"中文 1","description":"中文说明 1"}`,
+		`{"title":"中文 2","description":"中文说明 2"}`,
+		`{"title":"中文 3","description":"中文说明 3"}`,
+		`{"title":"中文 4","description":"中文说明 4"}`,
+		`{"ids":["n4","n3","n2","n1","n0"]}`,
+	}}
+	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{CreateTime: 1719532800, News: items}})
+
+	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:partner_a:cyeam_web", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var got geekNewsReply
+	if err := json.Unmarshal([]byte(reply.Text), &got); err != nil {
+		t.Fatalf("Unmarshal(reply) error = %v", err)
+	}
+	if len(got.News) != 5 || got.News[0].Link != items[4].Link {
+		t.Fatalf("news = %#v, want all five items in model order", got.News)
+	}
+	if got.News[0].Image != items[4].Image || got.News[0].CreateTime != items[4].CreateTime {
+		t.Fatalf("item metadata changed: %#v", got.News[0])
+	}
+}
+
+func TestA2APipelineGeekNewsFallsBackWhenItemOrRankingOutputIsInvalid(t *testing.T) {
+	items := fiveSourceNews()
+	agent := &fakeA2AAgent{structuredArguments: `{invalid`}
+	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{CreateTime: 1719532800, News: items}})
+
+	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want source fallback", err)
+	}
+	var got geekNewsReply
+	if err := json.Unmarshal([]byte(reply.Text), &got); err != nil {
+		t.Fatalf("Unmarshal(reply) error = %v", err)
+	}
+	if len(got.News) != 5 || got.News[0].Title != items[0].Title {
+		t.Fatalf("news = %#v, want source-order fallback", got.News)
 	}
 }
 

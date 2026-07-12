@@ -60,8 +60,8 @@ func TestShellToolStoresPendingToolUseConfirm(t *testing.T) {
 	ctx, confirmHolder := NewToolUseConfirmHolder(ctx)
 	ctx = context.WithValue(ctx, SubAgentParentKey, "ses_policy_tool")
 	tool := NewShellTool(ShellConfig{PolicyPath: filepath.Join(t.TempDir(), "policy.json")})
-	if _, err := tool.InvokableRun(ctx, `{"command":"git diff --cached --stat"}`); err != nil {
-		t.Fatal(err)
+	if _, err := tool.InvokableRun(ctx, `{"command":"git diff --cached --stat"}`); err == nil {
+		t.Fatal("InvokableRun() error = nil, want approval interrupt")
 	}
 	if ask := askHolder.Get(); ask != nil {
 		t.Fatalf("ask data = %#v, want bash approval to avoid AskData", ask)
@@ -92,8 +92,8 @@ func TestShellToolStripsLeadingCdToCurrentDirectory(t *testing.T) {
 	ctx = context.WithValue(ctx, SubAgentParentKey, "ses_policy_cd_current")
 	tool := NewShellTool(ShellConfig{PolicyPath: filepath.Join(t.TempDir(), "policy.json")})
 
-	if _, err := tool.InvokableRun(ctx, `{"command":"cd `+cwd+` && git status --short"}`); err != nil {
-		t.Fatal(err)
+	if _, err := tool.InvokableRun(ctx, `{"command":"cd `+cwd+` && git status --short"}`); err == nil {
+		t.Fatal("InvokableRun() error = nil, want approval interrupt")
 	}
 
 	confirm := confirmHolder.Get()
@@ -131,11 +131,11 @@ func TestShellToolKeepsMultiplePendingApprovalsForSession(t *testing.T) {
 	ctx = context.WithValue(ctx, SubAgentParentKey, "ses_policy_multi")
 	tool := NewShellTool(ShellConfig{PolicyPath: filepath.Join(t.TempDir(), "policy.json")})
 
-	if _, err := tool.InvokableRun(ctx, `{"command":"git status --short"}`); err != nil {
-		t.Fatal(err)
+	if _, err := tool.InvokableRun(ctx, `{"command":"git status --short"}`); err == nil {
+		t.Fatal("first InvokableRun() error = nil, want approval interrupt")
 	}
-	if _, err := tool.InvokableRun(ctx, `{"command":"git diff --cached --stat"}`); err != nil {
-		t.Fatal(err)
+	if _, err := tool.InvokableRun(ctx, `{"command":"git diff --cached --stat"}`); err == nil {
+		t.Fatal("second InvokableRun() error = nil, want approval interrupt")
 	}
 	confirms := confirmHolder.All()
 	if len(confirms) != 2 {

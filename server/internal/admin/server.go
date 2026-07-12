@@ -206,7 +206,7 @@ func (s *AdminServer) setupA2A(agent *EinoAgent) {
 	if agent == nil {
 		return
 	}
-	pipeline := newA2APipeline(agent, s.cfg.A2A.Profiles)
+	pipeline := newA2APipelineWithNewsFetcher(agent, s.cfg.A2A.Profiles, newCYEAMGeekNewsFetcher())
 	executor := a2aPKG.NewExecutor(pipeline, s.cfg.A2A.MaxInputChars)
 	s.a2aHandler = a2aPKG.NewServer(a2aPKG.ServerConfig{
 		Auth: a2aPKG.A2AConfig{

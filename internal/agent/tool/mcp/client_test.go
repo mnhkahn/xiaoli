@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestClientListToolsUsesSessionID(t *testing.T) {
@@ -135,5 +138,98 @@ data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"ok\
 	}
 	if calledToolName != "weather.get" {
 		t.Fatalf("called MCP tool name = %q, want weather.get", calledToolName)
+	}
+}
+
+func TestClientSerializesCallsToSameEndpoint(t *testing.T) {
+	var mu sync.Mutex
+	active, maxActive := 0, 0
+	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "session-1")
+			_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n"))
+		case "tools/call":
+			mu.Lock()
+			active++
+			if active > maxActive {
+				maxActive = active
+			}
+			mu.Unlock()
+			time.Sleep(40 * time.Millisecond)
+			mu.Lock()
+			active--
+			mu.Unlock()
+			_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}\n\n"))
+		default:
+			http.Error(w, "unexpected method", http.StatusBadRequest)
+		}
+	}))
+	defer mcpServer.Close()
+
+	client, err := NewClient(context.Background(), AuthConfig{URL: mcpServer.URL, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := client.Call(context.Background(), "search_feeds", nil); err != nil {
+				t.Errorf("Call() error = %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if maxActive != 1 {
+		t.Fatalf("simultaneous calls = %d, want 1", maxActive)
+	}
+}
+
+func TestClientCallTimeoutIncludesQueueWait(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	mcpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if req.Method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", "session-1")
+			_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n"))
+			return
+		}
+		close(started)
+		<-release
+		_, _ = w.Write([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}\n\n"))
+	}))
+	defer mcpServer.Close()
+
+	client, err := NewClient(context.Background(), AuthConfig{URL: mcpServer.URL, Timeout: 30 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	go func() { _, _ = client.Call(context.Background(), "search_feeds", nil) }()
+	<-started
+	result, err := client.Call(context.Background(), "search_feeds", nil)
+	close(release)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if !strings.Contains(result, "context deadline exceeded") {
+		t.Fatalf("queued Call() = %q, want timeout result", result)
 	}
 }

@@ -73,7 +73,8 @@
     },
     {
       "name": "xiaohongshu",
-      "url": "http://localhost:18060/mcp"
+      "url": "http://localhost:18060/mcp",
+      "timeout": "120s"
     }
   ],
   "storage": {

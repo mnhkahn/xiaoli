@@ -37,7 +37,11 @@ type AuthConfig struct {
 	ClientSecret string
 	RefreshToken string
 	Scope        string
+	// Timeout covers one tools/call request and any wait for this client's call gate.
+	Timeout time.Duration
 }
+
+const defaultCallTimeout = 120 * time.Second
 
 type Client struct {
 	url       string
@@ -49,6 +53,8 @@ type Client struct {
 	oauthToken  string
 	oauthExpiry time.Time
 	oauthMu     sync.Mutex
+	callGate    chan struct{}
+	timeout     time.Duration
 }
 
 func NewClient(ctx context.Context, cfg AuthConfig) (*Client, error) {
@@ -60,7 +66,12 @@ func NewClient(ctx context.Context, cfg AuthConfig) (*Client, error) {
 			cfg.Auth = authNone
 		}
 	}
-	c := &Client{url: cfg.URL, auth: cfg}
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = defaultCallTimeout
+	}
+	c := &Client{url: cfg.URL, auth: cfg, callGate: make(chan struct{}, 1), timeout: timeout}
+	c.callGate <- struct{}{}
 	sid, err := c.mcpInit(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("mcp connect %s: %w", cfg.URL, err)
@@ -232,6 +243,18 @@ func (c *Client) ListTools(ctx context.Context) ([]tool.BaseTool, error) {
 }
 
 func (c *Client) Call(ctx context.Context, toolName string, args map[string]any) (string, error) {
+	callCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	select {
+	case <-callCtx.Done():
+		return fmt.Sprintf(`{"error":"tool call failed: %v"}`, callCtx.Err()), nil
+	case <-c.callGate:
+	}
+	defer func() { c.callGate <- struct{}{} }()
+	return c.call(callCtx, toolName, args)
+}
+
+func (c *Client) call(ctx context.Context, toolName string, args map[string]any) (string, error) {
 	c.mu.Lock()
 	sessionID := c.sessionID
 	c.mu.Unlock()
@@ -251,11 +274,17 @@ func (c *Client) Call(ctx context.Context, toolName string, args map[string]any)
 			c.mu.Lock()
 			c.sessionID = sid
 			c.mu.Unlock()
-			return c.Call(ctx, toolName, args)
+			bodyStr, err = c.mcpPost(ctx, payload, "Mcp-Session-Id", sid)
+			if err == nil {
+				return c.parseCallResponse(bodyStr)
+			}
 		}
 		return fmt.Sprintf(`{"error":"tool call failed: %v"}`, err), nil
 	}
+	return c.parseCallResponse(bodyStr)
+}
 
+func (c *Client) parseCallResponse(bodyStr string) (string, error) {
 	var mcpResp struct {
 		Result *struct {
 			Content []struct {

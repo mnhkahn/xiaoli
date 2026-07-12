@@ -28,6 +28,8 @@ type MCPEndpoint struct {
 	APIKey  string
 	Auth    string // 见 MCPAuth* 常量，空视为 query（兼容旧逻辑）
 	HeaderN string // Auth=header 时的请求头名，如 X-API-Key
+	// Timeout 是单次 MCP 调用（含同服务队列等待）的上限；零值使用客户端默认值。
+	Timeout time.Duration
 
 	// OAuth2（Auth=oauth）
 	TokenURL     string

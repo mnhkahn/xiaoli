@@ -147,6 +147,7 @@ func NewAgent(cfg Config, eventBus agentevent.Publisher) *Agent {
 			ClientSecret: ep.ClientSecret,
 			RefreshToken: ep.RefreshToken,
 			Scope:        ep.Scope,
+			Timeout:      ep.Timeout,
 		})
 		if err != nil {
 			logger.Infof("ext MCP connect failed %s: %v", ep.URL, err)

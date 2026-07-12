@@ -21,8 +21,9 @@ import (
 // subagent's memory is scoped to the calling partner and context, never
 // to a personal device or Lark/WeChat session.
 type a2aPipeline struct {
-	agent    a2aAgentRunner
-	profiles map[string]A2AProfileConfig
+	agent       a2aAgentRunner
+	profiles    map[string]A2AProfileConfig
+	newsFetcher geekNewsFetcher
 }
 
 var _ a2a.ConversationPipeline = (*a2aPipeline)(nil)
@@ -35,6 +36,12 @@ type a2aAgentRunner interface {
 
 func newA2APipeline(agent a2aAgentRunner, profiles map[string]A2AProfileConfig) *a2aPipeline {
 	return &a2aPipeline{agent: agent, profiles: profiles}
+}
+
+// newA2APipelineWithNewsFetcher enables the deterministic geek-news pipeline.
+// Keeping the fetcher injectable makes the external CLI boundary testable.
+func newA2APipelineWithNewsFetcher(agent a2aAgentRunner, profiles map[string]A2AProfileConfig, fetcher geekNewsFetcher) *a2aPipeline {
+	return &a2aPipeline{agent: agent, profiles: profiles, newsFetcher: fetcher}
 }
 
 func (p *a2aPipeline) applyProfileOverrides(profile *a2aPromptProfileSpec, name string) {
@@ -67,6 +74,13 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 			return a2a.ConversationReply{}, errors.New("unknown profile")
 		}
 		p.applyProfileOverrides(&profile, req.Profile)
+		if profile.Name == "geek-news" && p.newsFetcher != nil {
+			reply, err := p.runGeekNews(ctx, turn, profile, req.UserText)
+			if err != nil {
+				return a2a.ConversationReply{}, err
+			}
+			return a2a.ConversationReply{Text: reply}, nil
+		}
 		runnerReq := agentruntime.PromptProfileRequest{
 			Name:           profile.Name,
 			SystemPrompt:   profile.SystemPrompt,

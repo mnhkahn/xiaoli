@@ -240,7 +240,10 @@ func (t *ShellTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ 
 		logger.Infof("bash approval confirm missing holder: session=%s tool_use_id=%s command_len=%d", sessionID, toolUseID, len([]rune(cmd)))
 	}
 
-	return fmt.Sprintf("命令「%s」需要您的确认，已发送审批请求，等待用户回复", cmd), nil
+	// A regular tool result would let the model keep issuing commands in this
+	// turn. Use Eino's native interrupt so the TUI can present this approval
+	// before any further model/tool activity occurs.
+	return "", tool.Interrupt(ctx, "bash approval pending")
 }
 
 func normalizeBashWorkingDirectoryCommand(cmd string) (string, string) {

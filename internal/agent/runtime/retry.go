@@ -208,7 +208,6 @@ func runWithRetry(ctx context.Context, runner *adk.Runner, msgs []*schema.Messag
 			return events, nil
 		}
 		logTraceFailure(ctx, lastErr, events)
-
 		if attempt < agentRetryMax && isRetryableAgentError(lastErr) {
 			delay := agentRetryBackoff(attempt + 1)
 			logger.Infof("agent retry attempt=%d after=%v error=%v", attempt+1, delay, lastErr)
