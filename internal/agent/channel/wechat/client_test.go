@@ -391,8 +391,8 @@ func TestSendImageAttachmentUploadsToCDNAndSendsImageMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode image aes key: %v", err)
 	}
-	if len(decodedAESKey) != aes.BlockSize {
-		t.Fatalf("image aes key decoded length = %d, want raw AES key length %d", len(decodedAESKey), aes.BlockSize)
+	if len(decodedAESKey) != aes.BlockSize*2 || !isHexString(string(decodedAESKey)) {
+		t.Fatalf("image aes key = %q, want 32-character hexadecimal key text", decodedAESKey)
 	}
 }
 
@@ -466,8 +466,8 @@ func TestSenderSendAttachmentSupportsImageAndFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode file aes key: %v", err)
 	}
-	if len(decodedFileAESKey) != aes.BlockSize {
-		t.Fatalf("file aes key decoded length = %d, want raw AES key length %d", len(decodedFileAESKey), aes.BlockSize)
+	if len(decodedFileAESKey) != aes.BlockSize*2 || !isHexString(string(decodedFileAESKey)) {
+		t.Fatalf("file aes key = %q, want 32-character hexadecimal key text", decodedFileAESKey)
 	}
 }
 

@@ -515,8 +515,10 @@ func (c *Client) SendImageAttachment(ctx context.Context, toUserID, contextToken
 		ImageItem: &ImageItem{
 			Media: &CDNMedia{
 				EncryptQueryParam: uploaded.DownloadQueryParam,
-				AESKey:            base64.StdEncoding.EncodeToString(uploaded.AESKey),
-				EncryptType:       1,
+				// The Weixin client expects base64 of the hexadecimal key text,
+				// rather than base64 of the raw 16-byte AES key.
+				AESKey:      base64.StdEncoding.EncodeToString([]byte(uploaded.AESKeyHex)),
+				EncryptType: 1,
 			},
 			MidSize: uploaded.CiphertextSize,
 		},
@@ -534,7 +536,7 @@ func (c *Client) SendFileAttachment(ctx context.Context, toUserID, contextToken,
 		FileItem: &FileItem{
 			Media: &CDNMedia{
 				EncryptQueryParam: uploaded.DownloadQueryParam,
-				AESKey:            base64.StdEncoding.EncodeToString(uploaded.AESKey),
+				AESKey:            base64.StdEncoding.EncodeToString([]byte(uploaded.AESKeyHex)),
 				EncryptType:       1,
 			},
 			FileName: fileName,
