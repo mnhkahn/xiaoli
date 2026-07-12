@@ -63,21 +63,16 @@ https://xiaoli-server.fly.dev/admin
 
 Rotate the Logto app secret if it is ever exposed.
 
-Deploy:
-
-```bash
-./server/scripts/deploy.sh
-```
-
-Run the script from any directory. It resolves the newest stable `cyeam-cli`
-Git tag and passes it as `CYEAM_VERSION`; Docker therefore reuses the cyeam
-download layer until a new cyeam release is published. The Docker build context
-is the repository root because both Server and TUI share the root `internal`
-package.
+Continuous deployment is handled by `.github/workflows/fly-deploy.yml`: a push
+to `main` that changes server files builds and deploys the service. The
+workflow resolves the newest stable `cyeam-cli` Git tag and passes it as
+`CYEAM_VERSION`, so Docker reuses the cyeam download layer until a new release
+is published. The Docker build context is the repository root because both
+Server and TUI share the root `internal` package.
 
 `XIAOLI_SKILLS` defaults to floating installs such as `mnhkahn/cyeam-cli`.
-The script passes a fresh `XIAOLI_SKILLS_CACHE_BUST` value so the skill install
-layer is refreshed without invalidating the separately cached cyeam binary.
+The workflow uses the commit SHA to refresh the skill install layer without
+invalidating the separately cached cyeam binary.
 
 Check health:
 
