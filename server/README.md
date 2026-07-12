@@ -66,15 +66,18 @@ Rotate the Logto app secret if it is ever exposed.
 Deploy:
 
 ```bash
-fly deploy . -c server/fly.toml --dockerfile server/Dockerfile --build-arg XIAOLI_SKILLS_CACHE_BUST=$(date +%Y%m%d%H%M%S)
+./server/scripts/deploy.sh
 ```
 
-Run deploy commands from the repository root. The Docker build context needs
-the root `internal` package because both Server and TUI share it.
+Run the script from any directory. It resolves the newest stable `cyeam-cli`
+Git tag and passes it as `CYEAM_VERSION`; Docker therefore reuses the cyeam
+download layer until a new cyeam release is published. The Docker build context
+is the repository root because both Server and TUI share the root `internal`
+package.
 
 `XIAOLI_SKILLS` defaults to floating installs such as `mnhkahn/cyeam-cli`.
-Pass a fresh `XIAOLI_SKILLS_CACHE_BUST` value when deploying so Docker does not
-reuse an older skill install layer.
+The script passes a fresh `XIAOLI_SKILLS_CACHE_BUST` value so the skill install
+layer is refreshed without invalidating the separately cached cyeam binary.
 
 Check health:
 

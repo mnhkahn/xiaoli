@@ -32,6 +32,24 @@ RUN curl -fsSL -o /tmp/ort.tgz \
     && tar -xzf /tmp/ort.tgz -C /opt/onnxruntime --strip-components=1 \
     && rm /tmp/ort.tgz
 
+FROM debian:bookworm-slim AS cyeam-build
+
+# 由部署脚本解析 cyeam-cli 的最新 Git tag 并传入。tag 不变时复用本层缓存。
+ARG CYEAM_VERSION
+RUN test -n "${CYEAM_VERSION}"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl tar \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+    mkdir -p /out; \
+    echo "cyeam release: ${CYEAM_VERSION}"; \
+    cyeam_url="https://github.com/mnhkahn/cyeam-cli/releases/download/${CYEAM_VERSION}/cyeam_Linux_x86_64.tar.gz"; \
+    curl -fsSL "$cyeam_url" -o /tmp/cyeam.tgz; \
+    tar -xzf /tmp/cyeam.tgz -C /out cyeam; \
+    rm /tmp/cyeam.tgz; \
+    chmod +x /out/cyeam
+
 FROM golang:1.25-bookworm AS skill-build
 
 ARG XIAOLI_SKILLS="mnhkahn/cyeam-cli https://open.feishu.cn"
@@ -63,19 +81,8 @@ RUN set -eux; \
     count=$(find /skills -name SKILL.md | wc -l); \
     echo "skills installed: $count"
 
-# 从 release 下载 cyeam，保证版本信息可查；默认取 latest，也可用 CYEAM_VERSION 固定版本
-ARG CYEAM_VERSION=latest
 RUN set -eux; \
     mkdir -p /skill-bin; \
-    echo "cyeam release: ${CYEAM_VERSION}, cache bust: ${XIAOLI_SKILLS_CACHE_BUST}"; \
-    if [ "${CYEAM_VERSION}" = "latest" ]; then \
-        cyeam_url="https://github.com/mnhkahn/cyeam-cli/releases/latest/download/cyeam_Linux_x86_64.tar.gz"; \
-    else \
-        cyeam_url="https://github.com/mnhkahn/cyeam-cli/releases/download/${CYEAM_VERSION}/cyeam_Linux_x86_64.tar.gz"; \
-    fi; \
-    curl -fsSL "$cyeam_url" -o /tmp/cyeam.tgz; \
-    tar -xzf /tmp/cyeam.tgz -C /skill-bin cyeam; \
-    rm -f /tmp/cyeam.tgz; \
     find /skills -path '*/bin/*' -type f -perm /111 -exec cp -a {} /skill-bin/ \; ; \
     find /skill-bin -type f -exec chmod +x {} \;
 
@@ -108,6 +115,7 @@ RUN ldconfig
 
 COPY --from=go-build /out/xiaoli-admin /usr/local/bin/xiaoli-admin
 COPY --from=skill-build /skill-bin/ /usr/local/bin/
+COPY --from=cyeam-build /out/cyeam /usr/local/bin/cyeam
 COPY --from=skill-build /skills /opt/xiaoli/skills
 COPY --from=skill-build /usr/bin/node /usr/local/bin/node
 COPY --from=skill-build /usr/lib/node_modules /usr/local/lib/node_modules
