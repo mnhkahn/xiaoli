@@ -110,7 +110,12 @@ func (p *a2aPipeline) runGeekNews(ctx context.Context, turn a2a.ConversationTurn
 		Summary:    fmt.Sprintf("%s 科技新闻精选，共 %d 条。", date, len(items)),
 		News:       items,
 	}
-	return normalizeGeekNewsReply(mustMarshalGeekNews(result))
+	reply, err := normalizeGeekNewsReply(mustMarshalGeekNews(result))
+	if err != nil {
+		return "", err
+	}
+	logger.Infof("[A2A][geek-news][completed] conversation_id=%s date=%s items=%d response_schema=create_time,summary,news", turn.ConversationID, date, len(result.News))
+	return reply, nil
 }
 
 func geekNewsDate(userText string) (string, error) {
@@ -154,7 +159,8 @@ func (p *a2aPipeline) translateGeekNewsItem(ctx context.Context, turn a2a.Conver
 		Name:         "geek-news-item",
 		SystemPrompt: "将一篇科技新闻翻译、润色为中文。只提交 title 和 description；保持事实、链接和专有名词，不要添加内容。",
 		UserText:     string(input), ChannelName: turn.Channel, SessionKey: fmt.Sprintf("%s:item:%d", turn.ConversationID, index),
-		DisableHistory: true, AllowTools: false, MaxSteps: 1, Model: profile.Model, StructuredOutput: output,
+		// Structured output consumes one model step and one tool-result step.
+		DisableHistory: true, AllowTools: false, MaxSteps: 2, Model: profile.Model, StructuredOutput: output,
 	})
 	if err != nil {
 		return geekNewsTranslation{}, err
@@ -201,7 +207,8 @@ func (p *a2aPipeline) rankGeekNewsItems(ctx context.Context, turn a2a.Conversati
 		Name:         "geek-news-rank",
 		SystemPrompt: "按科技新闻的重要性和时效性排序。只提交 ids，必须包含所有提供的 ID 且不重复。",
 		UserText:     string(input), ChannelName: turn.Channel, SessionKey: turn.ConversationID + ":rank",
-		DisableHistory: true, AllowTools: false, MaxSteps: 1, Model: profile.Model, StructuredOutput: output,
+		// Structured output consumes one model step and one tool-result step.
+		DisableHistory: true, AllowTools: false, MaxSteps: 2, Model: profile.Model, StructuredOutput: output,
 	})
 	if err != nil {
 		logger.Infof("[A2A][geek-news][rank_fallback] conversation_id=%s err=%v", turn.ConversationID, err)

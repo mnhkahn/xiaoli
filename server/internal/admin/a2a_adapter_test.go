@@ -166,6 +166,13 @@ func TestA2APipelineBuildsGeekNewsDeterministicallyFromCLIItems(t *testing.T) {
 	if len(got.News) != 5 || got.News[0].Link != items[4].Link {
 		t.Fatalf("news = %#v, want all five items in model order", got.News)
 	}
+	for _, request := range agent.profileRequests {
+		if request.Name == "geek-news-item" || request.Name == "geek-news-rank" {
+			if request.MaxSteps != 2 {
+				t.Fatalf("%s MaxSteps = %d, want 2 for structured output", request.Name, request.MaxSteps)
+			}
+		}
+	}
 	if got.News[0].Image != items[4].Image || got.News[0].CreateTime != items[4].CreateTime {
 		t.Fatalf("item metadata changed: %#v", got.News[0])
 	}
