@@ -51,6 +51,34 @@ func TestTreeExplorerRendersPreview(t *testing.T) {
 	}
 }
 
+func TestExplorerFitsTerminalHeightAndKeepsPaneHeaders(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ex := newTreeExplorer(dir, 100, 10)
+	if view := ex.View(); lipgloss.Height(view) != 10 {
+		t.Fatalf("tree explorer height = %d, want 10:\n%s", lipgloss.Height(view), stripTestANSI(view))
+	}
+
+	diff := &tuiExplorer{
+		mode:        explorerDiff,
+		width:       100,
+		height:      10,
+		leftWidth:   explorerLeftWidth(100),
+		entries:     []explorerEntry{{Path: "controllers/homework_controller.go", Status: " M"}},
+		previewPath: "controllers/homework_controller.go",
+		preview:     strings.Repeat("diff line\n", 40),
+	}
+	plain := stripTestANSI(diff.View())
+	if view := diff.View(); lipgloss.Height(view) != 10 {
+		t.Fatalf("diff explorer height = %d, want 10:\n%s", lipgloss.Height(view), stripTestANSI(view))
+	}
+	if !strings.Contains(plain, "Changed Files") || !strings.Contains(plain, "Diff · controllers/homework_controller.go") {
+		t.Fatalf("diff explorer omitted persistent headers:\n%s", plain)
+	}
+}
+
 func TestTreeExplorerHighlightsSelectedRow(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	dir := t.TempDir()
@@ -276,7 +304,7 @@ func TestDiffExplorerShowsStagedOnlyDiff(t *testing.T) {
 		previewRaw:  diff,
 		previewPath: entry.Path,
 	}
-	if plain := stripTestANSI(ex.renderRight(70, 20)); !strings.Contains(plain, "poppler-utils antiword") {
+	if plain := stripTestANSI(ex.renderRight(70, 20)); !strings.Contains(plain, "Dockerfile") || !strings.Contains(plain, "poppler-utils antiword") {
 		t.Fatalf("renderRight(staged-only) = %q, want cached diff", plain)
 	}
 }

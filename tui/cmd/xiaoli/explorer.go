@@ -50,10 +50,10 @@ type tuiExplorer struct {
 	err         string
 }
 
-// explorerPreviewMouseTop is the terminal mouse row at which the preview
-// content starts. Mouse coordinates are already relative to the explorer
-// content area, so the pane title and spacer must not be counted again.
-const explorerPreviewMouseTop = 2
+// explorerPreviewMouseTop is the terminal mouse row at which preview content
+// starts. Mouse coordinates are relative to the explorer body; the first row
+// is the persistent pane header, which includes the selected file name.
+const explorerPreviewMouseTop = 1
 
 func newTreeExplorer(cwd string, width, height int) *tuiExplorer {
 	ex := &tuiExplorer{
@@ -329,7 +329,7 @@ func (e *tuiExplorer) handlePreviewSelectionMouse(msg tea.MouseMsg) bool {
 func (e *tuiExplorer) previewMousePoint(msg tea.MouseMsg) (selectionPoint, bool) {
 	rightTotalWidth := max(20, e.width-e.leftWidth)
 	rightContentWidth := max(12, rightTotalWidth-boxStyle.GetHorizontalFrameSize())
-	previewHeight := max(0, max(4, e.height-5-boxStyle.GetVerticalFrameSize())-3)
+	previewHeight := max(0, explorerBodyHeight(e.height)-1)
 	x := msg.X - e.leftWidth - 2
 	y := msg.Y - explorerPreviewMouseTop
 	point := selectionPoint{x: x, y: e.rightScroll + y}
@@ -368,7 +368,10 @@ func (e *tuiExplorer) View() string {
 	leftContentWidth := max(12, e.leftWidth-frameW)
 	rightTotalWidth := max(20, width-e.leftWidth)
 	rightContentWidth := max(12, rightTotalWidth-frameW)
-	bodyHeight := max(4, height-5-boxStyle.GetVerticalFrameSize())
+	// Reserve one row each for the explorer header, help, and status footer,
+	// plus the two border rows. Keeping this calculation in one place prevents
+	// the top of either pane from scrolling out of a short terminal.
+	bodyHeight := explorerBodyHeight(height)
 
 	title := "Xiaoli /" + string(e.mode)
 	if e.mode == explorerTree {
@@ -381,8 +384,11 @@ func (e *tuiExplorer) View() string {
 	}
 	help := hintStyle.Render(helpText)
 
-	left := e.renderLeft(leftContentWidth, bodyHeight)
-	right := e.renderRight(rightContentWidth, bodyHeight)
+	// lipgloss applies horizontal padding inside Width(), so text must be
+	// fitted to the inner width. Otherwise a long path wraps and increases the
+	// box height beyond the terminal viewport.
+	left := e.renderLeft(max(1, leftContentWidth-boxStyle.GetHorizontalPadding()), bodyHeight)
+	right := e.renderRight(max(1, rightContentWidth-boxStyle.GetHorizontalPadding()), bodyHeight)
 	leftBox := boxStyle
 	rightBox := boxStyle
 	if e.focusRight {
@@ -394,7 +400,7 @@ func (e *tuiExplorer) View() string {
 		leftBox.Width(leftContentWidth).Height(bodyHeight).Render(left),
 		rightBox.Width(rightContentWidth).Height(bodyHeight).Render(right),
 	)
-	footer := ""
+	footer := " "
 	if e.err != "" {
 		footer = eventStyle.Render(truncateDisplay(e.err, width))
 	}
@@ -406,10 +412,10 @@ func (e *tuiExplorer) renderLeft(width, height int) string {
 	if e.mode == explorerDiff {
 		title = "Changed Files"
 	}
-	lines := []string{titleStyle.Render(title), ""}
+	lines := []string{titleStyle.Render(title)}
 	visible := e.entries
 	start := clamp(e.leftScroll, 0, len(visible))
-	end := min(len(visible), start+max(0, height-2))
+	end := min(len(visible), start+max(0, height-1))
 	for i := start; i < end; i++ {
 		entry := visible[i]
 		prefix := "  "
@@ -441,6 +447,9 @@ func (e *tuiExplorer) renderRight(width, height int) string {
 	title := "Preview"
 	if e.mode == explorerDiff {
 		title = "Diff"
+		if e.previewPath != "" {
+			title += " · " + e.previewPath
+		}
 	} else if e.editor != nil {
 		title = "Editor"
 		if e.focusRight {
@@ -451,13 +460,13 @@ func (e *tuiExplorer) renderRight(width, height int) string {
 			title = "Preview · " + lang
 		}
 	}
-	lines := []string{titleStyle.Render(title), ""}
+	lines := []string{titleStyle.Render(fitDisplay(title, width))}
 	if e.mode == explorerTree && e.editor != nil {
 		return e.editor.render(width, height)
 	}
 	allLines := e.previewLines()
 	start := clamp(e.rightScroll, 0, len(allLines))
-	end := min(len(allLines), start+max(0, height-3))
+	end := min(len(allLines), start+max(0, height-1))
 	for y := start; y < end; y++ {
 		line := allLines[y]
 		if e.mode == explorerDiff {
@@ -471,7 +480,7 @@ func (e *tuiExplorer) renderRight(width, height int) string {
 		}
 		lines = append(lines, line)
 	}
-	if e.previewPath != "" {
+	if e.mode != explorerDiff && e.previewPath != "" {
 		lines = append(lines, hintStyle.Render(fitDisplay("file: "+e.previewPath, width)))
 	}
 	for len(lines) < height {
@@ -726,11 +735,16 @@ func (e *tuiExplorer) ensureSelectionVisible() {
 }
 
 func (e *tuiExplorer) listHeight() int {
-	return max(1, e.height-7)
+	return max(1, explorerBodyHeight(e.height)-1)
 }
 
 func (e *tuiExplorer) previewHeight() int {
-	return max(1, e.height-8)
+	return max(1, explorerBodyHeight(e.height)-1)
+}
+
+func explorerBodyHeight(height int) int {
+	const explorerChromeHeight = 5 // header, help, footer, and two border rows
+	return max(1, height-explorerChromeHeight)
 }
 
 func (e *tuiExplorer) previewLines() []string {

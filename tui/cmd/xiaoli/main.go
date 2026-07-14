@@ -426,7 +426,10 @@ func main() {
 		return
 	}
 
-	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithMouseCellMotion())
+	// Xiaoli is a full-screen TUI. The alternate screen buffer prevents normal
+	// terminal scrollback from pushing the explorer's title, file list, and
+	// top border out of view during redraws.
+	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "xiaoli: %v\n", err)
