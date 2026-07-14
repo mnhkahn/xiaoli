@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mnhkahn/gogogo/logger"
@@ -14,6 +15,7 @@ import (
 )
 
 type fakeA2AAgent struct {
+	mu                      sync.Mutex
 	profileCalls            int
 	profileStreamCalls      int
 	subAgentCalls           int
@@ -28,6 +30,8 @@ type fakeA2AAgent struct {
 }
 
 func (f *fakeA2AAgent) RunPromptProfile(ctx context.Context, req agentruntime.PromptProfileRequest) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.profileCalls++
 	f.lastProfile = req
 	f.profileRequests = append(f.profileRequests, req)

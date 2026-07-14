@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"unicode"
 
 	"github.com/cloudwego/eino/schema"
@@ -19,6 +20,7 @@ const (
 	geekNewsDescriptionMinRunes = 300
 	geekNewsDescriptionMaxRunes = 500
 	geekNewsDescriptionAttempts = 2
+	geekNewsConcurrentWorkers   = 4
 )
 
 // geekNewsFetcher is deliberately narrow: the A2A server always invokes the
@@ -149,22 +151,42 @@ type geekNewsDescription struct {
 func (p *a2aPipeline) processGeekNewsItems(ctx context.Context, turn a2a.ConversationTurn, profile a2aPromptProfileSpec, group string, items []geekNewsItem) []geekNewsItem {
 	processed := make([]geekNewsItem, len(items))
 	for i := range items {
-		item := items[i]
-		item.SourceTitle = item.Title
-		if isPureEnglishTitle(item.SourceTitle) {
-			if title, err := p.translateGeekNewsTitle(ctx, turn, profile, group, i, item.SourceTitle); err == nil {
-				item.Title = title
-			} else {
-				logger.Infof("[A2A][geek-news][title_source_fallback] conversation_id=%s group=%s item=%d err=%v", turn.ConversationID, group, i, err)
-			}
-		}
-		if description, err := p.translateGeekNewsDescription(ctx, turn, profile, group, i, item); err == nil {
-			item.Description = description
-		} else {
-			logger.Infof("[A2A][geek-news][description_source_fallback] conversation_id=%s group=%s item=%d err=%v", turn.ConversationID, group, i, err)
-		}
-		processed[i] = item
+		processed[i] = items[i]
+		processed[i].SourceTitle = items[i].Title
 	}
+
+	// Each output slot belongs to exactly one worker, so concurrent model calls
+	// cannot drop, reorder, or merge source items.
+	workers := make(chan struct{}, geekNewsConcurrentWorkers)
+	var wg sync.WaitGroup
+	for i := range processed {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			select {
+			case workers <- struct{}{}:
+				defer func() { <-workers }()
+			case <-ctx.Done():
+				return
+			}
+
+			item := processed[index]
+			if isPureEnglishTitle(item.SourceTitle) {
+				if title, err := p.translateGeekNewsTitle(ctx, turn, profile, group, index, item.SourceTitle); err == nil {
+					item.Title = title
+				} else {
+					logger.Infof("[A2A][geek-news][title_source_fallback] conversation_id=%s group=%s item=%d err=%v", turn.ConversationID, group, index, err)
+				}
+			}
+			if description, err := p.translateGeekNewsDescription(ctx, turn, profile, group, index, item); err == nil {
+				item.Description = description
+			} else {
+				logger.Infof("[A2A][geek-news][description_source_fallback] conversation_id=%s group=%s item=%d err=%v", turn.ConversationID, group, index, err)
+			}
+			processed[index] = item
+		}(i)
+	}
+	wg.Wait()
 	return processed
 }
 
