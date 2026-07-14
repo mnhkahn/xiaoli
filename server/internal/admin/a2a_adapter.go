@@ -248,11 +248,13 @@ type geekNewsReply struct {
 	CreateTime int64          `json:"create_time"`
 	Summary    string         `json:"summary"`
 	News       []geekNewsItem `json:"news"`
+	AINews     []geekNewsItem `json:"ai_news"`
 }
 
 type geekNewsItem struct {
 	Link        string `json:"link"`
 	Title       string `json:"title"`
+	SourceTitle string `json:"source_title"`
 	Description string `json:"description"`
 	Image       string `json:"image"`
 	CreateTime  int64  `json:"create_time"`
@@ -262,11 +264,12 @@ func newGeekNewsStructuredOutput() *agentruntime.PromptProfileStructuredOutput {
 	newsItem := &schema.ParameterInfo{
 		Type: schema.Object,
 		SubParams: map[string]*schema.ParameterInfo{
-			"link":        {Type: schema.String, Desc: "新闻原始链接", Required: true},
-			"title":       {Type: schema.String, Desc: "中文标题", Required: true},
-			"description": {Type: schema.String, Desc: "中文长描述", Required: true},
-			"image":       {Type: schema.String, Desc: "封面图链接，没有则为空字符串", Required: true},
-			"create_time": {Type: schema.Integer, Desc: "新闻创建时间", Required: true},
+			"link":         {Type: schema.String, Desc: "新闻原始链接", Required: true},
+			"title":        {Type: schema.String, Desc: "中文标题", Required: true},
+			"source_title": {Type: schema.String, Desc: "源新闻标题，必须原样保留", Required: true},
+			"description":  {Type: schema.String, Desc: "中文长描述", Required: true},
+			"image":        {Type: schema.String, Desc: "封面图链接，没有则为空字符串", Required: true},
+			"create_time":  {Type: schema.Integer, Desc: "新闻创建时间", Required: true},
 		},
 	}
 	return agentruntime.NewPromptProfileStructuredOutput(
@@ -276,6 +279,7 @@ func newGeekNewsStructuredOutput() *agentruntime.PromptProfileStructuredOutput {
 			"create_time": {Type: schema.Integer, Desc: "新闻批次创建时间", Required: true},
 			"summary":     {Type: schema.String, Desc: "中文新闻总结", Required: true},
 			"news":        {Type: schema.Array, ElemInfo: newsItem, Desc: "新闻列表", Required: true},
+			"ai_news":     {Type: schema.Array, ElemInfo: newsItem, Desc: "AI 新闻列表", Required: true},
 		},
 		normalizeGeekNewsReply,
 	)
@@ -287,8 +291,8 @@ const geekNewsJSONRepairPrompt = "你是严格的 JSON 语法修复器。\n" +
 	"硬性要求：\n" +
 	"- 只输出修复后的 JSON 对象，不要 Markdown，不要代码块，不要解释\n" +
 	"- 不要新增、删除、总结或改写任何新闻内容\n" +
-	"- 顶层字段必须保持 create_time、news、summary\n" +
-	"- news 数组每条字段必须保持 link、title、description、image、create_time\n" +
+	"- 顶层字段必须保持 create_time、news、ai_news、summary\n" +
+	"- news 和 ai_news 数组每条字段必须保持 link、title、source_title、description、image、create_time\n" +
 	"- 如果字符串内容里有英文双引号，必须转义为 \\\" 或替换为中文引号 “ ”\n" +
 	"- 不要调用工具，不要访问外部数据"
 
@@ -299,6 +303,9 @@ func normalizeGeekNewsReply(reply string) (string, error) {
 	}
 	if news.News == nil {
 		news.News = []geekNewsItem{}
+	}
+	if news.AINews == nil {
+		news.AINews = []geekNewsItem{}
 	}
 	body, err := json.Marshal(news)
 	if err != nil {
@@ -446,13 +453,12 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 				"要求：\n" +
 				"- 使用 news skill 查询该 date 的完整科技新闻，命令格式优先使用 cyeam news get --date <YYYY-MM-DD>\n" +
 				"- cyeam news get 返回 JSON 信封，data 字段是 JSON 字符串；必须解析 data 内层 JSON\n" +
-				"- 内层 JSON 包含 news、ai_news、date；本 profile 只返回内层的 news 对象\n" +
+				"- 内层 JSON 包含 news、ai_news、date；两个列表分别原样返回，供客户端的两个 Tab 使用，不得合并、截断、去重或删除\n" +
 				"- 完成新闻查询、翻译和整理后，必须调用 structured_output 工具提交最终结果；不要在普通文本中输出 JSON、Markdown、代码块或解释\n" +
-				"- structured_output 的顶层字段必须是 create_time、news、summary\n" +
-				"- news 是数组，每条必须包含 link、title、description、image、create_time\n" +
-				"- 必须保留 cyeam 返回的 image 字段作为封面图，不要删除、改名或编造；没有图片时才输出空字符串\n" +
-				"- 必须保留 cyeam 返回的 create_time 时间字段；顶层 create_time 和每条新闻 create_time 都要返回\n" +
-				"- description 使用 cyeam 返回的长描述，不要压缩成一句话；如果是英文必须翻译成中文\n" +
+				"- structured_output 的顶层字段必须是 create_time、news、ai_news、summary\n" +
+				"- news 与 ai_news 都是数组，每条必须包含 link、title、source_title、description、image、create_time\n" +
+				"- 必须原样保留 cyeam 返回的 link、source_title、image、create_time；不得编造、替换或交换新闻记录\n" +
+				"- description 使用 cyeam 返回的长描述，不要压缩成一句话；如果是英文必须翻译、补写为 300–500 字中文\n" +
 				"- summary 使用 cyeam 返回的 summary；如果是英文必须翻译成中文；缺失时再用中文概括最重要的 3-5 个趋势\n" +
 				"- 所有标题、描述、总结内容都必须是中文\n" +
 				"- 所有字符串内容里的英文双引号必须转义为 \\\"，或改用中文引号 “ ”；最终结果必须能被标准 JSON parser 解析\n" +

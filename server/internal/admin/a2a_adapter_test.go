@@ -68,9 +68,17 @@ func (f fakeGeekNewsFetcher) Fetch(context.Context, string) (geekNewsReply, erro
 func fiveSourceNews() []geekNewsItem {
 	items := make([]geekNewsItem, 5)
 	for i := range items {
-		items[i] = geekNewsItem{Link: "https://example.com/" + strconv.Itoa(i), Title: "source " + strconv.Itoa(i), Description: "source description", CreateTime: 1719532800 + int64(i)}
+		items[i] = geekNewsItem{Link: "https://example.com/" + strconv.Itoa(i), Title: "source " + strconv.Itoa(i), Description: strings.Repeat("原始内容", 80), CreateTime: 1719532800 + int64(i)}
 	}
 	return items
+}
+
+func translatedNewsResponse(index, descriptionRunes int) string {
+	return `{"title":"中文 ` + strconv.Itoa(index) + `","description":"` + strings.Repeat("详", descriptionRunes) + `"}`
+}
+
+func translatedTitleResponse(index int) string {
+	return `{"title":"中文标题 ` + strconv.Itoa(index) + `"}`
 }
 
 func (f *fakeA2AAgent) RunPromptProfileStream(ctx context.Context, req agentruntime.PromptProfileRequest, emit func(agentruntime.PromptProfileStreamEvent) bool) (agentruntime.PromptProfileStreamReply, error) {
@@ -146,14 +154,14 @@ func TestA2APipelineRoutesGeekNewsProfileToPromptProfile(t *testing.T) {
 func TestA2APipelineBuildsGeekNewsDeterministicallyFromCLIItems(t *testing.T) {
 	items := fiveSourceNews()
 	agent := &fakeA2AAgent{structuredArgumentQueue: []string{
-		`{"title":"中文 0","description":"中文说明 0"}`,
-		`{"title":"中文 1","description":"中文说明 1"}`,
-		`{"title":"中文 2","description":"中文说明 2"}`,
-		`{"title":"中文 3","description":"中文说明 3"}`,
-		`{"title":"中文 4","description":"中文说明 4"}`,
-		`{"ids":["n4","n3","n2","n1","n0"]}`,
+		translatedTitleResponse(0), translatedNewsResponse(0, 300),
+		translatedTitleResponse(1), translatedNewsResponse(1, 300),
+		translatedTitleResponse(2), translatedNewsResponse(2, 300),
+		translatedTitleResponse(3), translatedNewsResponse(3, 300),
+		translatedTitleResponse(4), translatedNewsResponse(4, 300),
 	}}
-	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{CreateTime: 1719532800, News: items}})
+	aiItems := fiveSourceNews()
+	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{CreateTime: 1719532800, News: items, AINews: aiItems}})
 
 	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:partner_a:cyeam_web", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`})
 	if err != nil {
@@ -163,18 +171,72 @@ func TestA2APipelineBuildsGeekNewsDeterministicallyFromCLIItems(t *testing.T) {
 	if err := json.Unmarshal([]byte(reply.Text), &got); err != nil {
 		t.Fatalf("Unmarshal(reply) error = %v", err)
 	}
-	if len(got.News) != 5 || got.News[0].Link != items[4].Link {
-		t.Fatalf("news = %#v, want all five items in model order", got.News)
+	if len(got.News) != 5 || len(got.AINews) != 5 || got.News[0].Link != items[0].Link {
+		t.Fatalf("news = %#v ai_news = %#v, want all source items in source order", got.News, got.AINews)
 	}
 	for _, request := range agent.profileRequests {
-		if request.Name == "geek-news-item" || request.Name == "geek-news-rank" {
+		if request.Name == "geek-news-title" || request.Name == "geek-news-description" {
 			if request.MaxSteps != 2 {
 				t.Fatalf("%s MaxSteps = %d, want 2 for structured output", request.Name, request.MaxSteps)
 			}
 		}
 	}
-	if got.News[0].Image != items[4].Image || got.News[0].CreateTime != items[4].CreateTime {
+	if got.News[0].Image != items[0].Image || got.News[0].CreateTime != items[0].CreateTime || got.News[0].SourceTitle != items[0].Title {
 		t.Fatalf("item metadata changed: %#v", got.News[0])
+	}
+}
+
+func TestA2APipelineKeepsEverySourceItemInEachNewsGroup(t *testing.T) {
+	news := make([]geekNewsItem, 13)
+	aiNews := make([]geekNewsItem, 14)
+	for i := range news {
+		news[i] = geekNewsItem{Link: "https://example.com/news/" + strconv.Itoa(i), Title: "source " + strconv.Itoa(i), Description: "short", CreateTime: 1719532800 + int64(i)}
+	}
+	for i := range aiNews {
+		aiNews[i] = geekNewsItem{Link: "https://example.com/ai/" + strconv.Itoa(i), Title: "source " + strconv.Itoa(i), Description: "short", CreateTime: 1719532900 + int64(i)}
+	}
+	agent := &fakeA2AAgent{structuredArguments: `{invalid`}
+	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{CreateTime: 1719532800, News: news, AINews: aiNews}})
+
+	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var got geekNewsReply
+	if err := json.Unmarshal([]byte(reply.Text), &got); err != nil {
+		t.Fatalf("Unmarshal(reply) error = %v", err)
+	}
+	if len(got.News) != len(news) || len(got.AINews) != len(aiNews) {
+		t.Fatalf("news=%d ai_news=%d, want %d and %d", len(got.News), len(got.AINews), len(news), len(aiNews))
+	}
+	if got.News[12].Link != news[12].Link || got.News[12].SourceTitle != news[12].Title || got.AINews[13].Link != aiNews[13].Link || got.AINews[13].SourceTitle != aiNews[13].Title {
+		t.Fatalf("source identity changed: news=%#v ai_news=%#v", got.News[12], got.AINews[13])
+	}
+}
+
+func TestTranslateGeekNewsDescriptionRetriesShortDescription(t *testing.T) {
+	agent := &fakeA2AAgent{structuredArgumentQueue: []string{
+		translatedNewsResponse(0, 299),
+		translatedNewsResponse(0, 300),
+	}}
+	pipeline := newA2APipeline(agent, nil)
+
+	description, err := pipeline.translateGeekNewsDescription(context.Background(), a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:test"}, a2aPromptProfileSpec{}, "news", 0, fiveSourceNews()[0])
+	if err != nil {
+		t.Fatalf("translateGeekNewsDescription() error = %v", err)
+	}
+	if !geekNewsDescriptionValid(description) || len([]rune(description)) != 300 {
+		t.Fatalf("description length = %d, want 300 valid characters", len([]rune(description)))
+	}
+	if agent.profileCalls != 2 {
+		t.Fatalf("profile calls = %d, want retry after short description", agent.profileCalls)
+	}
+}
+
+func TestGeekNewsDescriptionStructuredOutputRejectsLongDescription(t *testing.T) {
+	output := newGeekNewsDescriptionStructuredOutput()
+	if _, err := output.Capture(translatedNewsResponse(0, 501)); err == nil {
+		t.Fatal("Capture() error = nil, want overlong description rejection")
 	}
 }
 
@@ -509,7 +571,8 @@ func TestA2APromptProfilesDefineEncouragementAndArchitect(t *testing.T) {
 	}
 	if !strings.Contains(geekNews.SystemPrompt, "news skill") ||
 		!strings.Contains(geekNews.SystemPrompt, "data 字段是 JSON 字符串") ||
-		!strings.Contains(geekNews.SystemPrompt, "只返回内层的 news 对象") ||
+		!strings.Contains(geekNews.SystemPrompt, "ai_news") ||
+		!strings.Contains(geekNews.SystemPrompt, "两个 Tab") ||
 		!strings.Contains(geekNews.SystemPrompt, "image") ||
 		!strings.Contains(geekNews.SystemPrompt, "create_time") {
 		t.Fatalf("geek-news prompt = %q, want news skill guidance and GeekNews JSON fields", geekNews.SystemPrompt)

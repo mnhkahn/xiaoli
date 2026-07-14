@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"unicode"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
@@ -15,8 +16,9 @@ import (
 )
 
 const (
-	geekNewsMinimumItems = 5
-	geekNewsMaximumItems = 12
+	geekNewsDescriptionMinRunes = 300
+	geekNewsDescriptionMaxRunes = 500
+	geekNewsDescriptionAttempts = 2
 )
 
 // geekNewsFetcher is deliberately narrow: the A2A server always invokes the
@@ -58,20 +60,44 @@ func decodeCYEAMGeekNews(raw []byte) (geekNewsReply, error) {
 		data = []byte(encoded)
 	}
 	var outer struct {
-		Date string          `json:"date"`
-		News json.RawMessage `json:"news"`
+		Date   string          `json:"date"`
+		News   json.RawMessage `json:"news"`
+		AINews json.RawMessage `json:"ai_news"`
 	}
 	if err := json.Unmarshal(data, &outer); err != nil {
 		return geekNewsReply{}, fmt.Errorf("decode cyeam news data: %w", err)
 	}
-	var news geekNewsReply
-	if err := json.Unmarshal(outer.News, &news); err != nil {
+	news, err := decodeCYEAMGeekNewsGroup(outer.News)
+	if err != nil {
 		return geekNewsReply{}, fmt.Errorf("decode cyeam news list: %w", err)
 	}
+	aiNews, err := decodeCYEAMGeekNewsGroup(outer.AINews)
+	if err != nil {
+		return geekNewsReply{}, fmt.Errorf("decode cyeam ai news list: %w", err)
+	}
+	news.AINews = aiNews.News
 	if news.CreateTime == 0 {
 		news.CreateTime = firstNewsTime(news.News)
+		if news.CreateTime == 0 {
+			news.CreateTime = firstNewsTime(news.AINews)
+		}
 	}
 	return news, nil
+}
+
+func decodeCYEAMGeekNewsGroup(raw json.RawMessage) (geekNewsReply, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return geekNewsReply{News: []geekNewsItem{}}, nil
+	}
+	var group geekNewsReply
+	if err := json.Unmarshal(raw, &group); err == nil && group.News != nil {
+		return group, nil
+	}
+	var items []geekNewsItem
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return geekNewsReply{}, err
+	}
+	return geekNewsReply{News: items}, nil
 }
 
 func firstNewsTime(items []geekNewsItem) int64 {
@@ -90,31 +116,19 @@ func (p *a2aPipeline) runGeekNews(ctx context.Context, turn a2a.ConversationTurn
 	if err != nil {
 		return "", err
 	}
-	items := limitGeekNewsItems(batch.News)
-	if len(items) < geekNewsMinimumItems {
-		return "", fmt.Errorf("news source returned %d items, need at least %d", len(items), geekNewsMinimumItems)
-	}
-
-	for i := range items {
-		translated, err := p.translateGeekNewsItem(ctx, turn, profile, i, items[i])
-		if err != nil {
-			logger.Infof("[A2A][geek-news][item_fallback] conversation_id=%s item=%d err=%v", turn.ConversationID, i, err)
-			continue
-		}
-		items[i].Title = translated.Title
-		items[i].Description = translated.Description
-	}
-	items = p.rankGeekNewsItems(ctx, turn, profile, items)
+	news := p.processGeekNewsItems(ctx, turn, profile, "news", batch.News)
+	aiNews := p.processGeekNewsItems(ctx, turn, profile, "ai_news", batch.AINews)
 	result := geekNewsReply{
 		CreateTime: batch.CreateTime,
-		Summary:    fmt.Sprintf("%s 科技新闻精选，共 %d 条。", date, len(items)),
-		News:       items,
+		Summary:    fmt.Sprintf("%s 科技新闻：技术动向 %d 条，AI 资讯 %d 条。", date, len(news), len(aiNews)),
+		News:       news,
+		AINews:     aiNews,
 	}
 	reply, err := normalizeGeekNewsReply(mustMarshalGeekNews(result))
 	if err != nil {
 		return "", err
 	}
-	logger.Infof("[A2A][geek-news][completed] conversation_id=%s date=%s items=%d response_schema=create_time,summary,news", turn.ConversationID, date, len(result.News))
+	logger.Infof("[A2A][geek-news][completed] conversation_id=%s date=%s news=%d ai_news=%d response_schema=create_time,summary,news,ai_news", turn.ConversationID, date, len(result.News), len(result.AINews))
 	return reply, nil
 }
 
@@ -128,68 +142,138 @@ func geekNewsDate(userText string) (string, error) {
 	return strings.TrimSpace(input.Date), nil
 }
 
-func limitGeekNewsItems(items []geekNewsItem) []geekNewsItem {
-	filtered := make([]geekNewsItem, 0, min(len(items), geekNewsMaximumItems))
-	seen := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		if strings.TrimSpace(item.Link) == "" || strings.TrimSpace(item.Title) == "" {
-			continue
-		}
-		if _, exists := seen[item.Link]; exists {
-			continue
-		}
-		seen[item.Link] = struct{}{}
-		filtered = append(filtered, item)
-		if len(filtered) == geekNewsMaximumItems {
-			break
-		}
-	}
-	return filtered
-}
-
-type geekNewsTranslation struct {
-	Title       string `json:"title"`
+type geekNewsDescription struct {
 	Description string `json:"description"`
 }
 
-func (p *a2aPipeline) translateGeekNewsItem(ctx context.Context, turn a2a.ConversationTurn, profile a2aPromptProfileSpec, index int, item geekNewsItem) (geekNewsTranslation, error) {
-	input, _ := json.Marshal(map[string]string{"title": item.Title, "description": item.Description})
-	output := newGeekNewsItemStructuredOutput()
-	_, err := p.agent.RunPromptProfile(ctx, agentruntime.PromptProfileRequest{
-		Name:         "geek-news-item",
-		SystemPrompt: "将一篇科技新闻翻译、润色为中文。只提交 title 和 description；保持事实、链接和专有名词，不要添加内容。",
-		UserText:     string(input), ChannelName: turn.Channel, SessionKey: fmt.Sprintf("%s:item:%d", turn.ConversationID, index),
-		// Structured output consumes one model step and one tool-result step.
-		DisableHistory: true, AllowTools: false, MaxSteps: 2, Model: profile.Model, StructuredOutput: output,
-	})
-	if err != nil {
-		return geekNewsTranslation{}, err
+func (p *a2aPipeline) processGeekNewsItems(ctx context.Context, turn a2a.ConversationTurn, profile a2aPromptProfileSpec, group string, items []geekNewsItem) []geekNewsItem {
+	processed := make([]geekNewsItem, len(items))
+	for i := range items {
+		item := items[i]
+		item.SourceTitle = item.Title
+		if isPureEnglishTitle(item.SourceTitle) {
+			if title, err := p.translateGeekNewsTitle(ctx, turn, profile, group, i, item.SourceTitle); err == nil {
+				item.Title = title
+			} else {
+				logger.Infof("[A2A][geek-news][title_source_fallback] conversation_id=%s group=%s item=%d err=%v", turn.ConversationID, group, i, err)
+			}
+		}
+		if description, err := p.translateGeekNewsDescription(ctx, turn, profile, group, i, item); err == nil {
+			item.Description = description
+		} else {
+			logger.Infof("[A2A][geek-news][description_source_fallback] conversation_id=%s group=%s item=%d err=%v", turn.ConversationID, group, i, err)
+		}
+		processed[i] = item
 	}
-	raw, ok := output.Result()
-	if !ok {
-		return geekNewsTranslation{}, errors.New("translation did not submit structured output")
-	}
-	var translated geekNewsTranslation
-	if err := json.Unmarshal([]byte(raw), &translated); err != nil || strings.TrimSpace(translated.Title) == "" || strings.TrimSpace(translated.Description) == "" {
-		return geekNewsTranslation{}, errors.New("invalid translation output")
-	}
-	return translated, nil
+	return processed
 }
 
-func newGeekNewsItemStructuredOutput() *agentruntime.PromptProfileStructuredOutput {
-	return agentruntime.NewPromptProfileStructuredOutput("structured_output", "提交这一篇新闻的中文标题和说明。", map[string]*schema.ParameterInfo{
-		"title":       {Type: schema.String, Required: true},
+func (p *a2aPipeline) translateGeekNewsDescription(ctx context.Context, turn a2a.ConversationTurn, profile a2aPromptProfileSpec, group string, index int, item geekNewsItem) (string, error) {
+	input, _ := json.Marshal(map[string]string{"title": item.SourceTitle, "description": item.Description})
+	var lastErr error
+	for attempt := 1; attempt <= geekNewsDescriptionAttempts; attempt++ {
+		output := newGeekNewsDescriptionStructuredOutput()
+		_, err := p.agent.RunPromptProfile(ctx, agentruntime.PromptProfileRequest{
+			Name:         "geek-news-description",
+			SystemPrompt: "将一篇科技新闻的 description 翻译、润色为中文。只提交 description；保持事实、专有名词和原意，不要编造。description 必须为 300–500 个中文字符，完整说明新闻背景、核心事实、关键细节和潜在影响。",
+			UserText:     string(input), ChannelName: turn.Channel, SessionKey: fmt.Sprintf("%s:%s:item:%d:description:%d", turn.ConversationID, group, index, attempt),
+			// Structured output consumes one model step and one tool-result step.
+			DisableHistory: true, AllowTools: false, MaxSteps: 2, Model: profile.Model, StructuredOutput: output,
+		})
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		raw, ok := output.Result()
+		if !ok {
+			lastErr = errors.New("description translation did not submit structured output")
+			continue
+		}
+		var translated geekNewsDescription
+		if err := json.Unmarshal([]byte(raw), &translated); err != nil || !geekNewsDescriptionValid(translated.Description) {
+			lastErr = errors.New("invalid description translation output")
+			continue
+		}
+		return translated.Description, nil
+	}
+	return "", fmt.Errorf("translate description after %d attempts: %w", geekNewsDescriptionAttempts, lastErr)
+}
+
+func newGeekNewsDescriptionStructuredOutput() *agentruntime.PromptProfileStructuredOutput {
+	return agentruntime.NewPromptProfileStructuredOutput("structured_output", "提交这一篇新闻的中文说明。", map[string]*schema.ParameterInfo{
 		"description": {Type: schema.String, Required: true},
 	}, func(value string) (string, error) {
-		var translated geekNewsTranslation
+		var translated geekNewsDescription
 		if err := json.Unmarshal([]byte(value), &translated); err != nil {
 			return "", err
 		}
-		if strings.TrimSpace(translated.Title) == "" || strings.TrimSpace(translated.Description) == "" {
-			return "", errors.New("title and description are required")
+		if !geekNewsDescriptionValid(translated.Description) {
+			return "", fmt.Errorf("description must contain %d-%d characters", geekNewsDescriptionMinRunes, geekNewsDescriptionMaxRunes)
 		}
 		return jsonCompact(translated)
 	})
+}
+
+func (p *a2aPipeline) translateGeekNewsTitle(ctx context.Context, turn a2a.ConversationTurn, profile a2aPromptProfileSpec, group string, index int, sourceTitle string) (string, error) {
+	output := newGeekNewsTitleStructuredOutput()
+	_, err := p.agent.RunPromptProfile(ctx, agentruntime.PromptProfileRequest{
+		Name: "geek-news-title", SystemPrompt: "将给定的纯英文新闻标题翻译为中文。只提交 title；不得添加或改写新闻事实，不得输出链接、日期、描述或任何其他字段。",
+		UserText: sourceTitle, ChannelName: turn.Channel, SessionKey: fmt.Sprintf("%s:%s:item:%d:title", turn.ConversationID, group, index),
+		DisableHistory: true, AllowTools: false, MaxSteps: 2, Model: profile.Model, StructuredOutput: output,
+	})
+	if err != nil {
+		return "", err
+	}
+	raw, ok := output.Result()
+	if !ok {
+		return "", errors.New("title translation did not submit structured output")
+	}
+	var translated struct {
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal([]byte(raw), &translated); err != nil || strings.TrimSpace(translated.Title) == "" {
+		return "", errors.New("invalid title translation output")
+	}
+	return translated.Title, nil
+}
+
+func newGeekNewsTitleStructuredOutput() *agentruntime.PromptProfileStructuredOutput {
+	return agentruntime.NewPromptProfileStructuredOutput("structured_output", "提交这一篇新闻的中文标题。", map[string]*schema.ParameterInfo{
+		"title": {Type: schema.String, Required: true},
+	}, func(value string) (string, error) {
+		var translated struct {
+			Title string `json:"title"`
+		}
+		if err := json.Unmarshal([]byte(value), &translated); err != nil || strings.TrimSpace(translated.Title) == "" {
+			if err == nil {
+				err = errors.New("title is required")
+			}
+			return "", err
+		}
+		return jsonCompact(translated)
+	})
+}
+
+func isPureEnglishTitle(title string) bool {
+	hasLatin := false
+	for _, r := range strings.TrimSpace(title) {
+		switch {
+		case unicode.IsLetter(r):
+			if !unicode.Is(unicode.Latin, r) {
+				return false
+			}
+			hasLatin = true
+		case unicode.IsDigit(r) || unicode.IsSpace(r) || unicode.IsPunct(r):
+		default:
+			return false
+		}
+	}
+	return hasLatin
+}
+
+func geekNewsDescriptionValid(description string) bool {
+	length := len([]rune(strings.TrimSpace(description)))
+	return length >= geekNewsDescriptionMinRunes && length <= geekNewsDescriptionMaxRunes
 }
 
 func (p *a2aPipeline) rankGeekNewsItems(ctx context.Context, turn a2a.ConversationTurn, profile a2aPromptProfileSpec, items []geekNewsItem) []geekNewsItem {
