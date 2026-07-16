@@ -79,24 +79,32 @@ func TestRunGitCombinedDisplaysChinesePaths(t *testing.T) {
 }
 
 func TestSanitizeCommitMessagePreservesBody(t *testing.T) {
-	input := "```text\nfeat(agent): 放宽模型调用超时\n\n1. 将 LLM HTTP 超时调整为 240 秒\n2. 将 A2A 外层超时调整为 600 秒\n```\n"
+	input := "```text\nfeat(agent): 放宽模型调用超时\n\n- 将 LLM HTTP 超时调整为 240 秒\n- 将 A2A 外层超时调整为 600 秒\n```\n"
 
 	got := sanitizeCommitMessage(input)
 
-	want := "feat(agent): 放宽模型调用超时\n\n1. 将 LLM HTTP 超时调整为 240 秒\n2. 将 A2A 外层超时调整为 600 秒"
+	want := "feat(agent): 放宽模型调用超时\n\n- 将 LLM HTTP 超时调整为 240 秒\n- 将 A2A 外层超时调整为 600 秒"
 	if got != want {
 		t.Fatalf("sanitizeCommitMessage() = %q, want %q", got, want)
 	}
 }
 
+func TestGitCommitMessagePromptRequiresStructuredBody(t *testing.T) {
+	for _, want := range []string{"第一行是 type(scope): 简短中文描述", "随后空一行", "`- ` 开头的列表", "至少给出一条列表项"} {
+		if !strings.Contains(gitCommitMessageSystemPrompt, want) {
+			t.Fatalf("gitCommitMessageSystemPrompt = %q, want %q", gitCommitMessageSystemPrompt, want)
+		}
+	}
+}
+
 func TestSplitCommitMessageArgsSplitsSubjectAndBodyParagraphs(t *testing.T) {
-	message := "feat(agent): 放宽模型调用超时\n\n1. 将 LLM HTTP 超时调整为 240 秒\n2. 将 A2A 外层超时调整为 600 秒\n\nCo-authored-by: ark-code-latest (ByteDance ARK) <noreply@volcesengine.com>"
+	message := "feat(agent): 放宽模型调用超时\n\n- 将 LLM HTTP 超时调整为 240 秒\n- 将 A2A 外层超时调整为 600 秒\n\nCo-authored-by: ark-code-latest (ByteDance ARK) <noreply@volcesengine.com>"
 
 	got := splitCommitMessageArgs(message)
 
 	want := []string{
 		"feat(agent): 放宽模型调用超时",
-		"1. 将 LLM HTTP 超时调整为 240 秒\n2. 将 A2A 外层超时调整为 600 秒",
+		"- 将 LLM HTTP 超时调整为 240 秒\n- 将 A2A 外层超时调整为 600 秒",
 		"Co-authored-by: ark-code-latest (ByteDance ARK) <noreply@volcesengine.com>",
 	}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
@@ -105,14 +113,14 @@ func TestSplitCommitMessageArgsSplitsSubjectAndBodyParagraphs(t *testing.T) {
 }
 
 func TestGitCommitMessageArgsAddsMForEachParagraph(t *testing.T) {
-	message := "feat(tui): 优化复制体验\n\n1. 调整状态栏\n2. 新增项目切换\n\nCo-authored-by: ark-code-latest (ByteDance ARK) <noreply@volcesengine.com>"
+	message := "feat(tui): 优化复制体验\n\n- 调整状态栏\n- 新增项目切换\n\nCo-authored-by: ark-code-latest (ByteDance ARK) <noreply@volcesengine.com>"
 
 	got := gitCommitMessageArgs(message)
 
 	want := []string{
 		"commit",
 		"-m", "feat(tui): 优化复制体验",
-		"-m", "1. 调整状态栏\n2. 新增项目切换",
+		"-m", "- 调整状态栏\n- 新增项目切换",
 		"-m", "Co-authored-by: ark-code-latest (ByteDance ARK) <noreply@volcesengine.com>",
 	}
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {

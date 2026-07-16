@@ -37,6 +37,8 @@ type gitCmsgCommitMsg struct {
 	err     error
 }
 
+const gitCommitMessageSystemPrompt = "你是 Git 提交信息助手。只输出中文 Conventional Commits 提交信息，不要解释，不要 Markdown。必须使用以下结构：第一行是 type(scope): 简短中文描述；随后空一行；再用 `- ` 开头的列表逐条说明主要变更。即使变更较小，也至少给出一条列表项。"
+
 func (m *model) startGitCmsgSlash(text string) tea.Cmd {
 	cmd, ok := slash.Parse(text)
 	if !ok || cmd.Name != "commit" {
@@ -190,7 +192,7 @@ func generateGitCommitMessage(ctx context.Context, agent *agentruntime.Agent, st
 	if len(diff) > maxDiff {
 		diff = diff[:maxDiff] + "\n\n[diff truncated]\n"
 	}
-	system := "你是 Git 提交信息助手。只输出中文 Conventional Commits 提交信息，不要解释，不要 Markdown。第一行格式：type(scope): 简短中文描述。若变更涉及多个文件、模块或行为，必须在空行后输出正文，用编号列表逐条说明主要变更。"
+	system := gitCommitMessageSystemPrompt
 	user := fmt.Sprintf("根据下面暂存区变更生成提交信息。\n\n文件：\n%s\n\n统计：\n%s\n\nDiff：\n%s", strings.TrimSpace(files), strings.TrimSpace(stat), diff)
 	msg, err := agent.Generate(ctx, system, user)
 	if err != nil {
