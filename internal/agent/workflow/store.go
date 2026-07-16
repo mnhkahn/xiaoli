@@ -51,6 +51,119 @@ type ReminderStore struct {
 	mu   sync.Mutex
 }
 
+// PendingReminder is a reminder that became due on a channel which cannot
+// initiate a conversation. It is delivered when that user next speaks.
+type PendingReminder struct {
+	ID          string `json:"id"`
+	ReminderID  string `json:"reminder_id"`
+	SenderID    string `json:"sender_id"`
+	Text        string `json:"text"`
+	ScheduledAt string `json:"scheduled_at"`
+}
+
+// PendingReminderStore persists reminders awaiting an inbound-channel reply.
+// It is deliberately separate from ReminderStore: scheduling state and
+// delivery state have different lifecycles.
+type PendingReminderStore struct {
+	path string
+	mu   sync.Mutex
+}
+
+func NewPendingReminderStore(path string) *PendingReminderStore {
+	return &PendingReminderStore{path: path}
+}
+
+func (s *PendingReminderStore) Load() ([]PendingReminder, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadLocked()
+}
+
+// Enqueue stores an item once. The stable ID makes scheduler retries safe.
+func (s *PendingReminderStore) Enqueue(item PendingReminder) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items, err := s.loadLocked()
+	if err != nil {
+		return err
+	}
+	for _, existing := range items {
+		if existing.ID == item.ID {
+			return nil
+		}
+	}
+	items = append(items, item)
+	return s.saveLocked(items)
+}
+
+func (s *PendingReminderStore) Delete(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	items, err := s.loadLocked()
+	if err != nil {
+		return false, err
+	}
+	out := items[:0]
+	removed := false
+	for _, item := range items {
+		if item.ID == id {
+			removed = true
+			continue
+		}
+		out = append(out, item)
+	}
+	if !removed {
+		return false, nil
+	}
+	return true, s.saveLocked(out)
+}
+
+func (s *PendingReminderStore) loadLocked() ([]PendingReminder, error) {
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var items []PendingReminder
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, fmt.Errorf("parse pending reminders %s: %w", s.path, err)
+	}
+	return items, nil
+}
+
+func (s *PendingReminderStore) saveLocked(items []PendingReminder) error {
+	if items == nil {
+		items = []PendingReminder{}
+	}
+	data, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".pending-reminders-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, s.path)
+}
+
 func NewReminderStore(path string) *ReminderStore {
 	return &ReminderStore{path: path}
 }

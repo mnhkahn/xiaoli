@@ -77,6 +77,7 @@ type AdminServer struct {
 	larkTokenMu       sync.Mutex
 	reminderOnce      sync.Once
 	reminderSt        *agentworkflow.ReminderStore
+	pendingReminderSt *agentworkflow.PendingReminderStore
 	oidcMu            sync.Mutex
 	oidc              *oidcConfig
 	oidcFetcher       func() (oidcConfig, error)
@@ -110,6 +111,7 @@ func NewServer(cfg Config) *AdminServer {
 	audioStore := newAudioStore(cfg.now)
 	asr := newOpenAITranscriber(cfg)
 	reminderStore := agentworkflow.NewReminderStore(reminderPathForDir(cfg.DataDir))
+	pendingReminderStore := agentworkflow.NewPendingReminderStore(pendingReminderPathForDir(cfg.DataDir))
 	agent := newEinoAgent(cfg, reminderStore, eventBus)
 	var memory memoryReader
 	if agent != nil && agent.MemoryReader() != nil {
@@ -186,6 +188,7 @@ func NewServer(cfg Config) *AdminServer {
 		documentExtractor: defaultDocumentTextExtractor{},
 		larkEvents:        map[string]time.Time{},
 		reminderSt:        reminderStore,
+		pendingReminderSt: pendingReminderStore,
 	}
 	s.oidcFetcher = s.fetchOIDCConfig
 	s.setupA2A(agent)

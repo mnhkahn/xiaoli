@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1446,6 +1447,9 @@ func (s *AdminServer) handleWechatMessage(ctx context.Context, c *wechatClient, 
 		logger.Infof("[wechat] send error: %v", err)
 	} else {
 		logger.Infof("[wechat] send ok to=%s text=%q", msg.FromUserID, reply.Text)
+		s.deliverPendingWechatReminders(ctx, msg.FromUserID, func(sendCtx context.Context, text string) error {
+			return formatter.Send(sendCtx, text)
+		})
 	}
 }
 
@@ -1631,6 +1635,13 @@ func reminderPathForDir(dir string) string {
 	return filepath.Join(dir, "reminders.json")
 }
 
+func pendingReminderPathForDir(dir string) string {
+	if dir == "" {
+		dir = "/data"
+	}
+	return filepath.Join(dir, "pending-wechat-reminders.json")
+}
+
 func (s *AdminServer) reminderPath() string {
 	return reminderPathForDir(s.cfg.DataDir)
 }
@@ -1642,6 +1653,67 @@ func (s *AdminServer) reminderStore() *agentworkflow.ReminderStore {
 		}
 	})
 	return s.reminderSt
+}
+
+func (s *AdminServer) pendingReminderStore() *agentworkflow.PendingReminderStore {
+	if s.pendingReminderSt == nil {
+		s.pendingReminderSt = agentworkflow.NewPendingReminderStore(pendingReminderPathForDir(s.cfg.DataDir))
+	}
+	return s.pendingReminderSt
+}
+
+// deliverPendingWechatReminders sends deferred reminders after a successful
+// normal reply. Failed sends remain queued, while a cancelled/disabled source
+// reminder is discarded without sending.
+func (s *AdminServer) deliverPendingWechatReminders(ctx context.Context, senderID string, send func(context.Context, string) error) {
+	items, err := s.pendingReminderStore().Load()
+	if err != nil {
+		logger.Infof("[reminder] load pending wechat reminders failed: %v", err)
+		return
+	}
+	reminders, err := s.reminderStore().Load()
+	if err != nil {
+		logger.Infof("[reminder] load reminders for pending wechat delivery failed: %v", err)
+		return
+	}
+	active := make(map[string]bool, len(reminders))
+	for _, reminder := range reminders {
+		active[reminder.ID] = reminder.Enabled
+	}
+	matching := make([]agentworkflow.PendingReminder, 0)
+	for _, item := range items {
+		if item.SenderID == senderID {
+			matching = append(matching, item)
+		}
+	}
+	sort.SliceStable(matching, func(i, j int) bool {
+		return matching[i].ScheduledAt < matching[j].ScheduledAt
+	})
+	for _, item := range matching {
+		if !active[item.ReminderID] {
+			if _, err := s.pendingReminderStore().Delete(item.ID); err != nil {
+				logger.Infof("[reminder] discard cancelled pending reminder %q failed: %v", item.ID, err)
+			}
+			continue
+		}
+		if err := send(ctx, pendingWechatReminderText(item)); err != nil {
+			logger.Infof("[reminder] pending wechat reminder %q send failed, keeping for retry: %v", item.ID, err)
+			continue
+		}
+		if _, err := s.pendingReminderStore().Delete(item.ID); err != nil {
+			logger.Infof("[reminder] pending wechat reminder %q sent but could not be removed: %v", item.ID, err)
+			continue
+		}
+		logger.Infof("[reminder] pending wechat reminder %q delivered to=%s", item.ID, senderID)
+	}
+}
+
+func pendingWechatReminderText(item agentworkflow.PendingReminder) string {
+	when, err := time.Parse(time.RFC3339, item.ScheduledAt)
+	if err != nil {
+		return "🔔 待补发提醒：" + item.Text
+	}
+	return "🔔 待补发提醒（原定 " + when.In(time.Local).Format("2006-01-02 15:04") + "）：" + item.Text
 }
 
 // runReminderAction 按 action 分发执行。action 为空时按任务 ID 走兼容逻辑。
@@ -1700,6 +1772,18 @@ func (s *AdminServer) runSpeakAction(ctx context.Context, def agentworkflow.Defi
 
 // sendReminderByChannel 根据 channel 发送提醒到对应的渠道
 func (s *AdminServer) sendReminderByChannel(ctx context.Context, def agentworkflow.Definition, scheduledAt time.Time) error {
+	if s.reminderDeliveryChannel(def.Channel) == "wechat" {
+		if strings.TrimSpace(def.SenderID) == "" {
+			return fmt.Errorf("wechat reminder missing sender_id")
+		}
+		return s.pendingReminderStore().Enqueue(agentworkflow.PendingReminder{
+			ID:          def.ID + ":" + scheduledAt.Format(time.RFC3339Nano),
+			ReminderID:  def.ID,
+			SenderID:    def.SenderID,
+			Text:        metadataString(def.Metadata, "text", def.Name),
+			ScheduledAt: scheduledAt.Format(time.RFC3339),
+		})
+	}
 	var failures []string
 	for _, channel := range s.reminderDeliveryChannels(def.Channel) {
 		var err error
@@ -1729,13 +1813,12 @@ func (s *AdminServer) reminderDeliveryChannel(channel string) string {
 
 // reminderDeliveryChannels returns supported delivery channels in priority
 // order. A reminder's Channel is its creation source, not proof that the
-// source can push a scheduled message. WeChat has no proactive reminder
-// sender, so WeChat-originated reminders fall back to Lark only: they must
-// never be redirected to an unrelated ESP32 device.
+// source can push a scheduled message. WeChat reminders are queued until the
+// originating user next speaks, rather than being redirected to another channel.
 func (s *AdminServer) reminderDeliveryChannels(channel string) []string {
 	primary := s.reminderDeliveryChannel(channel)
 	if primary == "wechat" {
-		return []string{"lark"}
+		return nil
 	}
 	switch primary {
 	case "esp32":

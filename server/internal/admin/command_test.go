@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	agentwechat "github.com/mnhkahn/xiaoli/internal/agent/channel/wechat"
+	agentworkflow "github.com/mnhkahn/xiaoli/internal/agent/workflow"
 )
 
 func TestParseBuiltinCommandRequiresLeadingSlash(t *testing.T) {
@@ -132,6 +133,66 @@ func TestWechatBuiltinChannelCommandRepliesWithoutPipeline(t *testing.T) {
 	text := sent.Msg.ItemList[0].TextItem.Text
 	if !strings.Contains(text, "esp32:device-1") || !strings.Contains(text, "wechat:bot") {
 		t.Fatalf("reply text = %q, want channel list", text)
+	}
+}
+
+func TestWechatConversationRepliesBeforeDeliveringPendingReminders(t *testing.T) {
+	cfg := testConfig()
+	cfg.WeChatEnabled = true
+	cfg.WeChatBotToken = "wechat-token"
+	cfg.DataDir = t.TempDir()
+	srv := NewServer(cfg)
+	if err := srv.reminderStore().Add(agentworkflow.Reminder{ID: "reminder-1", Enabled: true}); err != nil {
+		t.Fatalf("add reminder: %v", err)
+	}
+	if err := srv.pendingReminderStore().Enqueue(agentworkflow.PendingReminder{
+		ID:          "pending-1",
+		ReminderID:  "reminder-1",
+		SenderID:    "user-1",
+		Text:        "喝水",
+		ScheduledAt: "2026-07-16T09:00:00+08:00",
+	}); err != nil {
+		t.Fatalf("enqueue pending reminder: %v", err)
+	}
+	srv.conversation = &ConversationPipeline{
+		chat: conversationChatFunc(func(context.Context, ConversationTurn) (string, error) {
+			return "正常回答", nil
+		}),
+	}
+	c, captured := fakeWechatClientSequence(t, nil,
+		fakeWechatResponse{path: "/ilink/bot/getconfig", status: http.StatusOK, body: `{"ret":0,"typing_ticket":"ticket-123"}`},
+		fakeWechatResponse{path: "/ilink/bot/sendtyping", status: http.StatusOK, body: `{"ret":0}`},
+		fakeWechatResponse{path: "/ilink/bot/sendmessage", status: http.StatusOK, body: `{"ret":0}`},
+		fakeWechatResponse{path: "/ilink/bot/sendmessage", status: http.StatusOK, body: `{"ret":0}`},
+	)
+
+	srv.handleWechatMessage(context.Background(), c, &agentwechat.Message{
+		FromUserID: "user-1", ToUserID: "bot-1", ContextToken: "ctx-1", MessageType: agentwechat.MsgUser,
+		ItemList: []agentwechat.MsgItem{{Type: agentwechat.ItemText, TextItem: &agentwechat.TextItem{Text: "你好"}}},
+	})
+
+	if len(*captured) != 4 {
+		t.Fatalf("requests = %#v, want typing plus two text sends", captured)
+	}
+	var first, second agentwechat.SendMessageRequest
+	if err := json.Unmarshal((*captured)[2].body, &first); err != nil {
+		t.Fatalf("decode normal reply: %v", err)
+	}
+	if err := json.Unmarshal((*captured)[3].body, &second); err != nil {
+		t.Fatalf("decode reminder reply: %v", err)
+	}
+	if first.Msg.ItemList[0].TextItem.Text != "正常回答" {
+		t.Fatalf("first reply = %#v, want normal answer", first.Msg)
+	}
+	if !strings.Contains(second.Msg.ItemList[0].TextItem.Text, "待补发提醒") || !strings.Contains(second.Msg.ItemList[0].TextItem.Text, "喝水") {
+		t.Fatalf("second reply = %#v, want pending reminder", second.Msg)
+	}
+	remaining, err := srv.pendingReminderStore().Load()
+	if err != nil {
+		t.Fatalf("load pending reminders: %v", err)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("remaining pending reminders = %#v, want none", remaining)
 	}
 }
 

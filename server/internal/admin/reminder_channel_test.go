@@ -1,9 +1,13 @@
 package admin
 
 import (
+	"context"
+	"errors"
 	"testing"
+	"time"
 
 	agentsession "github.com/mnhkahn/xiaoli/internal/agent/session"
+	agentworkflow "github.com/mnhkahn/xiaoli/internal/agent/workflow"
 )
 
 func TestSettingsReminderDefaultChannelDefaultsToLark(t *testing.T) {
@@ -60,13 +64,13 @@ func TestReminderDeliveryChannelKeepsDefinitionChannel(t *testing.T) {
 	}
 }
 
-func TestReminderDeliveryChannelsSkipsUnsupportedWechat(t *testing.T) {
+func TestReminderDeliveryChannelsQueuesUnsupportedWechat(t *testing.T) {
 	cfg := testConfig()
 	cfg.ReminderDefaultChannel = "lark"
 	srv := NewServer(cfg)
 
 	got := srv.reminderDeliveryChannels("wechat")
-	want := []string{"lark"}
+	want := []string(nil)
 	if len(got) != len(want) {
 		t.Fatalf("reminderDeliveryChannels(wechat) = %#v, want %#v", got, want)
 	}
@@ -74,6 +78,70 @@ func TestReminderDeliveryChannelsSkipsUnsupportedWechat(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("reminderDeliveryChannels(wechat) = %#v, want %#v", got, want)
 		}
+	}
+}
+
+func TestWechatReminderIsQueuedInsteadOfFallingBackToLark(t *testing.T) {
+	cfg := testConfig()
+	cfg.DataDir = t.TempDir()
+	srv := NewServer(cfg)
+	scheduledAt := time.Date(2026, 7, 16, 9, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	def := agentworkflow.Definition{
+		ID:       "wechat-reminder",
+		Name:     "喝水",
+		Channel:  "wechat",
+		SenderID: "wechat-user",
+		Metadata: map[string]any{"text": "喝水"},
+	}
+
+	if err := srv.sendReminderByChannel(context.Background(), def, scheduledAt); err != nil {
+		t.Fatalf("sendReminderByChannel() error = %v", err)
+	}
+	items, err := srv.pendingReminderStore().Load()
+	if err != nil {
+		t.Fatalf("pending reminder Load() error = %v", err)
+	}
+	if len(items) != 1 || items[0].SenderID != "wechat-user" || items[0].Text != "喝水" {
+		t.Fatalf("pending reminders = %#v, want one wechat reminder", items)
+	}
+}
+
+func TestDeliverPendingWechatRemindersKeepsFailuresAndContinues(t *testing.T) {
+	cfg := testConfig()
+	cfg.DataDir = t.TempDir()
+	srv := NewServer(cfg)
+	for _, id := range []string{"first", "second", "cancelled"} {
+		if err := srv.reminderStore().Add(agentworkflow.Reminder{ID: id, Enabled: id != "cancelled"}); err != nil {
+			t.Fatalf("add reminder %q: %v", id, err)
+		}
+	}
+	items := []agentworkflow.PendingReminder{
+		{ID: "one", ReminderID: "first", SenderID: "wechat-user", Text: "第一条", ScheduledAt: "2026-07-16T09:00:00+08:00"},
+		{ID: "two", ReminderID: "second", SenderID: "wechat-user", Text: "第二条", ScheduledAt: "2026-07-16T10:00:00+08:00"},
+		{ID: "three", ReminderID: "cancelled", SenderID: "wechat-user", Text: "已取消", ScheduledAt: "2026-07-16T11:00:00+08:00"},
+	}
+	for _, item := range items {
+		if err := srv.pendingReminderStore().Enqueue(item); err != nil {
+			t.Fatalf("enqueue %q: %v", item.ID, err)
+		}
+	}
+	var sent []string
+	srv.deliverPendingWechatReminders(context.Background(), "wechat-user", func(_ context.Context, text string) error {
+		sent = append(sent, text)
+		if len(sent) == 1 {
+			return errors.New("temporary failure")
+		}
+		return nil
+	})
+	if len(sent) != 2 {
+		t.Fatalf("sent = %#v, want failed first and successful second", sent)
+	}
+	remaining, err := srv.pendingReminderStore().Load()
+	if err != nil {
+		t.Fatalf("pending reminder Load() error = %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].ID != "one" {
+		t.Fatalf("remaining = %#v, want only failed first reminder", remaining)
 	}
 }
 
