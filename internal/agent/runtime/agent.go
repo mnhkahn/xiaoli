@@ -34,8 +34,13 @@ type DeviceTools interface {
 
 var chineseWeekday = []string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
 
-var A2AAllowedMCPServers = map[string]bool{
-	"CYEAM": true,
+// A2AAllowedMCPTools 定义 A2A 通道允许调用的 MCP 工具白名单。
+// key 为 MCP server 名，value 为工具名集合（"*" 表示放行该 server 的全部工具）。
+// AMap 只放 maps_weather：encouragement profile 需要天气，但不能让外部方消耗
+// 高德 API 配额去查地图、POI、路径等其他能力。
+var A2AAllowedMCPTools = map[string]map[string]bool{
+	"CYEAM": {"*": true},
+	"AMap":  {"maps_weather": true},
 }
 
 type MCPEndpointStatus struct {
@@ -2304,10 +2309,18 @@ func (a *Agent) a2aPublicTools(ctx context.Context) []tool.BaseTool {
 		if serverIdx < len(a.extMCPNames) {
 			serverName = a.extMCPNames[serverIdx]
 		}
-		if !A2AAllowedMCPServers[serverName] {
+		allowed, ok := A2AAllowedMCPTools[serverName]
+		if !ok {
 			continue
 		}
+		wildcard := allowed["*"]
 		for _, t := range tools {
+			if !wildcard {
+				info, err := t.Info(ctx)
+				if err != nil || info == nil || !allowed[info.Name] {
+					continue
+				}
+			}
 			einoTools = append(einoTools, a.WrapTool(t, "mcp"))
 		}
 	}

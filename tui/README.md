@@ -121,9 +121,13 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-The TUI checks the latest GitHub release in the background at startup and caches
-the result in `~/.xiaoli/state/version.json` for 24 hours. When a newer release
-is available, the banner and status bar show a quiet update hint; release notes
-from GitHub are shown in the welcome banner when present. `/upgrade` prints the
-matching `go install github.com/mnhkahn/xiaoli/tui/cmd/xiaoli@vX.Y.Z` command
-without running it automatically.
+When `XIAOLI_SOURCE` is not configured, the TUI checks the latest GitHub release
+in the background at startup and caches the result in
+`~/.xiaoli/state/version.json` for 24 hours. When a newer release is found, it
+automatically runs the matching `go install` command and asks you to restart
+Xiaoli after it completes. `/upgrade` starts that installation immediately;
+`xiaoli upgrade -check` only checks the release version.
+
+When `XIAOLI_SOURCE` is configured, Xiaoli always runs that local checkout, so
+`/upgrade` is intentionally disabled. Update the checkout itself, then restart
+Xiaoli.

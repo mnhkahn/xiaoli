@@ -110,7 +110,8 @@
       "holiday",
       "cyeam-cli",
       "news",
-      "ai-models"
+      "ai-models",
+      "tv"
     ],
     "profiles": {
       "architect": {

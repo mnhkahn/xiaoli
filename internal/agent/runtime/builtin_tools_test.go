@@ -427,8 +427,8 @@ func TestA2AToolsOnlyExposePublicAllowlist(t *testing.T) {
 			"github",
 		},
 		extToolSets: [][]tool.BaseTool{
-			{testTool{name: "cyeam_public"}},
-			{testTool{name: "amap_weather"}},
+			{testTool{name: "cyeam_public"}, testTool{name: "cyeam_tv_today"}},
+			{testTool{name: "maps_weather"}, testTool{name: "maps_geo"}, testTool{name: "maps_direction_driving"}},
 			{testTool{name: "github_repo"}},
 		},
 	}
@@ -443,7 +443,7 @@ func TestA2AToolsOnlyExposePublicAllowlist(t *testing.T) {
 
 	names := toolNames(t, agent.toolsForChat(context.Background(), "", "", "a2a"))
 
-	for _, want := range []string{"webfetch", "websearch", "cyeam_public"} {
+	for _, want := range []string{"webfetch", "websearch", "cyeam_public", "cyeam_tv_today", "maps_weather"} {
 		if !names[want] {
 			t.Fatalf("A2A tools missing %q; got %#v", want, names)
 		}
@@ -456,8 +456,10 @@ func TestA2AToolsOnlyExposePublicAllowlist(t *testing.T) {
 		"task",
 		"channel_send",
 		"log_search",
-		"amap_weather",
 		"github_repo",
+		// AMap 非天气工具必须被拒绝，避免外部方消耗高德配额
+		"maps_geo",
+		"maps_direction_driving",
 	} {
 		if names[blocked] {
 			t.Fatalf("A2A tools should not include %q; got %#v", blocked, names)
@@ -465,7 +467,7 @@ func TestA2AToolsOnlyExposePublicAllowlist(t *testing.T) {
 	}
 }
 
-func TestA2ASubAgentToolsOnlyExposeCYEAMMCP(t *testing.T) {
+func TestA2ASubAgentToolsExposeAllowedMCP(t *testing.T) {
 	agent := &Agent{
 		cfg: Config{BuiltinWebFetchEnabled: true},
 		extMCPNames: []string{
@@ -475,16 +477,18 @@ func TestA2ASubAgentToolsOnlyExposeCYEAMMCP(t *testing.T) {
 		},
 		extToolSets: [][]tool.BaseTool{
 			{testTool{name: "cyeam_public"}},
-			{testTool{name: "amap_weather"}},
+			{testTool{name: "maps_weather"}, testTool{name: "maps_geo"}},
 			{testTool{name: "github_repo"}},
 		},
 	}
 
 	names := toolNames(t, agent.subAgentTools(context.Background(), true, "a2a"))
-	if !names["cyeam_public"] {
-		t.Fatalf("A2A subagent tools missing CYEAM tool; got %#v", names)
+	for _, want := range []string{"cyeam_public", "maps_weather"} {
+		if !names[want] {
+			t.Fatalf("A2A subagent tools missing %q; got %#v", want, names)
+		}
 	}
-	for _, blocked := range []string{"amap_weather", "github_repo"} {
+	for _, blocked := range []string{"github_repo", "maps_geo"} {
 		if names[blocked] {
 			t.Fatalf("A2A subagent tools should not include %q; got %#v", blocked, names)
 		}

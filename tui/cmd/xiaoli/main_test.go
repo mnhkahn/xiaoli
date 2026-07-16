@@ -3697,7 +3697,8 @@ func TestWelcomeBannerShowsReleaseNotesWhenDynamic(t *testing.T) {
 	}
 }
 
-func TestHandleLocalUpgradeShowsCommand(t *testing.T) {
+func TestHandleLocalUpgradeStartsInstall(t *testing.T) {
+	t.Setenv(sourceEnvName, "")
 	m := model{
 		input: textinput.New(),
 		updateInfo: updateInfo{
@@ -3708,11 +3709,69 @@ func TestHandleLocalUpgradeShowsCommand(t *testing.T) {
 			CheckedAt:  time.Now(),
 		},
 	}
-	if !m.handleLocalCommand("/upgrade") {
+	handled, cmd := m.handleLocalCommandWithCmd("/upgrade")
+	if !handled {
 		t.Fatalf("handleLocalCommand(/upgrade) = false, want true")
 	}
-	if len(m.items) == 0 || !strings.Contains(m.items[len(m.items)-1].text, "go install") || !strings.Contains(m.items[len(m.items)-1].text, "releases/tag/v0.2.0") {
-		t.Fatalf("items = %#v, want upgrade command and release URL", m.items)
+	if cmd == nil {
+		t.Fatal("/upgrade command = nil, want install command")
+	}
+	if len(m.items) == 0 || !strings.Contains(m.items[len(m.items)-1].text, "正在升级") {
+		t.Fatalf("items = %#v, want upgrade status", m.items)
+	}
+}
+
+func TestHandleLocalUpgradeRejectsConcurrentInstall(t *testing.T) {
+	t.Setenv(sourceEnvName, "")
+	m := model{input: textinput.New(), upgradeInProgress: true}
+	handled, cmd := m.handleLocalCommandWithCmd("/upgrade")
+	if !handled || cmd != nil {
+		t.Fatalf("/upgrade = handled=%v cmd=%v, want handled without a second install", handled, cmd)
+	}
+	if len(m.items) == 0 || !strings.Contains(m.items[len(m.items)-1].text, "正在升级") {
+		t.Fatalf("items = %#v, want in-progress message", m.items)
+	}
+}
+
+func TestHandleLocalUpgradeRejectsSourceMode(t *testing.T) {
+	t.Setenv(sourceEnvName, "/tmp/xiaoli-source")
+	m := model{input: textinput.New()}
+	handled, cmd := m.handleLocalCommandWithCmd("/upgrade")
+	if !handled || cmd != nil {
+		t.Fatalf("/upgrade = handled=%v cmd=%v, want source-mode message without install", handled, cmd)
+	}
+	if len(m.items) == 0 || !strings.Contains(m.items[len(m.items)-1].text, "源码模式") {
+		t.Fatalf("items = %#v, want source-mode message", m.items)
+	}
+}
+
+func TestShouldAutoUpgrade(t *testing.T) {
+	info := newUpdateInfo("v0.1.0", "v0.2.0", time.Now())
+	if !shouldAutoUpgrade(info, false) {
+		t.Fatal("shouldAutoUpgrade() = false, want true for a release install")
+	}
+	if shouldAutoUpgrade(info, true) {
+		t.Fatal("shouldAutoUpgrade() = true, want false in source mode")
+	}
+}
+
+func TestUpgradeReleaseCmdRunsGoInstall(t *testing.T) {
+	var gotBin string
+	var gotArgs []string
+	cmd := upgradeReleaseCmdWithDeps("v0.2.0", releaseUpgradeDeps{
+		LookPath: func(string) (string, error) { return "/usr/bin/go", nil },
+		Run: func(_ context.Context, bin string, args []string) ([]byte, error) {
+			gotBin = bin
+			gotArgs = append([]string(nil), args...)
+			return []byte("installed"), nil
+		},
+	})
+	msg, ok := cmd().(upgradeRunDoneMsg)
+	if !ok || msg.err != nil || msg.target != "v0.2.0" {
+		t.Fatalf("upgrade cmd = %#v, want successful v0.2.0 result", msg)
+	}
+	if gotBin != "/usr/bin/go" || len(gotArgs) != 2 || gotArgs[0] != "install" || !strings.HasSuffix(gotArgs[1], "@v0.2.0") {
+		t.Fatalf("go install = %q %v, want tagged install", gotBin, gotArgs)
 	}
 }
 

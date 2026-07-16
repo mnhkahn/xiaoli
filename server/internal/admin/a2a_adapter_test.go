@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mnhkahn/gogogo/logger"
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
@@ -551,6 +552,12 @@ func TestA2APromptProfilesDefineEncouragementAndArchitect(t *testing.T) {
 	if !strings.Contains(encouragement.SystemPrompt, "holiday") || !strings.Contains(encouragement.SystemPrompt, "只接收 date") {
 		t.Fatalf("encouragement prompt = %q, want date-only input and holiday skill guidance", encouragement.SystemPrompt)
 	}
+	if !strings.Contains(encouragement.SystemPrompt, "maps_weather") || !strings.Contains(encouragement.SystemPrompt, "北京") {
+		t.Fatalf("encouragement prompt = %q, want maps_weather guidance for Beijing", encouragement.SystemPrompt)
+	}
+	if !strings.Contains(encouragement.SystemPrompt, "cyeam tv today") {
+		t.Fatalf("encouragement prompt = %q, want cyeam tv today guidance", encouragement.SystemPrompt)
+	}
 
 	architect, ok := a2aPromptProfile("architect")
 	if !ok {
@@ -580,5 +587,85 @@ func TestA2APromptProfilesDefineEncouragementAndArchitect(t *testing.T) {
 		!strings.Contains(geekNews.SystemPrompt, "image") ||
 		!strings.Contains(geekNews.SystemPrompt, "create_time") {
 		t.Fatalf("geek-news prompt = %q, want news skill guidance and GeekNews JSON fields", geekNews.SystemPrompt)
+	}
+}
+
+func TestEncouragementDateGuardOverrideTodayReturnsEmpty(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, loc)
+	today := now.Format("2006-01-02")
+	cases := []string{
+		`{"date":"` + today + `"}`,
+	}
+	for _, ut := range cases {
+		if got := encouragementDateGuardOverride(ut, now); got != "" {
+			t.Fatalf("encouragementDateGuardOverride(%q) = %q, want empty for today/unknown", ut, got)
+		}
+	}
+}
+
+func TestEncouragementDateGuardOverrideUnknownDateForbidsTools(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, loc)
+	cases := []string{
+		`{"other":"value"}`,
+		`{"date":"6月27日周六","type":"休息日"}`,
+		`not-json`,
+		``,
+	}
+	for _, ut := range cases {
+		if got := encouragementDateGuardOverride(ut, now); got == "" {
+			t.Fatalf("encouragementDateGuardOverride(%q) empty, want tool guard for unknown date", ut)
+		}
+	}
+}
+
+func TestEncouragementDateGuardOverrideNonTodayForbidsTools(t *testing.T) {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, loc)
+	cases := []string{
+		`{"date":"2026-07-15"}`, // 昨天
+		`{"date":"2026-07-17"}`, // 明天
+		`{"date":"2020-01-01"}`, // 历史
+	}
+	for _, ut := range cases {
+		got := encouragementDateGuardOverride(ut, now)
+		if got == "" {
+			t.Fatalf("encouragementDateGuardOverride(%q) empty, want override text for non-today date", ut)
+		}
+		if !strings.Contains(got, "maps_weather") || !strings.Contains(got, "cyeam tv today") {
+			t.Fatalf("encouragementDateGuardOverride(%q) = %q, want mention of maps_weather and cyeam tv today", ut, got)
+		}
+	}
+}
+
+func TestA2APipelineAppendsEncouragementDateGuardForNonTodayDate(t *testing.T) {
+	agent := &fakeA2AAgent{}
+	pipeline := newA2APipeline(agent, nil)
+
+	// 用 2020-01-01 这种确定不是服务运行当天的日期，触发 guard。
+	_, err := pipeline.Run(context.Background(), a2a.ConversationTurn{
+		Channel: "a2a",
+		Text:    `{"profile":"encouragement","input":{"date":"2020-01-01"}}`,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if agent.lastProfile.Name != "encouragement" {
+		t.Fatalf("lastProfile.Name = %q, want encouragement", agent.lastProfile.Name)
+	}
+	if !strings.Contains(agent.lastProfile.SystemPrompt, "重要覆盖规则") ||
+		!strings.Contains(agent.lastProfile.SystemPrompt, "严禁调用 maps_weather") ||
+		!strings.Contains(agent.lastProfile.SystemPrompt, "严禁调用 cyeam tv today") {
+		t.Fatalf("SystemPrompt missing date-guard override:\n%s", agent.lastProfile.SystemPrompt)
 	}
 }

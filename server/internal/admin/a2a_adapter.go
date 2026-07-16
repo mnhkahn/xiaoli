@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
@@ -81,9 +82,18 @@ func (p *a2aPipeline) Run(ctx context.Context, turn a2a.ConversationTurn) (a2a.C
 			}
 			return a2a.ConversationReply{Text: reply}, nil
 		}
+		systemPrompt := profile.SystemPrompt
+		if profile.Name == "encouragement" {
+			// 天气/赛事这两路数据源只能查“今天”，如果调用方传的是非当天日期
+			// （补历史 / 排未来），强制在 prompt 末尾追加禁令，防止把服务运行
+			// 当天的天气或赛事写进历史或未来日期的鼓励语。
+			if extra := encouragementDateGuardOverride(req.UserText, time.Now()); extra != "" {
+				systemPrompt = systemPrompt + "\n\n" + extra
+			}
+		}
 		runnerReq := agentruntime.PromptProfileRequest{
 			Name:           profile.Name,
-			SystemPrompt:   profile.SystemPrompt,
+			SystemPrompt:   systemPrompt,
 			UserText:       req.UserText,
 			ChannelName:    turn.Channel,
 			SessionKey:     turn.ConversationID,
@@ -378,6 +388,49 @@ type rawA2AProfileRequest struct {
 	Input   json.RawMessage `json:"input"`
 }
 
+// encouragementDateIsToday reports whether userText's "date" field equals
+// the current calendar day in Asia/Shanghai. Only a valid ISO YYYY-MM-DD
+// value matching today returns true. Missing or unrecognised dates return
+// false so the caller cannot accidentally combine live data with an
+// historical or future encouragement.
+func encouragementDateIsToday(userText string, now time.Time) bool {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		loc = time.FixedZone("CST", 8*3600)
+	}
+	today := now.In(loc).Format("2006-01-02")
+	var payload struct {
+		Date string `json:"date"`
+	}
+	if err := json.Unmarshal([]byte(userText), &payload); err != nil {
+		return false
+	}
+	d := strings.TrimSpace(payload.Date)
+	if d == "" {
+		return false
+	}
+	if _, err := time.ParseInLocation("2006-01-02", d, loc); err != nil {
+		return false
+	}
+	return d == today
+}
+
+// encouragementDateGuardOverride returns extra SystemPrompt text that must
+// be appended when the caller asks for a non-today date. It forbids the two
+// tools whose only implementation queries "today" (maps_weather returns
+// current weather; cyeam tv today lists today's matches), so they cannot
+// leak service-day data into a historical or future encouragement.
+func encouragementDateGuardOverride(userText string, now time.Time) string {
+	if encouragementDateIsToday(userText, now) {
+		return ""
+	}
+	return "重要覆盖规则（当 date 不是服务运行当天时生效）：\n" +
+		"- 严禁调用 maps_weather MCP 工具（其只能返回当前天气，不适用于历史或未来日期）\n" +
+		"- 严禁调用 cyeam tv today skill（其只能返回当天赛事，不适用于历史或未来日期）\n" +
+		"- 仅使用 holiday skill 的结果，配合月周期与星期特性组织语言\n" +
+		"- 不得在鼓励语中出现任何天气或比赛内容"
+}
+
 func parseA2AProfileRequest(text string) (a2aProfileRequest, bool) {
 	text = strings.TrimSpace(text)
 	if text == "" || !strings.HasPrefix(text, "{") {
@@ -412,22 +465,29 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 		return a2aPromptProfileSpec{
 			Name: "encouragement",
 			SystemPrompt: "你是一个中文鼓励师。客户端只接收 date 字段，例如 {\"date\":\"2026-06-27\"}。\n" +
-				"要求：\n" +
-				"- 先使用 holiday skill 查询 date 对应的是工作日、休息日还是调休补班，以及星期几\n" +
-				"- 解析日期判断月周期：月初（1-5号）、月中（14-16号）、月末（≥25号）\n" +
-				"- 只输出一句话\n" +
-				"- 不要解释，不要分段\n" +
-				"- 不要提及具体日期，但可以说星期几\n" +
+				"数据采集（按顺序调用，任一步失败就跳过它，不要因单步失败中断整体流程）：\n" +
+				"- 调 holiday skill：cyeam date holiday <date>，拿到星期几和工作日 / 休息日 / 调休补班状态（必选）\n" +
+				"- 调 maps_weather MCP 工具（来自高德 AMap MCP），city 固定传「北京」，拿到今日天气现象和温度（选用，仅当 date 就是服务运行当天时才允许调用；补历史或排未来的日期不得调用）\n" +
+				"- 调 tv skill：cyeam tv today，拿到今日重点赛事列表（选用，仅当 date 就是服务运行当天时才允许调用；补历史或排未来的日期不得调用）\n" +
+				"生成规则：\n" +
+				"- 综合以下信号组合成一句话：\n" +
+				"  - holiday 结果（必用）\n" +
+				"  - 天气：只在显著时提（如高温 ≥35℃、雨雪、大风、寒潮、特别舒适），普通天气不提\n" +
+				"  - 赛事：只在有中国队 / 世界杯淘汰赛 / NBA 总决赛这类值得说的场次时提，否则不提\n" +
+				"  - 月周期：月初（1-5号）、月中（14-16号）、月末（≥25号）\n" +
+				"  - 星期特性：周一鼓劲、周三过半、周五收尾\n" +
+				"- 只输出一句话，不要解释，不要分段，不要输出工具调用过程\n" +
+				"- 不要提具体日期，但可以说星期几\n" +
 				"- 自然、真诚、有力\n" +
 				"- 休息日：鼓励放松享受积蓄能量\n" +
-				"- 工作日/调休补班：结合月周期和星期特性生成针对性鼓励：\n" +
+				"- 工作日/调休补班：结合月周期、星期、天气、赛事自然组合：\n" +
 				"  - 周一：新一周开始，打气鼓励\n" +
 				"  - 周三：一周过半，坚持住\n" +
 				"  - 周五：周末就在眼前，期待并站好最后一班岗\n" +
 				"  - 月初：新的一月，设定小目标，开启新篇章\n" +
 				"  - 月中：进度过半，检查完成情况，继续加油\n" +
 				"  - 月末：冲刺收尾，给自己一个漂亮收尾，不留遗憾\n" +
-				"  - 多个维度同时触发时自然组合（如：周一+月初、周五+月末）",
+				"  - 多个维度同时触发时自然组合（如：周一+月初、周五+月末、周三+雨天）",
 			AllowTools: true,
 		}, true
 	case "architect":

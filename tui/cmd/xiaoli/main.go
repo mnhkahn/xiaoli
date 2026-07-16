@@ -187,6 +187,12 @@ type updateCheckDoneMsg struct {
 	info updateInfo
 }
 
+type upgradeRunDoneMsg struct {
+	target string
+	output string
+	err    error
+}
+
 type bashApprovalDoneMsg struct {
 	command   string
 	output    string
@@ -281,6 +287,7 @@ type model struct {
 	gitSyncFeedback             gitSyncFeedback
 	logPath                     string
 	updateInfo                  updateInfo
+	upgradeInProgress           bool
 	contextUsage                *agentruntime.ContextUsage
 	runPulseFrame               int
 	runPulseActive              bool
@@ -1024,7 +1031,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if handled, cmd := m.handleLocalCommandWithCmd(text); handled {
 				m.input.SetValue("")
-				m.status = "idle"
+				if !m.upgradeInProgress {
+					m.status = "idle"
+				}
 				m.refreshContextUsage()
 				m.syncViewport(true)
 				return m, cmd
@@ -1488,6 +1497,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case updateCheckDoneMsg:
 		m.updateInfo = msg.info
+		if !m.upgradeInProgress && shouldAutoUpgrade(msg.info, strings.TrimSpace(os.Getenv(sourceEnvName)) != "") {
+			m.upgradeInProgress = true
+			m.status = "upgrading"
+			m.items = append(m.items, transcriptItem{role: "system", text: fmt.Sprintf("发现新版本 %s，正在自动升级…", msg.info.Latest)})
+			m.syncViewport(false)
+			return m, upgradeReleaseCmd(msg.info.Latest)
+		}
+		m.syncViewport(false)
+		return m, nil
+	case upgradeRunDoneMsg:
+		m.upgradeInProgress = false
+		if msg.err != nil {
+			m.status = "upgrade failed"
+			text := "升级失败：" + msg.err.Error()
+			if output := strings.TrimSpace(msg.output); output != "" {
+				text += "\n" + output
+			}
+			m.items = append(m.items, transcriptItem{role: "error", text: text})
+		} else {
+			m.status = "upgrade complete"
+			m.items = append(m.items, transcriptItem{role: "system", text: fmt.Sprintf("已升级到 %s，请重启 Xiaoli 以使用新版本。", msg.target)})
+		}
 		m.syncViewport(false)
 		return m, nil
 	case runPulseTickMsg:
@@ -2682,7 +2713,7 @@ func upgradeMessage(info updateInfo) string {
 		if strings.TrimSpace(info.ReleaseURL) != "" {
 			lines = append(lines, "Release notes: "+strings.TrimSpace(info.ReleaseURL))
 		}
-		lines = append(lines, "Run: "+info.Command)
+		lines = append(lines, "Run /upgrade to install it now.")
 		return strings.Join(lines, "\n")
 	}
 	current := strings.TrimSpace(info.Current)
@@ -2690,12 +2721,54 @@ func upgradeMessage(info updateInfo) string {
 		current = buildVersion()
 	}
 	if isDevVersion(current) {
-		return "Development build.\nRun: " + upgradeCommand("latest")
+		return "Development build.\nRun /upgrade to install the latest release."
 	}
 	if strings.TrimSpace(info.Latest) != "" {
 		return fmt.Sprintf("Xiaoli TUI %s is up to date.", current)
 	}
-	return "No update information yet.\nRun: " + upgradeCommand("latest")
+	return "No update information yet.\nRun /upgrade to install the latest release."
+}
+
+func shouldAutoUpgrade(info updateInfo, sourceConfigured bool) bool {
+	return !sourceConfigured && info.Available()
+}
+
+type releaseUpgradeDeps struct {
+	LookPath func(string) (string, error)
+	Run      func(context.Context, string, []string) ([]byte, error)
+}
+
+func defaultReleaseUpgradeDeps() releaseUpgradeDeps {
+	return releaseUpgradeDeps{
+		LookPath: exec.LookPath,
+		Run: func(ctx context.Context, bin string, args []string) ([]byte, error) {
+			return exec.CommandContext(ctx, bin, args...).CombinedOutput()
+		},
+	}
+}
+
+func upgradeReleaseCmd(target string) tea.Cmd {
+	return upgradeReleaseCmdWithDeps(target, defaultReleaseUpgradeDeps())
+}
+
+func upgradeReleaseCmdWithDeps(target string, deps releaseUpgradeDeps) tea.Cmd {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		target = "latest"
+	}
+	return func() tea.Msg {
+		goBin, err := deps.LookPath("go")
+		if err != nil {
+			return upgradeRunDoneMsg{target: target, err: fmt.Errorf("找不到 go 命令: %w", err)}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		output, err := deps.Run(ctx, goBin, []string{"install", "github.com/mnhkahn/xiaoli/tui/cmd/xiaoli@" + target})
+		if ctx.Err() != nil && err != nil {
+			err = fmt.Errorf("升级超时: %w", err)
+		}
+		return upgradeRunDoneMsg{target: target, output: string(output), err: err}
+	}
 }
 
 func upgradeCommand(target string) string {
@@ -5021,8 +5094,22 @@ func (m *model) handleLocalCommandWithCmd(text string) (bool, tea.Cmd) {
 		m.items = append(m.items, transcriptItem{role: "system", text: versionInfo()})
 		return true, nil
 	case "/upgrade":
-		m.items = append(m.items, transcriptItem{role: "system", text: upgradeMessage(m.updateInfo)})
-		return true, nil
+		if strings.TrimSpace(os.Getenv(sourceEnvName)) != "" {
+			m.items = append(m.items, transcriptItem{role: "system", text: "当前使用 XIAOLI_SOURCE 源码模式。请更新该源码目录后重启 Xiaoli；/upgrade 不会改变当前运行来源。"})
+			return true, nil
+		}
+		if m.upgradeInProgress {
+			m.items = append(m.items, transcriptItem{role: "system", text: "Xiaoli 正在升级，请等待当前安装完成。"})
+			return true, nil
+		}
+		target := strings.TrimSpace(m.updateInfo.Latest)
+		if target == "" {
+			target = "latest"
+		}
+		m.upgradeInProgress = true
+		m.status = "upgrading"
+		m.items = append(m.items, transcriptItem{role: "system", text: "正在升级 Xiaoli…"})
+		return true, upgradeReleaseCmd(target)
 	case "/cd":
 		if len(args) < 2 {
 			m.items = append(m.items, transcriptItem{role: "error", text: "用法：/cd <path>"})
