@@ -55,15 +55,16 @@ func newDeviceRegistry(path string, now func() time.Time) *DeviceRegistry {
 	if errors.Is(err, os.ErrNotExist) {
 		return r
 	}
-	if err != nil || json.Unmarshal(body, &persistedDevices{}) != nil {
+	if err != nil {
 		return r
 	}
 	var saved persistedDevices
-	if json.Unmarshal(body, &saved) == nil {
-		for _, device := range saved.Devices {
-			if device.DeviceID != "" {
-				r.devices[device.DeviceID] = device
-			}
+	if json.Unmarshal(body, &saved) != nil {
+		return r
+	}
+	for _, device := range saved.Devices {
+		if device.DeviceID != "" {
+			r.devices[device.DeviceID] = device
 		}
 	}
 	return r

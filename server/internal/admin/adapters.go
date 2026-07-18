@@ -157,13 +157,19 @@ type DeviceHub struct {
 	tts          SpeechSynthesizer
 }
 
-func NewDeviceHub(cfg Config, stream *streamHub, audio *audioStore, asr SpeechRecognizer, agent *EinoAgent, vision VisionAnalyzer, tts SpeechSynthesizer) *DeviceHub {
+func NewDeviceHub(cfg Config, registry *DeviceRegistry, stream *streamHub, audio *audioStore, asr SpeechRecognizer, agent *EinoAgent, vision VisionAnalyzer, tts SpeechSynthesizer) *DeviceHub {
 	conversation := &deviceConversationAdapter{}
 	hub := agentesp32.NewHub(agentesp32.HubConfig{
 		PublicBaseURL:     cfg.PublicBaseURL,
 		DeviceAuthKey:     cfg.DeviceAuthKey,
 		AllowedDeviceIDs:  cfg.AllowedDeviceIDs,
 		DeviceAuthEnabled: cfg.DeviceAuthEnabled,
+		DynamicAuthorize: func(deviceID, authorization string) (known, authorized bool) {
+			if registry == nil {
+				return false, false
+			}
+			return registry.Authorize(deviceID, authorization)
+		},
 	}, agentesp32.Dependencies{
 		Stream:                    streamPublisher{stream: stream},
 		ASR:                       asr,

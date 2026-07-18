@@ -33,6 +33,10 @@ func dashboardHTML(user map[string]any) string {
     .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .stack { display: grid; gap: 10px; }
     .device-row { display: grid; gap: 8px; grid-template-columns: auto minmax(260px, 1fr) auto; align-items: center; }
+    .pairing-card { margin-top: 12px; display: none; gap: 12px; grid-template-columns: 180px minmax(0, 1fr); align-items: start; }
+    .pairing-card.visible { display: grid; }
+    .pairing-card img { width: 180px; height: 180px; border: 1px solid #d9dee7; border-radius: 6px; image-rendering: pixelated; }
+    .pairing-card textarea { min-height: 110px; }
     .muted { color: #667085; font-size: 13px; }
     .tabs { display: flex; gap: 6px; border-bottom: 1px solid #d9dee7; margin-bottom: 14px; overflow-x: auto; }
     .tab-button { border-bottom-left-radius: 0; border-bottom-right-radius: 0; margin-bottom: -1px; white-space: nowrap; }
@@ -54,7 +58,7 @@ func dashboardHTML(user map[string]any) string {
     .pill { border-radius: 999px; padding: 2px 8px; font-size: 12px; background: #eef2f6; color: #667085; }
     .pill.ok { background: #dcfae6; color: #067647; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    @media (max-width: 820px) { .tool-grid, .device-row { grid-template-columns: 1fr; } .video-controls select { min-width: auto; width: 100%; } }
+    @media (max-width: 820px) { .tool-grid, .device-row, .pairing-card { grid-template-columns: 1fr; } .video-controls select { min-width: auto; width: 100%; } }
     @media (max-width: 640px) { main { padding: 12px; } section { padding: 10px; } .stream-viewer { min-height: 240px; } pre { min-height: 200px; } .tab-button { font-size: 13px; padding: 6px 8px; } }
   </style>
 </head>
@@ -68,7 +72,11 @@ func dashboardHTML(user map[string]any) string {
       <div class="device-row">
         <label class="muted" for="device">设备列表</label>
         <select id="device"></select>
-        <button id="refresh">刷新</button>
+        <div class="row"><button id="refresh">刷新</button><button id="createPairing" class="primary">添加学习平板</button></div>
+      </div>
+      <div id="pairingCard" class="pairing-card">
+        <img id="pairingQR" alt="学习平板配对二维码">
+        <div class="stack"><strong>用学习平板的“扫描二维码”完成绑定</strong><span id="pairingExpiry" class="muted"></span><textarea id="pairingPayload" readonly aria-label="配对二维码内容"></textarea></div>
       </div>
     </section>
     <section>
@@ -322,6 +330,13 @@ func dashboardHTML(user map[string]any) string {
     }
 
     $("refresh").onclick = () => withBusy($("refresh"), "刷新中...", loadDevices);
+    $("createPairing").onclick = () => withBusy($("createPairing"), "生成中...", async () => {
+      const pairing = await api("/admin/api/device-pairings", { method: "POST" });
+      $("pairingQR").src = pairing.qr_image;
+      $("pairingPayload").value = JSON.stringify(pairing.qr_payload || {}, null, 2);
+      $("pairingExpiry").textContent = "有效至：" + new Date(pairing.expires_at).toLocaleString();
+      $("pairingCard").classList.add("visible");
+    }).catch(err => show(String(err)));
     $("device").onchange = loadTools;
     $("tool").onchange = updateArgsFromTool;
     document.querySelectorAll("[data-tab-target]").forEach((button) => {

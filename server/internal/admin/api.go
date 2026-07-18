@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	agentchannel "github.com/mnhkahn/xiaoli/internal/agent/channel"
@@ -25,6 +26,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 type BridgeClient struct {
@@ -965,6 +968,65 @@ func (s *AdminServer) handleXiaozhiWebSocket(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	s.deviceHub.HandleWebSocket(w, r)
+}
+
+func (s *AdminServer) handleXiaozhiPair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if s.deviceRegistry == nil {
+		http.Error(w, "device pairing is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var request androidPairRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&request); err != nil {
+		http.Error(w, "invalid pairing request", http.StatusBadRequest)
+		return
+	}
+	device, token, err := s.deviceRegistry.Claim(strings.TrimSpace(request.Code), request.DeviceID, request.DeviceName, request.DeviceKind)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	wsURL := strings.TrimRight(s.cfg.PublicBaseURL, "/") + "/xiaozhi/v1/"
+	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+	wsURL = strings.Replace(wsURL, "http://", "ws://", 1)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"device":    map[string]any{"id": device.DeviceID, "name": device.Name, "kind": device.Kind},
+		"websocket": map[string]any{"url": wsURL, "token": token, "version": 1},
+	})
+}
+
+func (s *AdminServer) handleCreateDevicePairing(w http.ResponseWriter, r *http.Request, user map[string]any) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if s.deviceRegistry == nil {
+		http.Error(w, "device pairing is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	code, expiresAt, err := s.deviceRegistry.CreatePairing(strings.TrimSpace(stringValue(user["sub"])))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	pairURL := strings.TrimRight(s.cfg.PublicBaseURL, "/") + "/xiaozhi/pair"
+	qrPayload := map[string]string{"pair_url": pairURL, "code": code}
+	encodedPayload, _ := json.Marshal(qrPayload)
+	png, err := qrcode.Encode(string(encodedPayload), qrcode.Medium, 320)
+	if err != nil {
+		http.Error(w, "generate pairing qr code failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"pair_url":   pairURL,
+		"code":       code,
+		"expires_at": expiresAt,
+		"qr_payload": qrPayload,
+		"qr_image":   "data:image/png;base64," + base64.StdEncoding.EncodeToString(png),
+	})
 }
 
 func (s *AdminServer) handleDeviceAudio(w http.ResponseWriter, r *http.Request) {

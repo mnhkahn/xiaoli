@@ -41,12 +41,10 @@ fly secrets set LOGTO_APP_SECRET=your_logto_app_secret
 fly secrets set STUDY_MONITOR_ENABLED=true LARK_BOT_WEBHOOK_URL=your_lark_webhook LARK_APP_ID=your_lark_app_id LARK_APP_TOKEN=your_lark_app_token
 ```
 
-Server authentication is enabled by default. OTA is left reachable so devices
-can check updates and fetch the current WebSocket URL. `ALLOWED_DEVICE_IDS` is
-used by the Nginx edge gate for WebSocket and vision requests; it is not
-rendered into the upstream `server.auth.allowed_devices` list, because that
-upstream list bypasses token verification. Keep `SERVER_AUTH_KEY` as a Fly
-secret and rotate it if it is ever exposed.
+Server authentication is enabled by default. OTA is left reachable so legacy
+ESP32 devices can check updates and fetch the current WebSocket URL.
+`ALLOWED_DEVICE_IDS` is only the legacy ESP32 allowlist; keep
+`SERVER_AUTH_KEY` as a Fly secret and rotate it if it is ever exposed.
 
 The admin console and device protocol are implemented in Go. Logto is the only
 login path. Configure Logto with callback URL:
@@ -62,6 +60,19 @@ https://xiaoli-server.fly.dev/admin
 ```
 
 Rotate the Logto app secret if it is ever exposed.
+
+## Android 平板扫码配对
+
+已登录 Logto 的管理员可创建一次性配对码：
+
+```bash
+curl -X POST --cookie "xiaoli_admin_session=..." \
+  https://xiaoli-server.fly.dev/admin/api/device-pairings
+```
+
+响应中的 `qr_payload`（`pair_url` 与 5 分钟有效的 `code`）直接编码为二维码；管理台的“添加学习平板”按钮会显示本地生成的 `qr_image`。Android 应用扫描后向 `pair_url` 提交 `code`、`device_id`、`device_name` 和 `device_kind=android`；服务端返回专属 WebSocket URL 和设备 token。
+
+Android 设备凭证以 token 哈希持久化到 `/data/paired_devices.json`，并关联到创建配对码的 Logto `sub`。它们不需要加入 `ALLOWED_DEVICE_IDS`，且不会使用 ESP32 的全局 `SERVER_AUTH_KEY`。现有 ESP32 保持原有静态白名单和全局 token 流程不变。
 
 Continuous deployment is handled by `.github/workflows/fly-deploy.yml`: a push
 to `main` that changes server files builds and deploys the service. The
@@ -102,6 +113,7 @@ Important environment variables:
 - `PUBLIC_BASE_URL`: public HTTPS base URL, for example `https://xiaoli-server.fly.dev`
 - `ENABLE_SERVER_AUTH`: default `true`; OTA issues WebSocket tokens and the WebSocket server verifies them
 - `ALLOWED_DEVICE_IDS`: comma-separated device IDs allowed through Nginx for WebSocket and vision requests
+- Android devices created through `/admin/api/device-pairings` are dynamically authorized and do not belong in `ALLOWED_DEVICE_IDS`
 - `SERVER_AUTH_KEY`: signing key for WebSocket and vision tokens; set as a secret
 - `SERVER_AUTH_ALLOWED_DEVICE_IDS`: optional upstream bypass list; normally leave empty so token verification is not bypassed
 - `XIAOLI_ADMIN_ENABLED`: enables the admin console when `true`

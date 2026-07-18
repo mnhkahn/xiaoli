@@ -20,6 +20,7 @@ require (
 	github.com/eino-contrib/jsonschema v1.0.3 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/redis/go-redis/v9 v9.7.0 // indirect
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
 	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

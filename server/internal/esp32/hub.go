@@ -40,6 +40,9 @@ type HubConfig struct {
 	DeviceAuthKey     string
 	AllowedDeviceIDs  []string
 	DeviceAuthEnabled bool
+	// DynamicAuthorize handles paired devices. It returns known=false for
+	// legacy devices, which continue through the static policy above.
+	DynamicAuthorize func(deviceID, authorization string) (known, authorized bool)
 }
 
 type StreamEvent struct {
@@ -131,13 +134,32 @@ func (h *Hub) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing Device-Id", http.StatusBadRequest)
 		return
 	}
-	if !h.deviceAllowed(deviceID) {
-		http.Error(w, "device is not allowed", http.StatusForbidden)
-		return
-	}
-	if !h.deviceAuthorized(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+	if h.cfg.DynamicAuthorize != nil {
+		known, authorized := h.cfg.DynamicAuthorize(deviceID, r.Header.Get("Authorization"))
+		if known {
+			if !authorized {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		} else {
+			if !h.deviceAllowed(deviceID) {
+				http.Error(w, "device is not allowed", http.StatusForbidden)
+				return
+			}
+			if !h.deviceAuthorized(r) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+	} else {
+		if !h.deviceAllowed(deviceID) {
+			http.Error(w, "device is not allowed", http.StatusForbidden)
+			return
+		}
+		if !h.deviceAuthorized(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 	}
 	peer, err := esp32ws.Accept(w, r)
 	if err != nil {

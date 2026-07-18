@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -61,6 +62,7 @@ type AdminServer struct {
 	stream            *streamHub
 	audioStore        *audioStore
 	deviceHub         *DeviceHub
+	deviceRegistry    *DeviceRegistry
 	conversation      *ConversationPipeline
 	memory            memoryReader
 	agent             *EinoAgent
@@ -93,6 +95,13 @@ type imageRecord struct {
 	CreatedAt   time.Time
 }
 
+type androidPairRequest struct {
+	Code       string `json:"code"`
+	DeviceID   string `json:"device_id"`
+	DeviceName string `json:"device_name"`
+	DeviceKind string `json:"device_kind"`
+}
+
 type oidcConfig struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
@@ -122,7 +131,8 @@ func NewServer(cfg Config) *AdminServer {
 	vision := newGoVisionClient(cfg)
 	recentImages := agentmedia.NewRecentImageStore(cfg.now)
 	tts := newHTTPSpeechSynthesizer(cfg, nil)
-	deviceHub := NewDeviceHub(cfg, stream, audioStore, asr, agent, vision, tts)
+	deviceRegistry := newDeviceRegistry(filepath.Join(cfg.DataDir, "paired_devices.json"), cfg.now)
+	deviceHub := NewDeviceHub(cfg, deviceRegistry, stream, audioStore, asr, agent, vision, tts)
 	if agent != nil {
 		agent.SetDeviceTools(deviceHub)
 		agent.SetVisionTools(vision, recentImages)
@@ -180,6 +190,7 @@ func NewServer(cfg Config) *AdminServer {
 		audioStore:        audioStore,
 		agent:             agent,
 		deviceHub:         deviceHub,
+		deviceRegistry:    deviceRegistry,
 		conversation:      conversation,
 		memory:            memory,
 		images:            map[string]imageRecord{},
@@ -251,6 +262,8 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleHealth(w, r)
 	case r.URL.Path == "/xiaozhi/ota/" || r.URL.Path == "/xiaozhi/ota":
 		s.handleXiaozhiOTA(w, r)
+	case r.URL.Path == "/xiaozhi/pair":
+		s.handleXiaozhiPair(w, r)
 	case r.URL.Path == "/xiaozhi/v1/" || r.URL.Path == "/xiaozhi/v1":
 		s.handleXiaozhiWebSocket(w, r)
 	case r.URL.Path == "/lark/events":
@@ -279,6 +292,8 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.withUser(w, r, s.handleChannels)
 	case r.URL.Path == "/admin/api/devices":
 		s.withUser(w, r, s.handleDevices)
+	case r.URL.Path == "/admin/api/device-pairings":
+		s.withUser(w, r, s.handleCreateDevicePairing)
 	case r.URL.Path == "/admin/api/tools":
 		s.withUser(w, r, s.handleTools)
 	case r.URL.Path == "/admin/api/call":
@@ -535,11 +550,22 @@ func (s *AdminServer) handleDevices(w http.ResponseWriter, r *http.Request, user
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"devices": devices})
+	visible := make([]Device, 0, len(devices))
+	for _, device := range devices {
+		if s.userCanAccessDevice(user, device.DeviceID) {
+			visible = append(visible, device)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"devices": visible})
 }
 
 func (s *AdminServer) handleTools(w http.ResponseWriter, r *http.Request, user map[string]any) {
-	result, err := s.deviceController().Tools(r.Context(), r.URL.Query().Get("device_id"))
+	deviceID := r.URL.Query().Get("device_id")
+	if deviceID != "" && !s.userCanAccessDevice(user, deviceID) {
+		http.Error(w, "device not found", http.StatusNotFound)
+		return
+	}
+	result, err := s.deviceController().Tools(r.Context(), deviceID)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
@@ -588,6 +614,10 @@ func (s *AdminServer) handleCall(w http.ResponseWriter, r *http.Request, user ma
 		http.Error(w, "device_id and tool are required", http.StatusBadRequest)
 		return
 	}
+	if !s.userCanAccessDevice(user, request.DeviceID) {
+		http.Error(w, "device not found", http.StatusNotFound)
+		return
+	}
 	request.Timeout = normalizeMCPTimeout(request.Tool, request.Timeout)
 	started := s.cfg.now()
 	result, err := s.deviceController().Call(r.Context(), request)
@@ -604,6 +634,14 @@ func (s *AdminServer) handleCall(w http.ResponseWriter, r *http.Request, user ma
 		"elapsed_ms": result.ElapsedMS,
 		"preview":    preview,
 	})
+}
+
+func (s *AdminServer) userCanAccessDevice(user map[string]any, deviceID string) bool {
+	if s.deviceRegistry == nil || !s.deviceRegistry.IsKnown(deviceID) {
+		// Existing ESP32 deployments are single-user and stay compatible.
+		return true
+	}
+	return s.deviceRegistry.Owns(strings.TrimSpace(stringValue(user["sub"])), deviceID)
 }
 
 func (s *AdminServer) handleSchedules(w http.ResponseWriter, r *http.Request, user map[string]any) {
