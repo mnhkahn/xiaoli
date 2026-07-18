@@ -118,8 +118,11 @@ func (p *a2aPipeline) runGeekNews(ctx context.Context, turn a2a.ConversationTurn
 	if err != nil {
 		return "", err
 	}
-	news := p.processGeekNewsItems(ctx, turn, profile, "news", batch.News)
-	aiNews := p.processGeekNewsItems(ctx, turn, profile, "ai_news", batch.AINews)
+	// Keep the two tabs independent, while applying the same ranking policy to
+	// each one. This preserves their product-level grouping without inheriting
+	// the upstream CLI's arbitrary source order.
+	news := p.rankGeekNewsItems(ctx, turn, profile, p.processGeekNewsItems(ctx, turn, profile, "news", batch.News))
+	aiNews := p.rankGeekNewsItems(ctx, turn, profile, p.processGeekNewsItems(ctx, turn, profile, "ai_news", batch.AINews))
 	result := geekNewsReply{
 		CreateTime: batch.CreateTime,
 		Summary:    fmt.Sprintf("%s 科技新闻：技术动向 %d 条，AI 资讯 %d 条。", date, len(news), len(aiNews)),

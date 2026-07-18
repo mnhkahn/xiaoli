@@ -177,17 +177,46 @@ func TestA2APipelineBuildsGeekNewsDeterministicallyFromCLIItems(t *testing.T) {
 		t.Fatalf("Unmarshal(reply) error = %v", err)
 	}
 	if len(got.News) != 5 || len(got.AINews) != 5 || got.News[0].Link != items[0].Link {
-		t.Fatalf("news = %#v ai_news = %#v, want all source items in source order", got.News, got.AINews)
+		t.Fatalf("news = %#v ai_news = %#v, want all source items when ranking falls back", got.News, got.AINews)
 	}
+	rankCalls := 0
 	for _, request := range agent.profileRequests {
 		if request.Name == "geek-news-title" || request.Name == "geek-news-description" {
 			if request.MaxSteps != 2 {
 				t.Fatalf("%s MaxSteps = %d, want 2 for structured output", request.Name, request.MaxSteps)
 			}
 		}
+		if request.Name == "geek-news-rank" {
+			rankCalls++
+		}
+	}
+	if rankCalls != 2 {
+		t.Fatalf("rank calls = %d, want one ranking request per news group", rankCalls)
 	}
 	if got.News[0].Image != items[0].Image || got.News[0].CreateTime != items[0].CreateTime || got.News[0].SourceTitle != items[0].Title {
 		t.Fatalf("item metadata changed: %#v", got.News[0])
+	}
+}
+
+func TestA2APipelineRanksNewsGroupsIndependently(t *testing.T) {
+	news := fiveSourceNews()
+	aiNews := fiveSourceNews()
+	for i := range aiNews {
+		aiNews[i].Link = "https://example.com/ai/" + strconv.Itoa(i)
+	}
+	agent := &fakeA2AAgent{structuredArguments: `{"ids":["n1","n0","n2","n3","n4"]}`}
+	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{News: news, AINews: aiNews}})
+
+	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:rank-test", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	var got geekNewsReply
+	if err := json.Unmarshal([]byte(reply.Text), &got); err != nil {
+		t.Fatalf("Unmarshal(reply) error = %v", err)
+	}
+	if got.News[0].Link != news[1].Link || got.AINews[0].Link != aiNews[1].Link {
+		t.Fatalf("news groups were not ranked independently: news=%q ai_news=%q", got.News[0].Link, got.AINews[0].Link)
 	}
 }
 
