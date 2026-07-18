@@ -3595,7 +3595,7 @@ func TestWelcomeBannerIncludesVersionCommandsAndFullWidthLogo(t *testing.T) {
 	version = "v1.2.3"
 	defer func() { version = old }()
 	got := stripTestANSI(renderWelcomeBanner(model{cwd: "/tmp/repo", gitStatus: "main ✓", sessionID: "abc"}, 100))
-	for _, want := range []string{"Xiaoli TUI", "v1.2.3", "Getting started", "/cd <path>", "Ctrl+S", "git sync"} {
+	for _, want := range []string{"Xiaoli TUI", "v1.2.3", "bin:", "built:", "Getting started", "/cd <path>", "Ctrl+S", "git sync"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("renderWelcomeBanner() = %q, want %q", got, want)
 		}
@@ -3607,6 +3607,17 @@ func TestWelcomeBannerIncludesVersionCommandsAndFullWidthLogo(t *testing.T) {
 	}
 	if !strings.Contains(got, "│") {
 		t.Fatalf("renderWelcomeBanner() = %q, want compact split layout", got)
+	}
+}
+
+func TestFormatBinaryDetailsKeepsBuildTimeAndFitsWidth(t *testing.T) {
+	builtAt := time.Date(2026, time.July, 18, 19, 1, 13, 0, time.FixedZone("CST", 8*60*60))
+	got := formatBinaryDetails("/Users/test/Library/Caches/xiaoli/source-build/xiaoli", builtAt, 72)
+	if !strings.Contains(got, "bin:") || !strings.Contains(got, "built: 2026-07-18 19:01:13") {
+		t.Fatalf("formatBinaryDetails() = %q, want path label and build time", got)
+	}
+	if width := lipgloss.Width(got); width > 72 {
+		t.Fatalf("formatBinaryDetails width = %d, want <= 72: %q", width, got)
 	}
 }
 

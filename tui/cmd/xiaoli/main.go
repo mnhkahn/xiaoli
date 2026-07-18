@@ -2527,8 +2527,9 @@ func renderWelcomeBanner(m model, width int) string {
 	if strings.TrimSpace(m.sessionID) != "" {
 		session = "resumed " + shortID(m.sessionID)
 	}
+	versionTitle := "Xiaoli TUI " + buildVersion()
 	header := []string{
-		titleStyle.Render("Xiaoli TUI " + buildVersion()),
+		titleStyle.Render(fitDisplay(versionTitle+runningBinaryDetails(bodyWidth-lipgloss.Width(versionTitle)), bodyWidth)),
 		"",
 	}
 	header = append(header, compactLogoLines(bodyWidth)...)
@@ -2690,6 +2691,37 @@ func fitLines(lines []string, width int) string {
 
 func versionInfo() string {
 	return "Xiaoli TUI " + buildVersion()
+}
+
+// runningBinaryDetails identifies the program that is rendering this screen.
+// In source mode this is the cache binary launched by the bootstrapper, which
+// makes it clear whether the newest source build is actually running.
+func runningBinaryDetails(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	path, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	return formatBinaryDetails(path, info.ModTime(), width)
+}
+
+func formatBinaryDetails(path string, builtAt time.Time, width int) string {
+	const prefix = " · bin: "
+	if width <= lipgloss.Width(prefix) {
+		return ""
+	}
+	built := " · built: " + builtAt.Local().Format("2006-01-02 15:04:05")
+	pathWidth := width - lipgloss.Width(prefix+built)
+	if pathWidth < 12 {
+		return truncateDisplay(prefix+compactPath(path, max(1, width-lipgloss.Width(prefix))), width)
+	}
+	return prefix + compactPath(path, pathWidth) + built
 }
 
 func newUpdateInfo(current, latest string, checkedAt time.Time) updateInfo {

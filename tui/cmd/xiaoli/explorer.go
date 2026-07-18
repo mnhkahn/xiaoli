@@ -62,7 +62,7 @@ func newTreeExplorer(cwd string, width, height int) *tuiExplorer {
 		width:     width,
 		height:    height,
 		expanded:  map[string]bool{"": true},
-		leftWidth: explorerLeftWidth(width),
+		leftWidth: explorerLeftWidth(max(1, width-1)),
 	}
 	ex.reloadTree()
 	ex.selectFirstFile()
@@ -75,7 +75,7 @@ func newDiffExplorer(cwd string, width, height int) *tuiExplorer {
 		cwd:       cwd,
 		width:     width,
 		height:    height,
-		leftWidth: explorerLeftWidth(width),
+		leftWidth: explorerLeftWidth(max(1, width-1)),
 	}
 	ex.reloadDiff()
 	ex.refreshPreview()
@@ -88,7 +88,7 @@ func (e *tuiExplorer) resize(width, height int) {
 	}
 	e.width = width
 	e.height = height
-	e.leftWidth = explorerLeftWidth(width)
+	e.leftWidth = explorerLeftWidth(e.renderWidth())
 }
 
 func (e *tuiExplorer) handleKey(msg tea.KeyMsg) (*tuiExplorer, tea.Cmd, bool) {
@@ -327,9 +327,9 @@ func (e *tuiExplorer) handlePreviewSelectionMouse(msg tea.MouseMsg) bool {
 }
 
 func (e *tuiExplorer) previewMousePoint(msg tea.MouseMsg) (selectionPoint, bool) {
-	rightTotalWidth := max(20, e.width-e.leftWidth)
+	rightTotalWidth := max(20, e.renderWidth()-e.leftWidth)
 	rightContentWidth := max(12, rightTotalWidth-boxStyle.GetHorizontalFrameSize())
-	previewHeight := max(0, explorerBodyHeight(e.height)-1)
+	previewHeight := max(0, explorerBodyHeight(e.renderHeight())-1)
 	x := msg.X - e.leftWidth - 2
 	y := msg.Y - explorerPreviewMouseTop
 	point := selectionPoint{x: x, y: e.rightScroll + y}
@@ -361,8 +361,14 @@ func (e *tuiExplorer) View() string {
 	if e == nil {
 		return ""
 	}
-	width := max(40, e.width)
-	height := max(10, e.height)
+	// Leave the terminal's final column unused. Otty applies VT auto-wrap to
+	// output that lands there; during a diff redraw that pending wrap can shift
+	// the whole alternate screen up one row.
+	width := e.renderWidth()
+	// Otty scrolls the alternate screen when a redraw touches its final row.
+	// Keep one vertical safety row, so keyboard navigation can never advance
+	// the whole explorer frame up the terminal.
+	height := e.renderHeight()
 	e.leftWidth = explorerLeftWidth(width)
 	frameW := boxStyle.GetHorizontalFrameSize()
 	leftContentWidth := max(12, e.leftWidth-frameW)
@@ -404,7 +410,23 @@ func (e *tuiExplorer) View() string {
 	if e.err != "" {
 		footer = eventStyle.Render(truncateDisplay(e.err, width))
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, fitDisplay(header, width), body, fitDisplay(help, width), footer)
+	view := lipgloss.JoinVertical(lipgloss.Left, fitDisplay(header, width), body, fitDisplay(help, width), footer)
+	// Bubble Tea discards lines from the *top* when a View is taller than the
+	// reported terminal. Some Lipgloss combinations can grow a row after the
+	// pane geometry has been calculated, so enforce the final budget here and
+	// sacrifice only bottom chrome if necessary.
+	return limitExplorerViewHeight(view, height)
+}
+
+func limitExplorerViewHeight(view string, height int) string {
+	if height <= 0 || view == "" {
+		return ""
+	}
+	lines := strings.Split(view, "\n")
+	if len(lines) <= height {
+		return view
+	}
+	return strings.Join(lines[:height], "\n")
 }
 
 func (e *tuiExplorer) renderLeft(width, height int) string {
@@ -412,10 +434,19 @@ func (e *tuiExplorer) renderLeft(width, height int) string {
 	if e.mode == explorerDiff {
 		title = "Changed Files"
 	}
-	lines := []string{titleStyle.Render(title)}
+	// Keep the pane chrome outside the scrollable list.  In particular, the
+	// Changed Files label must not be part of the slice selected by leftScroll:
+	// moving through a large diff should only move file rows beneath it.
+	listHeight := max(0, height-1)
+	showScrollBar := len(e.entries) > listHeight && width > 1
+	contentWidth := width
+	if showScrollBar {
+		contentWidth--
+	}
+	lines := []string{titleStyle.Render(fitDisplay(title, contentWidth))}
 	visible := e.entries
 	start := clamp(e.leftScroll, 0, len(visible))
-	end := min(len(visible), start+max(0, height-1))
+	end := min(len(visible), start+listHeight)
 	for i := start; i < end; i++ {
 		entry := visible[i]
 		prefix := "  "
@@ -425,7 +456,7 @@ func (e *tuiExplorer) renderLeft(width, height int) string {
 			style = explorerSelectedStyle()
 		}
 		line := prefix + e.entryLabel(entry)
-		lines = append(lines, style.Render(fitDisplay(line, width)))
+		lines = append(lines, style.Render(fitDisplay(line, contentWidth)))
 	}
 	for len(lines) < height {
 		lines = append(lines, "")
@@ -433,7 +464,48 @@ func (e *tuiExplorer) renderLeft(width, height int) string {
 	if len(lines) > height {
 		lines = lines[:height]
 	}
+	if !showScrollBar {
+		return strings.Join(lines, "\n")
+	}
+
+	// The scrollbar is rendered beside, rather than inside, the file rows so
+	// long paths can never wrap and push the explorer box down the terminal.
+	for row := range lines {
+		marker := " "
+		if row > 0 {
+			marker = e.leftScrollBarMarker(row-1, listHeight)
+		}
+		lines[row] += marker
+	}
 	return strings.Join(lines, "\n")
+}
+
+func (e *tuiExplorer) renderWidth() int {
+	if e == nil {
+		return 1
+	}
+	return max(1, e.width-1)
+}
+
+func (e *tuiExplorer) renderHeight() int {
+	if e == nil {
+		return 1
+	}
+	return max(1, e.height-1)
+}
+
+func (e *tuiExplorer) leftScrollBarMarker(row, viewportHeight int) string {
+	if viewportHeight <= 0 || len(e.entries) <= viewportHeight {
+		return " "
+	}
+	thumbHeight := max(1, (viewportHeight*viewportHeight)/len(e.entries))
+	thumbHeight = min(viewportHeight, thumbHeight)
+	maxScroll := max(1, len(e.entries)-viewportHeight)
+	thumbStart := ((viewportHeight - thumbHeight) * clamp(e.leftScroll, 0, maxScroll)) / maxScroll
+	if row >= thumbStart && row < thumbStart+thumbHeight {
+		return "█"
+	}
+	return "│"
 }
 
 func explorerSelectedStyle() lipgloss.Style {
@@ -735,11 +807,11 @@ func (e *tuiExplorer) ensureSelectionVisible() {
 }
 
 func (e *tuiExplorer) listHeight() int {
-	return max(1, explorerBodyHeight(e.height)-1)
+	return max(1, explorerBodyHeight(e.renderHeight())-1)
 }
 
 func (e *tuiExplorer) previewHeight() int {
-	return max(1, explorerBodyHeight(e.height)-1)
+	return max(1, explorerBodyHeight(e.renderHeight())-1)
 }
 
 func explorerBodyHeight(height int) int {

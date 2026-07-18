@@ -57,8 +57,8 @@ func TestExplorerFitsTerminalHeightAndKeepsPaneHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	ex := newTreeExplorer(dir, 100, 10)
-	if view := ex.View(); lipgloss.Height(view) != 10 {
-		t.Fatalf("tree explorer height = %d, want 10:\n%s", lipgloss.Height(view), stripTestANSI(view))
+	if view := ex.View(); lipgloss.Height(view) != 9 {
+		t.Fatalf("tree explorer height = %d, want 9:\n%s", lipgloss.Height(view), stripTestANSI(view))
 	}
 
 	diff := &tuiExplorer{
@@ -71,11 +71,119 @@ func TestExplorerFitsTerminalHeightAndKeepsPaneHeaders(t *testing.T) {
 		preview:     strings.Repeat("diff line\n", 40),
 	}
 	plain := stripTestANSI(diff.View())
-	if view := diff.View(); lipgloss.Height(view) != 10 {
-		t.Fatalf("diff explorer height = %d, want 10:\n%s", lipgloss.Height(view), stripTestANSI(view))
+	if view := diff.View(); lipgloss.Height(view) != 9 {
+		t.Fatalf("diff explorer height = %d, want 9:\n%s", lipgloss.Height(view), stripTestANSI(view))
 	}
 	if !strings.Contains(plain, "Changed Files") || !strings.Contains(plain, "Diff · controllers/homework_controller.go") {
 		t.Fatalf("diff explorer omitted persistent headers:\n%s", plain)
+	}
+}
+
+func TestExplorerNeverExceedsShortTerminalHeight(t *testing.T) {
+	ex := &tuiExplorer{
+		mode:      explorerDiff,
+		width:     100,
+		height:    7,
+		leftWidth: explorerLeftWidth(100),
+		entries:   []explorerEntry{{Path: "main.go", Status: " M"}},
+		preview:   strings.Repeat("diff line\n", 20),
+	}
+
+	view := ex.View()
+	if got, want := lipgloss.Height(view), 6; got != want {
+		t.Fatalf("short explorer height = %d, want %d:\n%s", got, want, stripTestANSI(view))
+	}
+	plain := stripTestANSI(view)
+	if !strings.Contains(plain, "Changed Files") {
+		t.Fatalf("short explorer omitted left header:\n%s", plain)
+	}
+}
+
+func TestDiffExplorerLeavesTerminalLastColumnUnused(t *testing.T) {
+	ex := &tuiExplorer{
+		mode:        explorerDiff,
+		width:       138,
+		height:      48,
+		leftWidth:   explorerLeftWidth(137),
+		entries:     []explorerEntry{{Path: "tui/cmd/xiaoli/explorer.go", Status: " M"}},
+		previewPath: "tui/cmd/xiaoli/explorer.go",
+		preview:     strings.Repeat("diff line\n", 60),
+	}
+
+	for _, line := range strings.Split(ex.View(), "\n") {
+		if got, want := lipgloss.Width(line), 137; got > want {
+			t.Fatalf("diff line width = %d, want <= %d: %q", got, want, stripTestANSI(line))
+		}
+	}
+	if got, want := lipgloss.Height(ex.View()), 47; got != want {
+		t.Fatalf("diff view height = %d, want %d to preserve Otty safety row", got, want)
+	}
+}
+
+func TestDiffExplorerKeepsHeadersAcrossFileSelection(t *testing.T) {
+	ex := &tuiExplorer{
+		mode:      explorerDiff,
+		width:     138,
+		height:    48,
+		leftWidth: explorerLeftWidth(137),
+		entries: []explorerEntry{
+			{Path: "tui/cmd/xiaoli/explorer.go", Status: " M"},
+			{Path: "tui/cmd/xiaoli/explorer_test.go", Status: " M"},
+			{Path: "tui/cmd/xiaoli/main.go", Status: " M"},
+			{Path: "tui/cmd/xiaoli/main_test.go", Status: " M"},
+		},
+		preview: strings.Repeat("diff line\n", 80),
+	}
+
+	for i := range ex.entries {
+		ex.selected = i
+		ex.previewPath = ex.entries[i].Path
+		ex.ensureSelectionVisible()
+		view := ex.View()
+		plain := stripTestANSI(view)
+		if got, want := lipgloss.Height(view), 47; got > want {
+			t.Fatalf("selection %d view height = %d, want <= %d", i, got, want)
+		}
+		if !strings.Contains(plain, "Xiaoli /diff") || !strings.Contains(plain, "Changed Files") {
+			t.Fatalf("selection %d dropped fixed headers:\n%s", i, plain)
+		}
+	}
+}
+
+func TestLimitExplorerViewHeightDropsOnlyBottomLines(t *testing.T) {
+	got := limitExplorerViewHeight("header\nbody\nhelp\nfooter", 2)
+	if want := "header\nbody"; got != want {
+		t.Fatalf("limitExplorerViewHeight() = %q, want %q", got, want)
+	}
+}
+
+func TestDiffExplorerScrollsOnlyFileRows(t *testing.T) {
+	entries := make([]explorerEntry, 40)
+	for i := range entries {
+		entries[i] = explorerEntry{Path: "internal/very-long-package-name/file-" + strings.Repeat("x", 32) + ".go", Status: " M"}
+	}
+	ex := &tuiExplorer{
+		mode:      explorerDiff,
+		width:     80,
+		height:    12,
+		leftWidth: explorerLeftWidth(80),
+		entries:   entries,
+	}
+
+	for range entries {
+		ex.moveSelection(1)
+	}
+	view := ex.renderLeft(32, ex.listHeight()+1)
+	plain := stripTestANSI(view)
+	lines := strings.Split(plain, "\n")
+	if !strings.Contains(lines[0], "Changed Files") {
+		t.Fatalf("header scrolled out of pane:\n%s", plain)
+	}
+	if !strings.Contains(plain, "█") || !strings.Contains(plain, "│") {
+		t.Fatalf("long file list omitted its internal scrollbar:\n%s", plain)
+	}
+	if got, want := lipgloss.Height(view), ex.listHeight()+1; got != want {
+		t.Fatalf("left pane height = %d, want %d:\n%s", got, want, plain)
 	}
 }
 
