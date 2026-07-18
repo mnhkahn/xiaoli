@@ -220,15 +220,18 @@ type pendingToolConfirmQueueItem struct {
 }
 
 type gitSyncState struct {
-	Branch string
-	Ahead  int
-	Behind int
-	Dirty  int
-	Valid  bool
+	Branch        string
+	Ahead         int
+	Behind        int
+	Dirty         int
+	HasUpstream   bool
+	Unborn        bool
+	PublishRemote string
+	Valid         bool
 }
 
 func (s gitSyncState) Actionable() bool {
-	return s.Valid && (s.Ahead > 0 || s.Behind > 0)
+	return s.Valid && (s.Ahead > 0 || s.Behind > 0 || s.PublishRemote != "")
 }
 
 type gitSyncFeedback struct {
@@ -6094,7 +6097,13 @@ func gitSyncStateForCWD(cwd string) gitSyncState {
 	if err != nil {
 		return gitSyncState{Branch: "no git"}
 	}
-	return parseGitSyncState(out)
+	state := parseGitSyncState(out)
+	if state.Valid && !state.Unborn && !state.HasUpstream && state.Branch != "detached" {
+		if _, err := runGit(cwd, "remote", "get-url", "--push", "origin"); err == nil {
+			state.PublishRemote = "origin"
+		}
+	}
+	return state
 }
 
 func parseGitSyncSummary(out string) string {
@@ -6108,6 +6117,10 @@ func parseGitSyncState(out string) gitSyncState {
 	}
 	head := strings.TrimSpace(strings.TrimPrefix(lines[0], "## "))
 	branch := head
+	unborn := strings.HasPrefix(branch, "No commits yet on ")
+	if unborn {
+		branch = strings.TrimSpace(strings.TrimPrefix(branch, "No commits yet on "))
+	}
 	if idx := strings.Index(branch, "..."); idx >= 0 {
 		branch = branch[:idx]
 	}
@@ -6122,7 +6135,15 @@ func parseGitSyncState(out string) gitSyncState {
 			dirty++
 		}
 	}
-	return gitSyncState{Branch: branch, Ahead: ahead, Behind: behind, Dirty: dirty, Valid: true}
+	return gitSyncState{
+		Branch:      branch,
+		Ahead:       ahead,
+		Behind:      behind,
+		Dirty:       dirty,
+		HasUpstream: strings.Contains(head, "..."),
+		Unborn:      unborn,
+		Valid:       true,
+	}
 }
 
 func (s gitSyncState) Format() string {
@@ -6204,6 +6225,8 @@ func gitSyncAction(state gitSyncState) (string, []string) {
 		return "pull", []string{"pull", "--ff-only"}
 	case state.Ahead > 0:
 		return "push", []string{"push"}
+	case strings.TrimSpace(state.PublishRemote) != "":
+		return "publish", []string{"push", "--set-upstream", state.PublishRemote, "HEAD"}
 	default:
 		return "", nil
 	}

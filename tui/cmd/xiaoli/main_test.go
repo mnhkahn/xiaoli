@@ -325,12 +325,20 @@ func TestParseGitSyncSummary(t *testing.T) {
 
 func TestParseGitSyncState(t *testing.T) {
 	state := parseGitSyncState("## main...origin/main [ahead 2]\n")
-	if state.Branch != "main" || state.Ahead != 2 || state.Behind != 0 || !state.Actionable() {
+	if state.Branch != "main" || state.Ahead != 2 || state.Behind != 0 || !state.HasUpstream || !state.Actionable() {
 		t.Fatalf("parseGitSyncState(ahead) = %#v", state)
 	}
 	state = parseGitSyncState("## main...origin/main [behind 1]\n M a.go\n")
-	if state.Branch != "main" || state.Ahead != 0 || state.Behind != 1 || state.Dirty != 1 {
+	if state.Branch != "main" || state.Ahead != 0 || state.Behind != 1 || state.Dirty != 1 || !state.HasUpstream {
 		t.Fatalf("parseGitSyncState(behind) = %#v", state)
+	}
+	state = parseGitSyncState("## feature/publish\n")
+	if state.Branch != "feature/publish" || state.HasUpstream || state.Actionable() {
+		t.Fatalf("parseGitSyncState(new branch) = %#v", state)
+	}
+	state = parseGitSyncState("## No commits yet on feature/empty\n")
+	if state.Branch != "feature/empty" || !state.Unborn || state.Actionable() {
+		t.Fatalf("parseGitSyncState(unborn branch) = %#v", state)
 	}
 }
 
@@ -346,6 +354,55 @@ func TestGitSyncAction(t *testing.T) {
 	action, args = gitSyncAction(gitSyncState{Ahead: 1, Behind: 1})
 	if action != "pull" || strings.Join(args, " ") != "pull --rebase" {
 		t.Fatalf("gitSyncAction(diverged) = %q %#v", action, args)
+	}
+	action, args = gitSyncAction(gitSyncState{PublishRemote: "origin"})
+	if action != "publish" || strings.Join(args, " ") != "push --set-upstream origin HEAD" {
+		t.Fatalf("gitSyncAction(publish) = %q %#v", action, args)
+	}
+}
+
+func TestGitSyncStateForCWDOffersPublishForNewBranchWithOrigin(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runGit(dir, "init", "--initial-branch=feature/publish"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(dir, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(dir, "remote", "add", "origin", "https://example.invalid/repo.git"); err != nil {
+		t.Fatal(err)
+	}
+	state := gitSyncStateForCWD(dir)
+	if state.Branch != "feature/publish" || state.HasUpstream || state.PublishRemote != "origin" || !state.Actionable() {
+		t.Fatalf("gitSyncStateForCWD() = %#v", state)
+	}
+}
+
+func TestGitSyncStateForCWDDoesNotOfferPublishWithoutOrigin(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runGit(dir, "init", "--initial-branch=feature/no-remote"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(dir, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial"); err != nil {
+		t.Fatal(err)
+	}
+	state := gitSyncStateForCWD(dir)
+	if state.Branch != "feature/no-remote" || state.PublishRemote != "" || state.Actionable() {
+		t.Fatalf("gitSyncStateForCWD() = %#v", state)
+	}
+}
+
+func TestGitSyncStateForCWDDoesNotOfferPublishForUnbornBranch(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := runGit(dir, "init", "--initial-branch=feature/empty"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(dir, "remote", "add", "origin", "https://example.invalid/repo.git"); err != nil {
+		t.Fatal(err)
+	}
+	state := gitSyncStateForCWD(dir)
+	if state.Branch != "feature/empty" || !state.Unborn || state.PublishRemote != "" || state.Actionable() {
+		t.Fatalf("gitSyncStateForCWD() = %#v", state)
 	}
 }
 
