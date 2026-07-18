@@ -84,8 +84,10 @@ arguments, or falls back to `git add .`.
 
 The TUI handles mouse wheel scrolling inside the transcript. Drag over visible
 transcript text to select it; releasing the mouse copies the selected text to
-the clipboard, and `Esc` clears the selection. Press `Ctrl+T` (`⌃T`) to open
-`/tree`, `Ctrl+K` (`⌃K`) to open `/diff`, and `Ctrl+S` (`⌃S`) to run Git sync.
+the clipboard, and `Esc` clears the selection. Press `Ctrl+O` (`⌃O`) to open
+the current project in the macOS default application associated with a source
+file (for example, Zed), `Ctrl+T` (`⌃T`) to open `/tree`, `Ctrl+K` (`⌃K`) to
+open `/diff`, and `Ctrl+S` (`⌃S`) to run Git sync.
 Press `Tab` twice quickly to open the recent-project switcher. The switcher
 stores recent TUI workspaces in `~/.xiaoli/state/tui_workspaces.json`; selecting
 a project switches cwd, restores that project's session history when available,

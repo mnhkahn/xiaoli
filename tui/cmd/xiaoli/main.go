@@ -126,6 +126,10 @@ type linkOpenDoneMsg struct {
 	err error
 }
 
+type projectEditorOpenDoneMsg struct {
+	err error
+}
+
 type clipboardImageDoneMsg struct {
 	path      string
 	mediaType string
@@ -859,7 +863,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clearInputDraft()
 			return m, nil
 		case "ctrl+o":
-			return m, nil
+			m.status = "opening project"
+			return m, openProjectEditorCmd(m.cwd)
 		case "ctrl+k":
 			if m.pendingGitCmsg.Active {
 				if m.busy {
@@ -1497,6 +1502,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = "link opened"
+		return m, nil
+	case projectEditorOpenDoneMsg:
+		if msg.err != nil {
+			m.status = "open failed"
+			m.lastError = msg.err.Error()
+			return m, nil
+		}
+		m.status = "project opened"
 		return m, nil
 	case updateCheckDoneMsg:
 		m.updateInfo = msg.info
@@ -2624,6 +2637,7 @@ func renderWelcomeCommands(width int) string {
 		{Key: "/review", Text: "codex review"},
 		{Key: "/upgrade", Text: "show upgrade command"},
 		{Key: "Ctrl+S", Text: "git sync"},
+		{Key: "Ctrl+O", Text: "open project"},
 		{Key: "Ctrl+T", Text: "open tree"},
 		{Key: "Ctrl+K", Text: "diff / commit"},
 	}
@@ -3273,6 +3287,107 @@ func openURL(url string) error {
 		}
 	}
 	return cmd.Start()
+}
+
+func openProjectEditorCmd(cwd string) tea.Cmd {
+	return func() tea.Msg {
+		return projectEditorOpenDoneMsg{err: openProjectEditorFunc(cwd)}
+	}
+}
+
+var openProjectEditorFunc = openProjectEditor
+
+// openProjectEditor uses macOS's file association for a source file in the
+// project, then asks that application to open the project directory.
+func openProjectEditor(cwd string) error {
+	if runtime.GOOS != "darwin" {
+		return fmt.Errorf("根据系统默认代码编辑器打开项目目前仅支持 macOS")
+	}
+	source, err := projectSourceFileFunc(cwd)
+	if err != nil {
+		return err
+	}
+	app, err := defaultApplicationForFileFunc(source)
+	if err != nil {
+		return err
+	}
+	return launchProjectInApplicationFunc(app, cwd)
+}
+
+var projectSourceFileFunc = projectSourceFile
+var defaultApplicationForFileFunc = defaultApplicationForFile
+var launchProjectInApplicationFunc = launchProjectInApplication
+
+func projectSourceFile(cwd string) (string, error) {
+	info, err := os.Stat(cwd)
+	if err != nil {
+		return "", fmt.Errorf("无法访问项目目录：%w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("项目路径不是目录：%s", cwd)
+	}
+	var source string
+	err = filepath.WalkDir(cwd, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", "node_modules", "vendor", "dist", "build":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if isSourceFile(path) {
+			source = path
+			return io.EOF
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("查找项目源码失败：%w", err)
+	}
+	if source == "" {
+		return "", fmt.Errorf("未在项目中找到可用于识别默认编辑器的源码文件")
+	}
+	return source, nil
+}
+
+func isSourceFile(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".go", ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".kt", ".rs", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php", ".swift", ".scala", ".sh", ".sql", ".html", ".css":
+		return true
+	default:
+		return false
+	}
+}
+
+func defaultApplicationForFile(path string) (string, error) {
+	const script = `use framework "AppKit"
+use scripting additions
+on run argv
+    set sourceURL to current application's NSURL's fileURLWithPath:(item 1 of argv)
+    set workspace to current application's NSWorkspace's sharedWorkspace()
+    set appURL to workspace's URLForApplicationToOpenURL:sourceURL
+    if appURL is missing value then error "No default application"
+    return (appURL's |path|()) as text
+end run`
+	output, err := exec.Command("osascript", "-l", "AppleScript", "-e", script, "--", path).Output()
+	if err != nil {
+		return "", fmt.Errorf("未找到 %s 的系统默认打开应用；请先在 Finder 中为该类源码设置默认编辑器", filepath.Ext(path))
+	}
+	app := strings.TrimSpace(string(output))
+	if app == "" {
+		return "", fmt.Errorf("未找到 %s 的系统默认打开应用", filepath.Ext(path))
+	}
+	return app, nil
+}
+
+func launchProjectInApplication(app, cwd string) error {
+	if err := exec.Command("open", "-a", app, cwd).Start(); err != nil {
+		return fmt.Errorf("无法用系统默认编辑器打开项目：%w", err)
+	}
+	return nil
 }
 
 func copySelectionCmd(text string) tea.Cmd {

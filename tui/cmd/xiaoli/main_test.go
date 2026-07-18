@@ -784,16 +784,31 @@ func TestCtrlTOpensTreeExplorer(t *testing.T) {
 	}
 }
 
-func TestCtrlONoLongerTogglesMouseMode(t *testing.T) {
+func TestCtrlOOpensProjectInDefaultEditor(t *testing.T) {
 	input := textinput.New()
 	m := model{input: input, mouseEnabled: false, status: "idle"}
+	oldOpenProjectEditor := openProjectEditorFunc
+	opened := ""
+	openProjectEditorFunc = func(cwd string) error {
+		opened = cwd
+		return nil
+	}
+	defer func() { openProjectEditorFunc = oldOpenProjectEditor }()
+	m.cwd = "/tmp/project"
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})
 	got := next.(model)
-	if cmd != nil {
-		t.Fatalf("Ctrl-O returned command, want nil")
+	if cmd == nil {
+		t.Fatal("Ctrl-O returned nil command")
 	}
-	if got.status == "mouse mode" {
-		t.Fatalf("Ctrl-O entered mouse mode: status:%q", got.status)
+	if got.status != "opening project" {
+		t.Fatalf("Ctrl-O status = %q, want opening project", got.status)
+	}
+	msg := cmd()
+	if _, ok := msg.(projectEditorOpenDoneMsg); !ok {
+		t.Fatalf("Ctrl-O command returned %T, want projectEditorOpenDoneMsg", msg)
+	}
+	if opened != m.cwd {
+		t.Fatalf("opened project = %q, want %q", opened, m.cwd)
 	}
 }
 
