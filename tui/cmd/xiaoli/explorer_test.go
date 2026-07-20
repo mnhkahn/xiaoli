@@ -417,6 +417,57 @@ func TestDiffExplorerShowsStagedOnlyDiff(t *testing.T) {
 	}
 }
 
+func TestDiffExplorerUsesRepositoryRootFromSubdirectory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server", "internal", "admin", "a2a_adapter.go")
+	tuiPath := filepath.Join(dir, "tui", "cmd", "xiaoli", "explorer.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(tuiPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("package admin\n\nconst adapter = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tuiPath, []byte("package main\n\nconst version = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(dir, "init"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(dir, "add", "server/internal/admin/a2a_adapter.go", "tui/cmd/xiaoli/explorer.go"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(dir, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "init"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runGit(dir, "config", "status.relativePaths", "false"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("package admin\n\nconst adapter = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tuiPath, []byte("package main\n\nconst version = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ex := newDiffExplorer(filepath.Join(dir, "server"), 100, 30)
+	root, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ex.cwd != root {
+		t.Fatalf("explorer cwd = %q, want repository root %q", ex.cwd, root)
+	}
+	if len(ex.entries) != 2 || ex.entries[0].Path != "server/internal/admin/a2a_adapter.go" || ex.entries[1].Path != "tui/cmd/xiaoli/explorer.go" {
+		t.Fatalf("diff entries = %#v, want all repository changes", ex.entries)
+	}
+	if !strings.Contains(ex.preview, "const adapter = 2") {
+		t.Fatalf("diff preview = %q, want modified file diff", ex.preview)
+	}
+}
+
 func TestDiffExplorerMouseClickSelectsWithoutTogglingStage(t *testing.T) {
 	ex := &tuiExplorer{
 		mode:      explorerDiff,

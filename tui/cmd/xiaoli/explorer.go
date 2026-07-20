@@ -70,6 +70,9 @@ func newTreeExplorer(cwd string, width, height int) *tuiExplorer {
 }
 
 func newDiffExplorer(cwd string, width, height int) *tuiExplorer {
+	if root, err := gitWorktreeRoot(cwd); err == nil {
+		cwd = root
+	}
 	ex := &tuiExplorer{
 		mode:      explorerDiff,
 		cwd:       cwd,
@@ -937,6 +940,14 @@ func changedFiles(cwd string) ([]explorerEntry, error) {
 	}
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	return entries, nil
+}
+
+func gitWorktreeRoot(cwd string) (string, error) {
+	root, err := runGit(cwd, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(strings.TrimSpace(root))
 }
 
 func parseChangedFileStatus(line string) (explorerEntry, bool) {
