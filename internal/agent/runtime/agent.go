@@ -1650,6 +1650,14 @@ func (a *Agent) RunPromptProfileStream(ctx context.Context, req PromptProfileReq
 
 	var result strings.Builder
 	eventIndex := 0
+	// 状态机：过滤 <thinking>...</thinking> 标签内容
+	// inThinking: 当前是否在 thinking 标签内
+	// buffer: 缓存待匹配的字符（处理标签跨 chunk）
+	inThinking := false
+	var buffer strings.Builder
+	filteredResult := strings.Builder{}
+	hasStreamContent := false
+
 	for {
 		event, ok := it.Next()
 		if !ok {
@@ -1692,8 +1700,14 @@ func (a *Agent) RunPromptProfileStream(ctx context.Context, req PromptProfileReq
 					return PromptProfileStreamReply{}, fmt.Errorf("profile agent stream error: %w", recvErr)
 				}
 				if chunk != nil && chunk.Content != "" {
+					hasStreamContent = true
 					result.WriteString(chunk.Content)
-					emit(PromptProfileStreamEvent{Kind: PromptProfileStreamAnswerDelta, Delta: chunk.Content})
+					// 流式过滤 <thinking> 标签，只输出非 thinking 内容
+					filteredContent := filterThinkingContent(chunk.Content, &inThinking, &buffer, false)
+					if filteredContent != "" {
+						filteredResult.WriteString(filteredContent)
+						emit(PromptProfileStreamEvent{Kind: PromptProfileStreamAnswerDelta, Delta: filteredContent})
+					}
 				}
 			}
 			continue
@@ -1704,7 +1718,24 @@ func (a *Agent) RunPromptProfileStream(ctx context.Context, req PromptProfileReq
 		}
 	}
 
-	raw := cleanPromptProfileResult(result.String())
+	if hasStreamContent {
+		// 流结束后，输出尚不能确认是否为标签的普通文本；未闭合的 thinking 内容则丢弃。
+		if remaining := filterThinkingContent("", &inThinking, &buffer, true); remaining != "" {
+			filteredResult.WriteString(remaining)
+			emit(PromptProfileStreamEvent{Kind: PromptProfileStreamAnswerDelta, Delta: remaining})
+		}
+	}
+
+	// 最终处理用过滤后的结果
+	var raw string
+	if hasStreamContent {
+		raw = cleanPromptProfileResult(filteredResult.String())
+	} else {
+		// 非流式场景回退到原处理
+		raw = cleanPromptProfileResult(result.String())
+		raw = filterThinkingWhole(raw)
+	}
+
 	if strings.TrimSpace(raw) == "" {
 		errorMsg := "[执行失败] 代理返回空响应"
 		a.savePromptProfileDiagnostic(ctx, profileSessionID, historyMsgs, errorMsg)
@@ -1715,8 +1746,95 @@ func (a *Agent) RunPromptProfileStream(ctx context.Context, req PromptProfileReq
 	return reply, nil
 }
 
+// filterThinkingContent 流式过滤 <thinking>...</thinking> 标签内容。
+// buffer 仅保存可能构成标签的后缀，以支持标签跨 chunk 分割。
+func filterThinkingContent(chunk string, inThinking *bool, buffer *strings.Builder, finish bool) string {
+	var out strings.Builder
+	for _, r := range chunk {
+		buffer.WriteRune(r)
+		s := buffer.String()
+		if *inThinking {
+			if s == "</thinking>" || s == "</Thinking>" {
+				*inThinking = false
+				buffer.Reset()
+				continue
+			}
+			setThinkingBuffer(buffer, thinkingTagPrefix(s, true))
+			continue
+		}
+		if s == "<thinking>" || s == "<Thinking>" {
+			*inThinking = true
+			buffer.Reset()
+			continue
+		}
+		keep := thinkingTagPrefix(s, false)
+		out.WriteString(s[:len(s)-len(keep)])
+		setThinkingBuffer(buffer, keep)
+	}
+	if finish {
+		if !*inThinking {
+			out.WriteString(buffer.String())
+		}
+		buffer.Reset()
+	}
+	return out.String()
+}
+
+func thinkingTagPrefix(value string, closing bool) string {
+	tags := []string{"<thinking>", "<Thinking>"}
+	if closing {
+		tags = []string{"</thinking>", "</Thinking>"}
+	}
+	for size := len(value); size > 0; size-- {
+		suffix := value[len(value)-size:]
+		for _, tag := range tags {
+			if strings.HasPrefix(tag, suffix) {
+				return suffix
+			}
+		}
+	}
+	return ""
+}
+
+func setThinkingBuffer(buffer *strings.Builder, value string) {
+	buffer.Reset()
+	buffer.WriteString(value)
+}
+
+// filterThinkingWhole 去除整块内容中的所有 <thinking>...</thinking> 标签
+func filterThinkingWhole(raw string) string {
+	// 处理 <thinking> 和 <Thinking> 两种变体
+	for strings.Contains(raw, "<thinking>") && strings.Contains(raw, "</thinking>") {
+		start := strings.Index(raw, "<thinking>")
+		end := strings.Index(raw[start:], "</thinking>")
+		if start >= 0 && end > 0 {
+			end += start + len("</thinking>")
+			before := raw[:start]
+			after := raw[end:]
+			raw = before + after
+		} else {
+			break
+		}
+	}
+	for strings.Contains(raw, "<Thinking>") && strings.Contains(raw, "</Thinking>") {
+		start := strings.Index(raw, "<Thinking>")
+		end := strings.Index(raw[start:], "</Thinking>")
+		if start >= 0 && end > 0 {
+			end += start + len("</Thinking>")
+			before := raw[:start]
+			after := raw[end:]
+			raw = before + after
+		} else {
+			break
+		}
+	}
+	return strings.TrimSpace(raw)
+}
+
 func parsePromptProfileStreamReply(raw string) PromptProfileStreamReply {
 	raw = strings.TrimSpace(raw)
+	// 去除所有 <thinking>...</thinking> 标签（兜底处理）
+	raw = filterThinkingWhole(raw)
 	var structured struct {
 		Reasoning string `json:"reasoning"`
 		Thinking  string `json:"thinking"`

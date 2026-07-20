@@ -267,6 +267,35 @@ func TestCleanPromptProfileResultRemovesMarkdownFence(t *testing.T) {
 	}
 }
 
+func TestFilterThinkingContent(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks []string
+		want   string
+	}{
+		{name: "plain text", chunks: []string{"abcdef", "ghijkl"}, want: "abcdefghijkl"},
+		{name: "thinking tag split across chunks", chunks: []string{"before <think", "ing>secret</think", "ing>after"}, want: "before after"},
+		{name: "tail is flushed", chunks: []string{"answer <thinking>secret</thinking>tail"}, want: "answer tail"},
+		{name: "incomplete tag remains literal", chunks: []string{"answer <think"}, want: "answer <think"},
+		{name: "unclosed thinking is discarded", chunks: []string{"answer <thinking>secret"}, want: "answer "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buffer strings.Builder
+			inThinking := false
+			var got strings.Builder
+			for _, chunk := range tt.chunks {
+				got.WriteString(filterThinkingContent(chunk, &inThinking, &buffer, false))
+			}
+			got.WriteString(filterThinkingContent("", &inThinking, &buffer, true))
+			if got.String() != tt.want {
+				t.Fatalf("filterThinkingContent() = %q, want %q", got.String(), tt.want)
+			}
+		})
+	}
+}
+
 func writeRuntimeTestExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
