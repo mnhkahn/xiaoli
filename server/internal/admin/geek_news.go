@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"strings"
 	"sync"
@@ -174,7 +175,7 @@ func (p *a2aPipeline) processGeekNewsItems(ctx context.Context, turn a2a.Convers
 			}
 
 			item := processed[index]
-			if isPureEnglishTitle(item.SourceTitle) {
+			if isPureEnglishTitle(item.SourceTitle) && !isGitHubNewsLink(item.Link) {
 				if title, err := p.translateGeekNewsTitle(ctx, turn, profile, group, index, item.SourceTitle); err == nil {
 					item.Title = title
 				} else {
@@ -294,6 +295,15 @@ func isPureEnglishTitle(title string) bool {
 		}
 	}
 	return hasLatin
+}
+
+func isGitHubNewsLink(link string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(link))
+	if err != nil {
+		return false
+	}
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+	return host == "github.com" || strings.HasSuffix(host, ".github.com")
 }
 
 func geekNewsDescriptionValid(description string) bool {

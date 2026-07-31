@@ -198,6 +198,46 @@ func TestA2APipelineBuildsGeekNewsDeterministicallyFromCLIItems(t *testing.T) {
 	}
 }
 
+func TestProcessGeekNewsItemsKeepsGitHubTitleInSourceLanguage(t *testing.T) {
+	item := geekNewsItem{
+		Link:        "https://github.com/example/project/releases/tag/v1.2.3",
+		Title:       "Release v1.2.3 fixes parser regressions",
+		Description: strings.Repeat("source content ", 40),
+	}
+	agent := &fakeA2AAgent{structuredArguments: translatedNewsResponse(0, 300)}
+	pipeline := newA2APipeline(agent, nil)
+
+	processed := pipeline.processGeekNewsItems(context.Background(), a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:test"}, a2aPromptProfileSpec{}, "news", []geekNewsItem{item})
+
+	if got := processed[0].Title; got != item.Title {
+		t.Fatalf("GitHub title = %q, want original %q", got, item.Title)
+	}
+	if got := processed[0].SourceTitle; got != item.Title {
+		t.Fatalf("GitHub source_title = %q, want original %q", got, item.Title)
+	}
+	if agent.profileCalls != 1 || agent.profileRequests[0].Name != "geek-news-description" {
+		t.Fatalf("profile requests = %#v, want description translation only", agent.profileRequests)
+	}
+}
+
+func TestIsGitHubNewsLink(t *testing.T) {
+	for _, test := range []struct {
+		link string
+		want bool
+	}{
+		{link: "https://github.com/example/project", want: true},
+		{link: "https://gist.github.com/example/123", want: true},
+		{link: "https://www.github.com/example/project", want: true},
+		{link: "https://github.com.example.com/article", want: false},
+		{link: "https://example.com/github", want: false},
+		{link: "://invalid", want: false},
+	} {
+		if got := isGitHubNewsLink(test.link); got != test.want {
+			t.Errorf("isGitHubNewsLink(%q) = %v, want %v", test.link, got, test.want)
+		}
+	}
+}
+
 func TestA2APipelineRanksNewsGroupsIndependently(t *testing.T) {
 	news := fiveSourceNews()
 	aiNews := fiveSourceNews()
