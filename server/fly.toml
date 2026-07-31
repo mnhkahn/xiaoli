@@ -33,6 +33,8 @@ primary_region = "nrt"
   STUDY_MONITOR_TOOL_TIMEOUT_SECONDS = "120"
   STUDY_MONITOR_REMINDER_TEXT = "请坐直，认真学习。"
   XIAOLI_SKILL_EXEC_TIMEOUT_SECONDS = "600"
+  XIAOLI_AGENTS_DIR = "/data/.agents"
+  XIAOLI_SKILL_ROOTS = "/root/.agents/skills"
 
 [http_service]
   internal_port = 8080

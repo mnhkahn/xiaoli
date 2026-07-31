@@ -16,6 +16,18 @@ import (
 
 func main() {
 	cfg := admin.LoadConfig()
+	if cfg.AgentsDir != "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			logger.Errorf("Resolve home directory for persistent agents data: %v", err)
+			os.Exit(1)
+		}
+		if err := admin.PrepareAgentsDirectory(cfg.AgentsDir, filepath.Join(homeDir, ".agents"), "/opt/xiaoli/skills"); err != nil {
+			logger.Errorf("Prepare persistent agents directory: %v", err)
+			os.Exit(1)
+		}
+		logger.Infof("Persistent agents directory ready: %s", cfg.AgentsDir)
+	}
 
 	if err := os.MkdirAll(cfg.LogDir, 0755); err == nil {
 		logPath := filepath.Join(cfg.LogDir, "server.log")

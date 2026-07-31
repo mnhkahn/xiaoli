@@ -78,6 +78,7 @@ type Config struct {
 	BashTimeout             time.Duration
 	BashMaxOutputBytes      int64
 	AgentFileRoots          []string
+	AgentsDir               string
 	ChatReact               agentworkflow.AgentSpec
 	Workflows               []agentworkflow.Definition
 	ReminderDefaultChannel  string
@@ -247,6 +248,7 @@ func LoadConfig() Config {
 		BashTimeout:             settings.bashTimeout(),
 		BashMaxOutputBytes:      int64(settings.bashMaxOutputBytes()),
 		AgentFileRoots:          agentbuiltin.FileAgentRoots(),
+		AgentsDir:               strings.TrimSpace(env("XIAOLI_AGENTS_DIR", "")),
 		ChatReact:               parseChatReact(settings.ChatReact),
 		Workflows:               parseWorkflows(settings.Workflows),
 		ReminderDefaultChannel:  settings.reminderDefaultChannel(),
