@@ -334,6 +334,11 @@ func (e *tuiExplorer) previewMousePoint(msg tea.MouseMsg) (selectionPoint, bool)
 	rightContentWidth := max(12, rightTotalWidth-boxStyle.GetHorizontalFrameSize())
 	previewHeight := max(0, explorerBodyHeight(e.renderHeight())-1)
 	x := msg.X - e.leftWidth - 2
+	if e.mode == explorerTree && e.previewCode {
+		gutterWidth := codeLineNumberWidth(len(e.previewLines()))
+		x -= gutterWidth
+		rightContentWidth = max(1, rightContentWidth-gutterWidth)
+	}
 	y := msg.Y - explorerPreviewMouseTop
 	point := selectionPoint{x: x, y: e.rightScroll + y}
 	if x < 0 {
@@ -540,18 +545,26 @@ func (e *tuiExplorer) renderRight(width, height int) string {
 		return e.editor.render(width, height)
 	}
 	allLines := e.previewLines()
+	lineNumberWidth := 0
+	if e.mode == explorerTree && e.previewCode {
+		lineNumberWidth = codeLineNumberWidth(len(allLines))
+	}
 	start := clamp(e.rightScroll, 0, len(allLines))
 	end := min(len(allLines), start+max(0, height-1))
 	for y := start; y < end; y++ {
 		line := allLines[y]
+		contentWidth := max(1, width-lineNumberWidth)
 		if e.mode == explorerDiff {
 			line = styleDiffLine(line, width)
 		} else {
-			line = stylePreviewLine(line, width)
+			line = stylePreviewLine(line, contentWidth)
 		}
 		if e.selection.active || e.selection.dragging {
 			startSel, endSel := normalizedSelection(e.selection)
-			line = renderSelectionOverlayLine(line, y, startSel, endSel, width)
+			line = renderSelectionOverlayLine(line, y, startSel, endSel, contentWidth)
+		}
+		if lineNumberWidth > 0 {
+			line = renderCodeLineNumber(y+1, lineNumberWidth) + line
 		}
 		lines = append(lines, line)
 	}
@@ -1081,6 +1094,17 @@ func visibleLines(lines []string, scroll, height int) []string {
 
 func stylePreviewLine(line string, width int) string {
 	return fitDisplay(line, width)
+}
+
+// codeLineNumberWidth reserves a stable gutter: enough digits for the last
+// line, plus a separator and one trailing space.
+func codeLineNumberWidth(lineCount int) int {
+	width := len(fmt.Sprintf("%d", max(1, lineCount)))
+	return width + 3
+}
+
+func renderCodeLineNumber(line, width int) string {
+	return diffMetaStyle.Render(fmt.Sprintf("%*d │ ", width-3, line))
 }
 
 func styleDiffLine(line string, width int) string {

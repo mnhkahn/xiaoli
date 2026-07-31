@@ -73,6 +73,9 @@ func TestMiniEditorRenderShowsModeAndCursor(t *testing.T) {
 	if !strings.Contains(got, "NORMAL") || !strings.Contains(got, "one") {
 		t.Fatalf("render = %q", got)
 	}
+	if !strings.Contains(got, "1 │ one") {
+		t.Fatalf("render missing line number = %q", got)
+	}
 	ed.mode = editorInsert
 	got = stripTestANSI(ed.render(40, 8))
 	if !strings.Contains(got, "INSERT") {

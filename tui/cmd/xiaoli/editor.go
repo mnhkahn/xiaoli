@@ -233,15 +233,17 @@ func (e *miniEditor) render(width, height int) string {
 	lines := []string{titleStyle.Render(fitDisplay(status, width))}
 	bodyHeight := max(1, height-2)
 	end := min(len(e.lines), e.scrollY+bodyHeight)
+	lineNumberWidth := codeLineNumberWidth(len(e.lines))
 	for y := e.scrollY; y < end; y++ {
 		line := e.lines[y]
+		contentWidth := max(1, width-lineNumberWidth)
 		if y == e.cursorY {
 			line = renderEditorCursor(line, e.cursorX)
-			line = editorCursorLineStyle().Render(fitDisplay(line, width))
+			line = editorCursorLineStyle().Render(fitDisplay(line, contentWidth))
 		} else {
-			line = fitDisplay(line, width)
+			line = fitDisplay(line, contentWidth)
 		}
-		lines = append(lines, line)
+		lines = append(lines, renderCodeLineNumber(y+1, lineNumberWidth)+line)
 	}
 	for len(lines) < height-1 {
 		lines = append(lines, "")

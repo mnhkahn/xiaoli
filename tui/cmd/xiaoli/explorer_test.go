@@ -44,6 +44,9 @@ func TestTreeExplorerRendersPreview(t *testing.T) {
 	if !strings.Contains(plain, "Project Tree") || !strings.Contains(plain, "package main") {
 		t.Fatalf("tree explorer view missing tree or preview:\n%s", got)
 	}
+	if !strings.Contains(plain, "1 │ package main") {
+		t.Fatalf("tree explorer preview missing line number:\n%s", plain)
+	}
 	for i, line := range strings.Split(got, "\n") {
 		if w := lipgloss.Width(line); w > 100 {
 			t.Fatalf("line %d width = %d, want <= 100: %q", i, w, line)
