@@ -52,3 +52,7 @@ xiaozhi-esp32/sdkconfig.old
 
 # Root xiaoli binary (never commit)
 /xiaoli
+
+# Homework images downloaded from Trello
+*.jpg
+*.base64
