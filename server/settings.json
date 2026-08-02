@@ -98,7 +98,7 @@
     "rate_limit_global_per_minute": 1000,
     "max_concurrent": 5,
     "max_input_chars": 10000,
-    "timeout_seconds": 600,
+    "timeout_seconds": 1200,
     "task_ttl_seconds": 3600,
     "trace": {
       "enabled": true,
