@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"os/exec"
 	"strings"
-	"sync"
+	"time"
 	"unicode"
 
 	"github.com/cloudwego/eino/schema"
@@ -22,6 +22,9 @@ const (
 	geekNewsDescriptionMaxRunes = 500
 	geekNewsDescriptionAttempts = 2
 	geekNewsConcurrentWorkers   = 4
+	// Leave two minutes of the 20-minute A2A HTTP budget to stop work,
+	// serialize the partial result, and send a successful response.
+	geekNewsProcessingTimeout = 18 * time.Minute
 )
 
 // geekNewsFetcher is deliberately narrow: the A2A server always invokes the
@@ -115,15 +118,27 @@ func (p *a2aPipeline) runGeekNews(ctx context.Context, turn a2a.ConversationTurn
 	if err != nil {
 		return "", err
 	}
-	batch, err := p.newsFetcher.Fetch(ctx, date)
+	processingCtx, cancel := context.WithTimeout(ctx, geekNewsProcessingTimeout)
+	defer cancel()
+
+	batch, err := p.newsFetcher.Fetch(processingCtx, date)
 	if err != nil {
 		return "", err
 	}
 	// Keep the two tabs independent, while applying the same ranking policy to
 	// each one. This preserves their product-level grouping without inheriting
 	// the upstream CLI's arbitrary source order.
-	news := p.rankGeekNewsItems(ctx, turn, profile, p.processGeekNewsItems(ctx, turn, profile, "news", batch.News))
-	aiNews := p.rankGeekNewsItems(ctx, turn, profile, p.processGeekNewsItems(ctx, turn, profile, "ai_news", batch.AINews))
+	news := p.processGeekNewsItems(processingCtx, turn, profile, "news", batch.News)
+	if processingCtx.Err() == nil {
+		news = p.rankGeekNewsItems(processingCtx, turn, profile, news)
+	}
+	aiNews := p.processGeekNewsItems(processingCtx, turn, profile, "ai_news", batch.AINews)
+	if processingCtx.Err() == nil {
+		aiNews = p.rankGeekNewsItems(processingCtx, turn, profile, aiNews)
+	}
+	if errors.Is(processingCtx.Err(), context.DeadlineExceeded) {
+		logger.Infof("[A2A][geek-news][processing_deadline] conversation_id=%s date=%s fallback=partial_source_result", turn.ConversationID, date)
+	}
 	result := geekNewsReply{
 		CreateTime: batch.CreateTime,
 		Summary:    fmt.Sprintf("%s 科技新闻：技术动向 %d 条，AI 资讯 %d 条。", date, len(news), len(aiNews)),
@@ -159,14 +174,18 @@ func (p *a2aPipeline) processGeekNewsItems(ctx context.Context, turn a2a.Convers
 		processed[i].SourceTitle = items[i].Title
 	}
 
-	// Each output slot belongs to exactly one worker, so concurrent model calls
-	// cannot drop, reorder, or merge source items.
+	// Workers publish completed copies instead of writing the output slice.
+	// That lets the collector return its source fallback immediately at the
+	// internal deadline, even when a downstream model call ignores cancellation.
 	workers := make(chan struct{}, geekNewsConcurrentWorkers)
-	var wg sync.WaitGroup
+	type completedItem struct {
+		index int
+		item  geekNewsItem
+	}
+	completed := make(chan completedItem, len(processed))
 	for i := range processed {
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
+		item := processed[i]
+		go func(index int, item geekNewsItem) {
 			select {
 			case workers <- struct{}{}:
 				defer func() { <-workers }()
@@ -174,7 +193,6 @@ func (p *a2aPipeline) processGeekNewsItems(ctx context.Context, turn a2a.Convers
 				return
 			}
 
-			item := processed[index]
 			if isPureEnglishTitle(item.SourceTitle) && !isGitHubNewsLink(item.Link) {
 				if title, err := p.translateGeekNewsTitle(ctx, turn, profile, group, index, item.SourceTitle); err == nil {
 					item.Title = title
@@ -187,10 +205,21 @@ func (p *a2aPipeline) processGeekNewsItems(ctx context.Context, turn a2a.Convers
 			} else {
 				logger.Infof("[A2A][geek-news][description_source_fallback] conversation_id=%s group=%s item=%d err=%v", turn.ConversationID, group, index, err)
 			}
-			processed[index] = item
-		}(i)
+			select {
+			case completed <- completedItem{index: index, item: item}:
+			case <-ctx.Done():
+			}
+		}(i, item)
 	}
-	wg.Wait()
+	for remaining := len(processed); remaining > 0; remaining-- {
+		select {
+		case result := <-completed:
+			processed[result.index] = result.item
+		case <-ctx.Done():
+			logger.Infof("[A2A][geek-news][item_processing_fallback] conversation_id=%s group=%s completed=%d total=%d err=%v", turn.ConversationID, group, len(processed)-remaining, len(processed), ctx.Err())
+			return processed
+		}
+	}
 	return processed
 }
 

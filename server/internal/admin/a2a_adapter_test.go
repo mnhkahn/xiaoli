@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -64,6 +65,28 @@ func (f *fakeA2AAgent) RunPromptProfile(ctx context.Context, req agentruntime.Pr
 type fakeGeekNewsFetcher struct {
 	batch geekNewsReply
 	err   error
+}
+
+type blockedA2AAgent struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (a *blockedA2AAgent) RunPromptProfile(context.Context, agentruntime.PromptProfileRequest) (string, error) {
+	select {
+	case a.started <- struct{}{}:
+	default:
+	}
+	<-a.release
+	return "", errors.New("blocked model call")
+}
+
+func (a *blockedA2AAgent) RunPromptProfileStream(context.Context, agentruntime.PromptProfileRequest, func(agentruntime.PromptProfileStreamEvent) bool) (agentruntime.PromptProfileStreamReply, error) {
+	return agentruntime.PromptProfileStreamReply{}, errors.New("blocked model call")
+}
+
+func (a *blockedA2AAgent) RunNamedSubAgent(context.Context, string, string, string, string) (string, error) {
+	return "", errors.New("blocked model call")
 }
 
 func (f fakeGeekNewsFetcher) Fetch(context.Context, string) (geekNewsReply, error) {
@@ -217,6 +240,41 @@ func TestProcessGeekNewsItemsKeepsGitHubTitleInSourceLanguage(t *testing.T) {
 	}
 	if agent.profileCalls != 1 || agent.profileRequests[0].Name != "geek-news-description" {
 		t.Fatalf("profile requests = %#v, want description translation only", agent.profileRequests)
+	}
+}
+
+func TestProcessGeekNewsItemsReturnsPartialSourceFallbackWithoutWaitingForBlockedModel(t *testing.T) {
+	items := fiveSourceNews()
+	agent := &blockedA2AAgent{started: make(chan struct{}, geekNewsConcurrentWorkers), release: make(chan struct{})}
+	pipeline := newA2APipeline(agent, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer close(agent.release)
+
+	result := make(chan []geekNewsItem, 1)
+	go func() {
+		result <- pipeline.processGeekNewsItems(ctx, a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:deadline-test"}, a2aPromptProfileSpec{}, "news", items)
+	}()
+	select {
+	case <-agent.started:
+	case <-time.After(time.Second):
+		t.Fatal("news processing did not start a model call")
+	}
+	cancel()
+
+	var processed []geekNewsItem
+	select {
+	case processed = <-result:
+	case <-time.After(time.Second):
+		t.Fatal("news processing waited for a blocked model call after cancellation")
+	}
+	if len(processed) != len(items) {
+		t.Fatalf("processed items = %d, want %d", len(processed), len(items))
+	}
+	for i, item := range processed {
+		if item.Title != items[i].Title || item.Description != items[i].Description || item.SourceTitle != items[i].Title {
+			t.Fatalf("item %d = %#v, want source fallback %#v", i, item, items[i])
+		}
 	}
 }
 
