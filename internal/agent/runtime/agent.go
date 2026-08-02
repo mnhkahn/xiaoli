@@ -1521,7 +1521,7 @@ func (a *Agent) RunPromptProfile(ctx context.Context, req PromptProfileRequest) 
 		MaxIterations:    maxSteps,
 		ModelRetryConfig: newLLMRetryConfig(),
 	}
-	if req.ChannelName == "a2a" && a.a2aSkillMW != nil {
+	if req.ChannelName == "a2a" && req.AllowTools && a.a2aSkillMW != nil {
 		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.a2aSkillMW}
 	} else if req.ChannelName != "a2a" && a.skillMW != nil {
 		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
@@ -1616,7 +1616,7 @@ func (a *Agent) RunPromptProfileStream(ctx context.Context, req PromptProfileReq
 		MaxIterations:    maxSteps,
 		ModelRetryConfig: newLLMRetryConfig(),
 	}
-	if req.ChannelName == "a2a" && a.a2aSkillMW != nil {
+	if req.ChannelName == "a2a" && req.AllowTools && a.a2aSkillMW != nil {
 		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.a2aSkillMW}
 	} else if req.ChannelName != "a2a" && a.skillMW != nil {
 		cfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
