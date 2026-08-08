@@ -394,7 +394,7 @@ func dashboardHTML(user map[string]any) string {
       await api("/admin/api/stream/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ device_id: id, fps: 1, duration_sec: 30, resolution: $("streamResolution").value, transport: "remote" }),
+        body: JSON.stringify({ device_id: id, fps: 2, duration_sec: 30, resolution: $("streamResolution").value, transport: "remote" }),
       });
     }
     async function captureSnapshot() {
@@ -428,7 +428,7 @@ func dashboardHTML(user map[string]any) string {
         const response = await api("/admin/api/stream/start", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ device_id: id, fps: 1, duration_sec: 30, resolution: $("streamResolution").value, transport: "lan" }),
+          body: JSON.stringify({ device_id: id, fps: 2, duration_sec: 30, resolution: $("streamResolution").value, transport: "lan" }),
         });
         const result = response.result || {};
         show(response);

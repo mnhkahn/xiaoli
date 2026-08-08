@@ -951,7 +951,8 @@ func (s *AdminServer) handleCameraStreamTool(w http.ResponseWriter, r *http.Requ
 	}
 	args := map[string]any{}
 	if tool == "self.camera.start_stream" {
-		args["fps"] = clampInt(body["fps"], 1, 3, 1)
+		requestedFPS := clampInt(body["fps"], 1, 3, 2)
+		args["fps"] = min(requestedFPS, s.deviceMaxStreamFPS(r.Context(), deviceID))
 		args["duration_sec"] = clampInt(body["duration_sec"], 1, 60, 30)
 		args["resolution"] = normalizeStreamResolution(stringValue(body["resolution"]))
 		args["transport"] = normalizeStreamTransport(firstNonEmptyString(stringValue(body["transport"]), "lan"))
@@ -967,6 +968,27 @@ func (s *AdminServer) handleCameraStreamTool(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// deviceMaxStreamFPS reads the stream tool's standard JSON schema. Devices
+// that do not advertise a maximum remain on the conservative legacy rate.
+func (s *AdminServer) deviceMaxStreamFPS(ctx context.Context, deviceID string) int {
+	tools, err := s.deviceController().Tools(ctx, deviceID)
+	if err != nil {
+		return 1
+	}
+	for _, tool := range tools.Tools {
+		if stringValue(tool["name"]) != "self.camera.start_stream" {
+			continue
+		}
+		schema, _ := tool["inputSchema"].(map[string]any)
+		properties, _ := schema["properties"].(map[string]any)
+		fps, _ := properties["fps"].(map[string]any)
+		if maximum, ok := int64Value(fps["maximum"]); ok {
+			return clampInt(maximum, 1, 3, 1)
+		}
+	}
+	return 1
 }
 
 func (s *AdminServer) handleImage(w http.ResponseWriter, r *http.Request, user map[string]any) {
