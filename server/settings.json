@@ -1,7 +1,7 @@
 {
   "models": {
     "llm": {
-      "default": "ark:code-latest",
+      "default": "siliconflow:hunyuan-mt-7b",
       "options": {
         "ark:code-latest": {
           "name": "ARK Code Latest",
