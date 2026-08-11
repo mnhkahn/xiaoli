@@ -1,7 +1,7 @@
 {
   "models": {
     "llm": {
-      "default": "siliconflow:hunyuan-mt-7b",
+      "default": "openrouter:nemotron-3-nano-omni-30b-free",
       "options": {
         "ark:code-latest": {
           "name": "ARK Code Latest",
@@ -34,6 +34,14 @@
           "api_key_env": "OPENROUTER_API_KEY",
           "max_tokens": 8192,
           "context_length": 131072
+        },
+        "openrouter:nemotron-3-nano-omni-30b-free": {
+          "name": "OpenRouter Nemotron 3 Nano Omni 30B Free",
+          "base_url": "https://openrouter.ai/api/v1",
+          "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+          "api_key_env": "OPENROUTER_API_KEY",
+          "max_tokens": 8192,
+          "context_length": 262144
         }
       }
     },
