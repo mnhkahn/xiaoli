@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -111,6 +112,83 @@ func TestListByChannel(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("lark/user_c should have 0 sessions, got %d", len(sessions))
+	}
+}
+
+func TestListRecentUsesSortedIndex(t *testing.T) {
+	m, ctx := testManager(t)
+
+	first, _, err := m.Create(ctx, "lark", "user_a", "m1")
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	second, _, err := m.Create(ctx, "wechat", "user_b", "m2")
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	if err := m.client.ZAdd(ctx, m.recentKey(), redis.Z{Score: 1, Member: first}, redis.Z{Score: 2, Member: second}).Err(); err != nil {
+		t.Fatalf("set recent scores: %v", err)
+	}
+
+	sessions, err := m.ListRecent(ctx, 1)
+	if err != nil {
+		t.Fatalf("ListRecent failed: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != second {
+		t.Fatalf("ListRecent(1) = %#v, want %q", sessions, second)
+	}
+}
+
+func TestListRecentSkipsExpiredMetadata(t *testing.T) {
+	m, ctx := testManager(t)
+	sid, _, err := m.Create(ctx, "lark", "user_a", "m1")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := m.client.Del(ctx, m.metaKey(sid)).Err(); err != nil {
+		t.Fatalf("delete metadata: %v", err)
+	}
+
+	sessions, err := m.ListRecent(ctx, 20)
+	if err != nil {
+		t.Fatalf("ListRecent failed: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("ListRecent() = %#v, want no stale sessions", sessions)
+	}
+}
+
+func TestBackfillRecentCreatesIndex(t *testing.T) {
+	m, ctx := testManager(t)
+	first, _, err := m.Create(ctx, "lark", "user_a", "m1")
+	if err != nil {
+		t.Fatalf("create first: %v", err)
+	}
+	second, _, err := m.Create(ctx, "wechat", "user_b", "m2")
+	if err != nil {
+		t.Fatalf("create second: %v", err)
+	}
+	if err := m.client.Del(ctx, m.recentKey()).Err(); err != nil {
+		t.Fatalf("delete index: %v", err)
+	}
+	firstAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	secondAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	if err := m.client.HSet(ctx, m.metaKey(first), "updated_at", firstAt).Err(); err != nil {
+		t.Fatalf("update first timestamp: %v", err)
+	}
+	if err := m.client.HSet(ctx, m.metaKey(second), "updated_at", secondAt).Err(); err != nil {
+		t.Fatalf("update second timestamp: %v", err)
+	}
+
+	if err := m.BackfillRecent(ctx); err != nil {
+		t.Fatalf("BackfillRecent failed: %v", err)
+	}
+	ids, err := m.client.ZRevRange(ctx, m.recentKey(), 0, -1).Result()
+	if err != nil {
+		t.Fatalf("read index: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != second || ids[1] != first {
+		t.Fatalf("backfilled ids = %#v, want [%q %q]", ids, second, first)
 	}
 }
 

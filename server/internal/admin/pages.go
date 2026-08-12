@@ -517,15 +517,16 @@ func memoryHTML(user map[string]any) string {
 <section>
       <div class="toolbar">
         <select id="channelSelect" aria-label="选择 Channel">
-          <option value="">加载中…</option>
+          <option value="__recent__">最近会话</option>
         </select>
-        <button id="refreshMemory" class="primary">刷新</button>
+        <button id="refreshMemory" class="primary">刷新最近会话</button>
+        <button id="browseChannels">按 Channel 浏览</button>
       </div>
       <div id="memoryStatus" class="muted" style="margin-top:10px;">加载中…</div>
       <div class="memory-picker">
         <div class="row">
           <h2>会话列表</h2>
-          <span class="muted" id="sessionHint">选择一个 Channel 后查看会话。</span>
+          <span class="muted" id="sessionHint">默认显示最近活跃的会话。</span>
         </div>
         <div id="sessionList" class="list"></div>
       </div>
@@ -556,13 +557,23 @@ func memoryHTML(user map[string]any) string {
     function clearNode(node) { while (node.firstChild) node.removeChild(node.firstChild); }
     function text(value) { return value === undefined || value === null ? "" : String(value); }
 
+    async function loadRecentSessions() {
+      setStatus("加载最近会话…");
+      const data = await api("/admin/api/memory/recent-sessions");
+      state.sessions = data.sessions || [];
+      state.currentSessionID = "";
+      renderSessionList();
+      setStatus("最近 " + state.sessions.length + " 个会话。");
+    }
+
     async function loadChannels() {
       setStatus("加载 Channel 列表…");
       const data = await api("/admin/api/memory/channels");
       const sel = $("channelSelect");
       clearNode(sel);
+      sel.appendChild(el("option", "最近会话", "__recent__"));
       if (!data.enabled || !data.channels.length) {
-        sel.appendChild(el("option", "暂无 Channel 数据"));
+        sel.value = "__recent__";
         setStatus("没有找到 Channel 数据。");
         return;
       }
@@ -575,15 +586,19 @@ func memoryHTML(user map[string]any) string {
         const opt = el("option", ch.channel_name + " — " + ch.channel_user, key);
         sel.appendChild(opt);
       }
-      sel.value = sel.options[0] ? sel.options[0].value : "";
+      sel.value = "__recent__";
       sel.onchange = () => selectChannel();
-      setStatus("已加载 " + data.channels.length + " 个 Channel 条目。");
-      selectChannel();
+      setStatus("已加载 " + data.channels.length + " 个 Channel 条目；请选择一个 Channel 查看历史会话。");
     }
 
     function selectChannel() {
       const val = $("channelSelect").value;
       if (!val) return;
+      if (val === "__recent__") {
+        $("sessionHint").textContent = "默认显示最近活跃的会话。";
+        loadRecentSessions();
+        return;
+      }
       const parts = val.split(":");
       state.channelName = parts[0];
       state.channelUser = parts.slice(1).join(":");
@@ -706,8 +721,10 @@ func memoryHTML(user map[string]any) string {
       $("messageDetail").textContent = JSON.stringify(msg, null, 2);
     }
 
-    $("refreshMemory").onclick = () => loadChannels();
-    loadChannels();
+    $("channelSelect").onchange = () => selectChannel();
+    $("refreshMemory").onclick = () => loadRecentSessions();
+    $("browseChannels").onclick = () => loadChannels();
+    loadRecentSessions();
   </script>
 </body>
 </html>`

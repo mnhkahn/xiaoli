@@ -16,6 +16,7 @@ import (
 )
 
 const sessionTTL = 72 * time.Hour
+const recentSessionLimit = 20
 
 type Info struct {
 	ID          string `json:"id"`
@@ -47,6 +48,7 @@ type Store interface {
 	GetEpoch(ctx context.Context, channelName, channelUser string) string
 	SetEpoch(ctx context.Context, channelName, channelUser, day string)
 	ListByChannel(ctx context.Context, channelName, channelUser string) ([]Info, error)
+	ListRecent(ctx context.Context, limit int) ([]Info, error)
 	ListChannels(ctx context.Context) ([]ChannelEntry, error)
 	GetChannelSession(ctx context.Context, channelName, channelUser string) string
 	SetChannelSession(ctx context.Context, channelName, channelUser, sessionID string)
@@ -71,6 +73,10 @@ func (m *Manager) metaKey(sessionID string) string {
 	return m.prefix + "ses:" + sessionID + ":meta"
 }
 
+func (m *Manager) recentKey() string {
+	return m.prefix + "ses:recent"
+}
+
 func (m *Manager) GetOrCreate(ctx context.Context, channelName, channelUser, model string) (string, bool, error) {
 	sessionID, err := m.client.Get(ctx, m.channelKey(channelName, channelUser)).Result()
 	if err == nil && sessionID != "" {
@@ -84,7 +90,8 @@ func (m *Manager) GetOrCreate(ctx context.Context, channelName, channelUser, mod
 
 func (m *Manager) Create(ctx context.Context, channelName, channelUser, model string) (string, bool, error) {
 	sessionID := randomID()
-	now := time.Now().Format(time.RFC3339)
+	nowTime := time.Now()
+	now := nowTime.Format(time.RFC3339)
 	pipe := m.client.Pipeline()
 	pipe.HSet(ctx, m.metaKey(sessionID), map[string]any{
 		"id":           sessionID,
@@ -98,6 +105,8 @@ func (m *Manager) Create(ctx context.Context, channelName, channelUser, model st
 	})
 	pipe.Expire(ctx, m.metaKey(sessionID), sessionTTL)
 	pipe.Set(ctx, m.channelKey(channelName, channelUser), sessionID, sessionTTL)
+	pipe.ZAdd(ctx, m.recentKey(), redis.Z{Score: float64(nowTime.Unix()), Member: sessionID})
+	pipe.ZRemRangeByScore(ctx, m.recentKey(), "-inf", fmt.Sprintf("%d", nowTime.Add(-sessionTTL).Unix()))
 	if _, err := pipe.Exec(ctx); err != nil {
 		logger.Infof("session create failed: %v", err)
 		return "", false, err
@@ -163,6 +172,86 @@ func (m *Manager) ListByChannel(ctx context.Context, channelName, channelUser st
 		return sessions[i].UpdatedAt > sessions[j].UpdatedAt
 	})
 	return sessions, nil
+}
+
+// ListRecent returns the most recently active sessions without scanning all session metadata.
+func (m *Manager) ListRecent(ctx context.Context, limit int) ([]Info, error) {
+	if limit <= 0 || limit > recentSessionLimit {
+		limit = recentSessionLimit
+	}
+	ids, err := m.client.ZRevRange(ctx, m.recentKey(), 0, int64(limit-1)).Result()
+	if err != nil || len(ids) == 0 {
+		return nil, err
+	}
+	pipe := m.client.Pipeline()
+	commands := make([]*redis.MapStringStringCmd, len(ids))
+	for i, id := range ids {
+		commands[i] = pipe.HGetAll(ctx, m.metaKey(id))
+	}
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		return nil, err
+	}
+	sessions := make([]Info, 0, len(ids))
+	for i, command := range commands {
+		data, err := command.Result()
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		sessions = append(sessions, infoFromHash(ids[i], data))
+	}
+	return sessions, nil
+}
+
+// BackfillRecent creates the recent-session index for sessions saved before the
+// index was introduced. It is intended to run asynchronously at startup.
+func (m *Manager) BackfillRecent(ctx context.Context) error {
+	exists, err := m.client.Exists(ctx, m.recentKey()).Result()
+	if err != nil || exists > 0 {
+		return err
+	}
+	pattern := m.prefix + "ses:*:meta"
+	var cursor uint64
+	for {
+		keys, next, err := m.client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return err
+		}
+		pipe := m.client.Pipeline()
+		commands := make([]*redis.StringCmd, len(keys))
+		for i, key := range keys {
+			commands[i] = pipe.HGet(ctx, key, "updated_at")
+		}
+		if len(commands) > 0 {
+			if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+				return err
+			}
+			updates := make([]redis.Z, 0, len(commands))
+			for i, command := range commands {
+				updatedAt, err := command.Result()
+				if err != nil {
+					continue
+				}
+				at, err := time.Parse(time.RFC3339, updatedAt)
+				if err != nil {
+					continue
+				}
+				sessionID := strings.TrimSuffix(strings.TrimPrefix(keys[i], m.prefix+"ses:"), ":meta")
+				if sessionID != "" {
+					updates = append(updates, redis.Z{Score: float64(at.Unix()), Member: sessionID})
+				}
+			}
+			if len(updates) > 0 {
+				if err := m.client.ZAdd(ctx, m.recentKey(), updates...).Err(); err != nil {
+					return err
+				}
+			}
+		}
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	return m.client.ZRemRangeByScore(ctx, m.recentKey(), "-inf", fmt.Sprintf("%d", time.Now().Add(-sessionTTL).Unix())).Err()
 }
 
 func (m *Manager) ListChannels(ctx context.Context) ([]ChannelEntry, error) {
@@ -240,11 +329,14 @@ func (m *Manager) Get(ctx context.Context, sessionID string) (Info, error) {
 }
 
 func (m *Manager) UpdateAfterChat(ctx context.Context, sessionID string, count int) {
+	now := time.Now()
 	m.client.HSet(ctx, m.metaKey(sessionID), map[string]any{
-		"updated_at": time.Now().Format(time.RFC3339),
+		"updated_at": now.Format(time.RFC3339),
 		"count":      count,
 	})
 	m.client.Expire(ctx, m.metaKey(sessionID), sessionTTL)
+	m.client.ZAdd(ctx, m.recentKey(), redis.Z{Score: float64(now.Unix()), Member: sessionID})
+	m.client.ZRemRangeByScore(ctx, m.recentKey(), "-inf", fmt.Sprintf("%d", now.Add(-sessionTTL).Unix()))
 	data, err := m.client.HGetAll(ctx, m.metaKey(sessionID)).Result()
 	if err == nil && data["channel_name"] != "" && data["channel_user"] != "" {
 		m.client.Expire(ctx, m.channelKey(data["channel_name"], data["channel_user"]), sessionTTL)

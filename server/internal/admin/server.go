@@ -122,6 +122,15 @@ func NewServer(cfg Config) *AdminServer {
 	reminderStore := agentworkflow.NewReminderStore(reminderPathForDir(cfg.DataDir))
 	pendingReminderStore := agentworkflow.NewPendingReminderStore(pendingReminderPathForDir(cfg.DataDir))
 	agent := newEinoAgent(cfg, reminderStore, eventBus)
+	if agent != nil {
+		if backfiller, ok := agent.SessionManager().(interface{ BackfillRecent(context.Context) error }); ok {
+			go func() {
+				if err := backfiller.BackfillRecent(context.Background()); err != nil {
+					logger.Infof("recent session index backfill failed: %v", err)
+				}
+			}()
+		}
+	}
 	var memory memoryReader
 	if agent != nil && agent.MemoryReader() != nil {
 		memory = agent.MemoryReader()
@@ -302,6 +311,8 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.withUser(w, r, s.handleSchedules)
 	case r.URL.Path == "/admin/api/memory/channels":
 		s.withUser(w, r, s.handleMemoryChannels)
+	case r.URL.Path == "/admin/api/memory/recent-sessions":
+		s.withUser(w, r, s.handleMemoryRecentSessions)
 	case r.URL.Path == "/admin/api/memory/sessions":
 		s.withUser(w, r, s.handleMemorySessions)
 	case r.URL.Path == "/admin/api/memory/session":
@@ -738,6 +749,23 @@ func (s *AdminServer) handleMemorySessions(w http.ResponseWriter, r *http.Reques
 		"current_session_id": currentID,
 		"sessions":           sessions,
 	})
+}
+
+func (s *AdminServer) handleMemoryRecentSessions(w http.ResponseWriter, r *http.Request, user map[string]any) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if s.agent == nil || s.agent.SessionManager() == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "sessions": []session.Info{}})
+		return
+	}
+	sessions, err := s.agent.SessionManager().ListRecent(r.Context(), 20)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "sessions": sessions})
 }
 
 func (s *AdminServer) handleMemorySessionByID(w http.ResponseWriter, r *http.Request, user map[string]any) {

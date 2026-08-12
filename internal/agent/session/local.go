@@ -168,6 +168,25 @@ func (m *LocalManager) ListByChannel(_ context.Context, channelName, channelUser
 	return sessions, nil
 }
 
+func (m *LocalManager) ListRecent(_ context.Context, limit int) ([]Info, error) {
+	if limit <= 0 || limit > recentSessionLimit {
+		limit = recentSessionLimit
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sessions := make([]Info, 0, len(m.state.Sessions))
+	for _, info := range m.state.Sessions {
+		sessions = append(sessions, info)
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].UpdatedAt > sessions[j].UpdatedAt
+	})
+	if len(sessions) > limit {
+		sessions = sessions[:limit]
+	}
+	return sessions, nil
+}
+
 func (m *LocalManager) ListChannels(context.Context) ([]ChannelEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
