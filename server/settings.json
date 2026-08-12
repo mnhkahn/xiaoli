@@ -1,7 +1,7 @@
 {
   "models": {
     "llm": {
-      "default": "openrouter:nemotron-3-nano-omni-30b-free",
+      "default": "deepseek:v4-flash",
       "options": {
         "ark:code-latest": {
           "name": "ARK Code Latest",
@@ -26,6 +26,14 @@
           "api_key_env": "NVIDIA_API_KEY",
           "max_tokens": 8192,
           "context_length": 131072
+        },
+        "deepseek:v4-flash": {
+          "name": "DeepSeek V4 Flash",
+          "base_url": "https://api.deepseek.com",
+          "model": "deepseek-v4-flash",
+          "api_key_env": "DEEPSEEK_API_KEY",
+          "max_tokens": 8192,
+          "context_length": 1048576
         },
         "openrouter:nemotron-3-super-120b-free": {
           "name": "OpenRouter Nemotron 3 Super 120B Free",
