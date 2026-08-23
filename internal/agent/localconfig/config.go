@@ -2,6 +2,7 @@ package localconfig
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,18 +11,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mnhkahn/xiaoli/internal/agent/modelcatalog"
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 )
 
 const defaultLLMTimeout = 240 * time.Second
 
 type Config struct {
-	DataDir    string            `json:"data_dir"`
-	Models     ModelConfig       `json:"models"`
-	MCPServers []MCPServerConfig `json:"mcp_servers"`
-	Storage    StorageConfig     `json:"storage"`
-	Tools      ToolConfig        `json:"tools"`
-	Skills     SkillConfig       `json:"skills"`
+	DataDir      string             `json:"data_dir"`
+	Models       ModelConfig        `json:"models"`
+	ModelCatalog ModelCatalogConfig `json:"model_catalog"`
+	MCPServers   []MCPServerConfig  `json:"mcp_servers"`
+	Storage      StorageConfig      `json:"storage"`
+	Tools        ToolConfig         `json:"tools"`
+	Skills       SkillConfig        `json:"skills"`
 
 	secrets map[string]string
 }
@@ -57,6 +60,20 @@ type ModelEndpoint struct {
 	APIKey        string `json:"api_key"`
 	MaxTokens     int    `json:"max_tokens"`
 	ContextLength int    `json:"context_length"`
+}
+
+type ModelCatalogConfig struct {
+	Enabled         bool                             `json:"enabled"`
+	URL             string                           `json:"url"`
+	RefreshInterval string                           `json:"refresh_interval"`
+	Timeout         string                           `json:"timeout"`
+	Providers       map[string]modelcatalog.Provider `json:"providers"`
+}
+
+func (c ModelCatalogConfig) catalogConfig() modelcatalog.Config {
+	refresh, _ := time.ParseDuration(c.RefreshInterval)
+	timeout, _ := time.ParseDuration(c.Timeout)
+	return modelcatalog.Config{Enabled: c.Enabled, URL: c.URL, RefreshInterval: refresh, Timeout: timeout, Providers: c.Providers}
 }
 
 type StorageConfig struct {
@@ -447,6 +464,18 @@ func (c Config) RuntimeConfig(prompt string) (agentruntime.Config, error) {
 			APIKey:        apiKey,
 			MaxTokens:     option.MaxTokens,
 			ContextLength: option.ContextLength,
+		}
+	}
+	if catalog, err := modelcatalog.Load(context.Background(), c.ModelCatalog.catalogConfig(), filepath.Join(c.DataDir, "model_catalog.json")); err == nil {
+		for _, entry := range modelcatalog.Entries(catalog, c.ModelCatalog.catalogConfig().Providers) {
+			if _, exists := models[entry.ID]; exists {
+				continue
+			}
+			apiKey := os.Getenv(entry.APIKeyEnv)
+			if apiKey == "" && c.secrets != nil {
+				apiKey = c.secrets[entry.APIKeyEnv]
+			}
+			models[entry.ID] = agentruntime.LLMModelConfig{ID: entry.ID, DisplayName: entry.DisplayName, BaseURL: entry.BaseURL, Model: entry.Model, APIKey: apiKey, MaxTokens: entry.MaxTokens, ContextLength: entry.ContextLength}
 		}
 	}
 	selected, ok := models[c.Models.Default]

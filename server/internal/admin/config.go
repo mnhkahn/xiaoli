@@ -1,10 +1,12 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"regexp"
 
 	"github.com/mnhkahn/gogogo/logger"
+	"github.com/mnhkahn/xiaoli/internal/agent/modelcatalog"
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 	agentbuiltin "github.com/mnhkahn/xiaoli/internal/agent/tool/builtin"
 	agentskill "github.com/mnhkahn/xiaoli/internal/agent/tool/skill"
@@ -179,6 +181,18 @@ func LoadConfig() Config {
 			ContextLength: option.ContextLength,
 		}
 	}
+	dataDir := env("XIAOLI_DATA_DIR", "/data")
+	if catalog, err := modelcatalog.Load(context.Background(), settings.ModelCatalog.catalogConfig(), filepath.Join(dataDir, "model_catalog.json")); err != nil {
+		logger.Infof("model catalog unavailable: %v", err)
+	} else {
+		for _, entry := range modelcatalog.Entries(catalog, settings.ModelCatalog.catalogConfig().Providers) {
+			if _, exists := goLLMModelConfigs[entry.ID]; exists {
+				continue // Explicit static options remain authoritative.
+			}
+			goLLMModelConfigs[entry.ID] = LLMModelConfig{ID: entry.ID, DisplayName: entry.DisplayName, BaseURL: entry.BaseURL, Model: entry.Model, APIKey: settingsAPIKey(entry.APIKeyEnv), MaxTokens: entry.MaxTokens, ContextLength: entry.ContextLength}
+			goLLMModels = append(goLLMModels, entry.ID)
+		}
+	}
 	if goLLMModel == "" && len(goLLMModels) > 0 {
 		goLLMModel = goLLMModels[0]
 	}
@@ -261,7 +275,7 @@ func LoadConfig() Config {
 		RedisURL:                env("XIAOLI_REDIS_URL", ""),
 		RedisKeyPrefix:          env("XIAOLI_REDIS_KEY_PREFIX", "xiaoli:cp:"),
 		MemoryTTL:               time.Duration(envInt("XIAOLI_MEMORY_TTL_HOURS", 24)) * time.Hour,
-		DataDir:                 env("XIAOLI_DATA_DIR", "/data"),
+		DataDir:                 dataDir,
 		Timezone:                env("TZ", "Asia/Shanghai"),
 
 		// Email configuration (Gmail defaults)
@@ -326,14 +340,15 @@ func defaultSettingsPaths() []string {
 }
 
 type settingsConfig struct {
-	Models     settingsModels                 `json:"models"`
-	MCPServers []settingsMCPServer            `json:"mcp_servers"`
-	Tools      settingsTools                  `json:"tools"`
-	Storage    settingsStorage                `json:"storage"`
-	Reminder   settingsReminder               `json:"reminder"`
-	ChatReact  settingsWorkflowAgent          `json:"chat_react"`
-	Workflows  map[string]settingsWorkflowDef `json:"cron"`
-	A2A        settingsA2AConfig              `json:"a2a"`
+	Models       settingsModels                 `json:"models"`
+	ModelCatalog settingsModelCatalog           `json:"model_catalog"`
+	MCPServers   []settingsMCPServer            `json:"mcp_servers"`
+	Tools        settingsTools                  `json:"tools"`
+	Storage      settingsStorage                `json:"storage"`
+	Reminder     settingsReminder               `json:"reminder"`
+	ChatReact    settingsWorkflowAgent          `json:"chat_react"`
+	Workflows    map[string]settingsWorkflowDef `json:"cron"`
+	A2A          settingsA2AConfig              `json:"a2a"`
 }
 
 type settingsReminder struct {
@@ -437,6 +452,20 @@ type settingsModelEndpoint struct {
 	ContextLength  int    `json:"context_length"`
 	Voice          string `json:"voice"`
 	ResponseFormat string `json:"response_format"`
+}
+
+type settingsModelCatalog struct {
+	Enabled         bool                             `json:"enabled"`
+	URL             string                           `json:"url"`
+	RefreshInterval string                           `json:"refresh_interval"`
+	Timeout         string                           `json:"timeout"`
+	Providers       map[string]modelcatalog.Provider `json:"providers"`
+}
+
+func (s settingsModelCatalog) catalogConfig() modelcatalog.Config {
+	refresh, _ := time.ParseDuration(s.RefreshInterval)
+	timeout, _ := time.ParseDuration(s.Timeout)
+	return modelcatalog.Config{Enabled: s.Enabled, URL: s.URL, RefreshInterval: refresh, Timeout: timeout, Providers: s.Providers}
 }
 
 type settingsMCPServer struct {
