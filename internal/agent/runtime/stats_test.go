@@ -90,6 +90,33 @@ func TestWrapToolNilRecorderInvokableRun(t *testing.T) {
 	}
 }
 
+func TestProjectToolOutputBoundsAndRetainsRaw(t *testing.T) {
+	store := newToolOutputStore(t.TempDir())
+	raw := strings.Repeat("首尾都要保留的输出\n", 2000)
+	got := projectToolOutput("bash", raw, store)
+	if len(got) >= len(raw) || !strings.Contains(got, "中间输出已省略") || !strings.Contains(got, "output_id=") {
+		t.Fatalf("projection did not bound output: len=%d raw=%d content=%q", len(got), len(raw), got[:min(len(got), 200)])
+	}
+	if !strings.Contains(got, "首尾都要保留的输出") {
+		t.Fatalf("projection lost preview: %q", got)
+	}
+}
+
+func TestToolOutputStoreReadIsLineBounded(t *testing.T) {
+	store := newToolOutputStore(t.TempDir())
+	id, err := store.store("one\ntwo\nthree\nfour")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	got, err := store.read(id, 2, 2)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(got, "lines=2-3/4") || !strings.Contains(got, "two\nthree") || strings.Contains(got, "four") {
+		t.Fatalf("bounded read = %q", got)
+	}
+}
+
 func TestWrapToolCounts(t *testing.T) {
 	rec := GlobalRecorder()
 	rec.toolStats = make(map[string]*toolStatsEntry)

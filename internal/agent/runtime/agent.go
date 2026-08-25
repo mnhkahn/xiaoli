@@ -51,33 +51,37 @@ type MCPEndpointStatus struct {
 }
 
 type Agent struct {
-	modelMu          sync.Mutex
-	chatModels       map[string]*openai.ChatModel
-	modelSelector    *agentmodel.Selector
-	memory           *Memory
-	cfg              Config
-	hub              DeviceTools
-	extMCPs          []*agentmcp.Client
-	extToolSets      [][]tool.BaseTool
-	extMCPNames      []string
-	extMCPStatus     []MCPEndpointStatus
-	skillMW          adk.ChatModelAgentMiddleware // 普通 channel 用
-	a2aSkillMW       adk.ChatModelAgentMiddleware // A2A channel 用（skill 白名单）
-	recorder         *Recorder
-	sessionMgr       agentsession.Store
-	askData          map[string]*agentbuiltin.AskData
-	askDataMu        sync.Mutex
-	toolUseConfirms  map[string][]*agentbuiltin.PendingToolUseConfirm
-	toolUseConfirmMu sync.Mutex
-	commitRequests   map[string]*agentbuiltin.CommitRequest
-	commitRequestMu  sync.Mutex
-	taskTool         *agentbuiltin.TaskTool
-	eventBus         agentevent.Publisher
-	channelSendTool  tool.InvokableTool
-	fileWriteRoots   []string
-	agentFileRoots   []string
-	visionAnalyzer   agentbuiltin.VisionAnalyzer
-	recentImages     agentbuiltin.RecentImageStore
+	modelMu           sync.Mutex
+	chatModels        map[string]*openai.ChatModel
+	modelSelector     *agentmodel.Selector
+	memory            *Memory
+	cfg               Config
+	hub               DeviceTools
+	extMCPs           []*agentmcp.Client
+	extToolSets       [][]tool.BaseTool
+	extMCPNames       []string
+	extMCPStatus      []MCPEndpointStatus
+	skillMW           adk.ChatModelAgentMiddleware // 普通 channel 用
+	a2aSkillMW        adk.ChatModelAgentMiddleware // A2A channel 用（skill 白名单）
+	recorder          *Recorder
+	sessionMgr        agentsession.Store
+	askData           map[string]*agentbuiltin.AskData
+	askDataMu         sync.Mutex
+	toolUseConfirms   map[string][]*agentbuiltin.PendingToolUseConfirm
+	toolUseConfirmMu  sync.Mutex
+	commitRequests    map[string]*agentbuiltin.CommitRequest
+	commitRequestMu   sync.Mutex
+	taskTool          *agentbuiltin.TaskTool
+	eventBus          agentevent.Publisher
+	channelSendTool   tool.InvokableTool
+	fileWriteRoots    []string
+	agentFileRoots    []string
+	visionAnalyzer    agentbuiltin.VisionAnalyzer
+	recentImages      agentbuiltin.RecentImageStore
+	recentImageWriter interface {
+		StoreImage(context.Context, string, string, []byte) string
+	}
+	toolOutputs *toolOutputStore
 }
 
 const defaultAgentMaxIterations = 200
@@ -221,7 +225,7 @@ func NewAgent(cfg Config, eventBus agentevent.Publisher) *Agent {
 	}
 	a2aSkillMW := newA2ASkillMiddleware(ctx, cfg, recorder)
 
-	a := &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, extMCPNames: extMCPNames, extMCPStatus: extMCPStatus, skillMW: skillMW, a2aSkillMW: a2aSkillMW, recorder: recorder, sessionMgr: sessionMgr}
+	a := &Agent{chatModels: map[string]*openai.ChatModel{}, modelSelector: selector, memory: memory, cfg: cfg, extMCPs: extMCPs, extToolSets: extToolSets, extMCPNames: extMCPNames, extMCPStatus: extMCPStatus, skillMW: skillMW, a2aSkillMW: a2aSkillMW, recorder: recorder, sessionMgr: sessionMgr, toolOutputs: newToolOutputStore(cfg.LocalDataDir)}
 
 	agentRegistry := agentbuiltin.NewAgentRegistry()
 	agentRoots := cfg.AgentFileRoots
@@ -425,7 +429,7 @@ func (a *Agent) chatModelForID(ctx context.Context, modelID string) (*openai.Cha
 		BaseURL:     baseURL,
 		APIKey:      modelCfg.APIKey,
 		Model:       modelCfg.Model,
-		Timeout:     a.cfg.LLMTimeout,
+		HTTPClient:  newLLMHTTPClient(a.cfg.LLMTimeout, llmResponseHeaderTimeout),
 		Temperature: &temp,
 		MaxTokens:   &maxTokens,
 	})
@@ -443,6 +447,18 @@ func (a *Agent) SetDeviceTools(hub DeviceTools) {
 func (a *Agent) SetVisionTools(vision agentbuiltin.VisionAnalyzer, store agentbuiltin.RecentImageStore) {
 	a.visionAnalyzer = vision
 	a.recentImages = store
+	if writer, ok := store.(interface {
+		StoreImage(context.Context, string, string, []byte) string
+	}); ok {
+		a.recentImageWriter = writer
+	}
+}
+
+func (a *Agent) StoreRecentImage(ctx context.Context, conversationID, contentType string, body []byte) string {
+	if a == nil || a.recentImageWriter == nil {
+		return ""
+	}
+	return a.recentImageWriter.StoreImage(ctx, conversationID, contentType, body)
 }
 
 // ChannelSendersConfig holds the senders for each channel type
@@ -943,6 +959,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 
 	logger.Infof("Agent.Chat called: conversation=%s device=%s memory=%s text=%q", conversationID, deviceID, memoryID, userText)
 	ctx = withRunEventSession(ctx, memoryID)
+	ctx = withRetryReporter(ctx, a.eventBus, memoryID)
 	_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunStarted, memoryID, map[string]any{
 		"conversation_id": conversationID,
 		"device_id":       deviceID,
@@ -1095,8 +1112,9 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		MaxIterations:    maxIterations,
 		ModelRetryConfig: newLLMRetryConfig(),
 	}
+	agentCfg.Handlers = append(agentCfg.Handlers, newToolOutputBudgetMiddleware(a.toolOutputs, modelCfg))
 	if a.skillMW != nil {
-		agentCfg.Handlers = []adk.ChatModelAgentMiddleware{a.skillMW}
+		agentCfg.Handlers = append(agentCfg.Handlers, a.skillMW)
 	}
 	if len(einoTools) > 0 {
 		agentCfg.ToolsConfig = adk.ToolsConfig{
@@ -2312,6 +2330,7 @@ func (a *Agent) subAgentTools(ctx context.Context, allowTools bool, channelName 
 		filter |= agentbuiltin.ToolWebFetch
 	}
 	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, agentbuiltin.ToolOptions{}))
+	einoTools = a.appendToolOutputReader(einoTools)
 	for _, tools := range a.extToolSets {
 		for _, t := range tools {
 			einoTools = append(einoTools, a.WrapTool(t, "mcp"))
@@ -2326,6 +2345,7 @@ func (a *Agent) generateTools(ctx context.Context) []tool.BaseTool {
 		filter |= agentbuiltin.ToolWebFetch
 	}
 	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, agentbuiltin.ToolOptions{}))
+	einoTools = a.appendToolOutputReader(einoTools)
 	for _, tools := range a.extToolSets {
 		for _, t := range tools {
 			einoTools = append(einoTools, a.WrapTool(t, "mcp"))
@@ -2391,6 +2411,7 @@ func (a *Agent) toolsForChat(_ context.Context, memoryID string, deviceID string
 		opts.FileRoots = a.agentFileRoots
 	}
 	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, opts))
+	einoTools = a.appendToolOutputReader(einoTools)
 	if a.taskTool != nil {
 		einoTools = append(einoTools, a.WrapTool(a.taskTool, "builtin"))
 	}
@@ -2422,6 +2443,7 @@ func (a *Agent) a2aPublicTools(ctx context.Context) []tool.BaseTool {
 		filter |= agentbuiltin.ToolWebFetch
 	}
 	einoTools := a.wrapBuiltinTools(agentbuiltin.NewFilteredTools(filter, agentbuiltin.ToolOptions{}))
+	einoTools = a.appendToolOutputReader(einoTools)
 	for serverIdx, tools := range a.extToolSets {
 		serverName := "unknown"
 		if serverIdx < len(a.extMCPNames) {

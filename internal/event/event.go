@@ -19,6 +19,7 @@ const (
 	TypeAgentRunFailed    = "agent.run.failed"
 	TypeAgentToolStarted  = "agent.tool.started"
 	TypeAgentToolFinished = "agent.tool.finished"
+	TypeAgentRetrying     = "agent.retrying"
 
 	// Session events
 	TypeSessionDiff  = "session.diff"

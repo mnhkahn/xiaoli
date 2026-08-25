@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 
 	"github.com/mnhkahn/xiaoli/internal/agent/localconfig"
+	agentmedia "github.com/mnhkahn/xiaoli/internal/agent/media"
 	"github.com/mnhkahn/xiaoli/internal/agent/runlog"
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 	agentworkflow "github.com/mnhkahn/xiaoli/internal/agent/workflow"
@@ -49,6 +50,9 @@ func New(opts Options) (*App, error) {
 		return nil, fmt.Errorf("agent initialization failed; check model configuration and API key")
 	}
 	agent.SetFileWriteRoots(cfg.Tools.AllowedRoots)
+	selected := rt.LLMModelConfigs[rt.LLMModel]
+	vision := agentmedia.NewOpenAIVisionClient(agentmedia.VisionConfig{URL: selected.BaseURL, APIKey: selected.APIKey, Model: selected.Model, Timeout: rt.LLMTimeout})
+	agent.SetVisionTools(vision, agentmedia.NewRecentImageStore(nil))
 	return &App{
 		Config:      cfg,
 		Runtime:     rt,

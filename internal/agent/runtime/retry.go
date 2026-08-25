@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand"
 	"strings"
 	"time"
@@ -11,12 +12,14 @@ import (
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
 	"github.com/mnhkahn/gogogo/logger"
+
+	agentevent "github.com/mnhkahn/xiaoli/internal/event"
 )
 
 const (
-	llmRetryMax      = 2
-	llmBackoffBase   = 500 * time.Millisecond
-	llmBackoffCap    = 10 * time.Second
+	llmRetryMax      = 5
+	llmBackoffBase   = time.Second
+	llmBackoffCap    = 30 * time.Second
 	agentRetryMax    = 1
 	agentBackoffBase = 2 * time.Second
 	agentBackoffCap  = 30 * time.Second
@@ -45,6 +48,29 @@ var transientTimeoutPhrases = []string{
 	"client.timeout exceeded",
 	"i/o timeout",
 	"timeout awaiting headers",
+	"timeout awaiting response headers",
+}
+
+type retryReporter struct {
+	eventBus  agentevent.Publisher
+	sessionID string
+}
+type retryReporterKey struct{}
+
+func withRetryReporter(ctx context.Context, eventBus agentevent.Publisher, sessionID string) context.Context {
+	return context.WithValue(ctx, retryReporterKey{}, retryReporter{eventBus: eventBus, sessionID: sessionID})
+}
+
+func reportModelRetry(ctx context.Context, attempt int, err error) {
+	r, _ := ctx.Value(retryReporterKey{}).(retryReporter)
+	if r.eventBus == nil {
+		return
+	}
+	_ = publishRunEvent(ctx, r.eventBus, agentevent.TypeAgentRetrying, r.sessionID, map[string]any{
+		"retry": attempt, "max_retries": llmRetryMax,
+		"message": fmt.Sprintf("Retrying model request (retry %d/%d)…", attempt, llmRetryMax),
+		"error":   err.Error(),
+	})
 }
 
 func llmShouldRetry(ctx context.Context, retryCtx *adk.RetryContext) *adk.RetryDecision {
@@ -65,8 +91,13 @@ func llmShouldRetry(ctx context.Context, retryCtx *adk.RetryContext) *adk.RetryD
 				}
 			}
 			if !isQuota {
+				if apiErr.HTTPStatusCode == 429 {
+					reportModelRetry(ctx, retryCtx.RetryAttempt, retryCtx.Err)
+					return &adk.RetryDecision{Retry: true}
+				}
 				for _, p := range rateLimitGenericPhrases {
 					if strings.Contains(msg, p) {
+						reportModelRetry(ctx, retryCtx.RetryAttempt, retryCtx.Err)
 						return &adk.RetryDecision{Retry: true}
 					}
 				}
@@ -77,10 +108,12 @@ func llmShouldRetry(ctx context.Context, retryCtx *adk.RetryContext) *adk.RetryD
 	} else {
 		msg := strings.ToLower(retryCtx.Err.Error())
 		if isTransientTimeoutMessage(msg) {
+			reportModelRetry(ctx, retryCtx.RetryAttempt, retryCtx.Err)
 			return &adk.RetryDecision{Retry: true}
 		}
 		for _, p := range rateLimitGenericPhrases {
 			if strings.Contains(msg, p) {
+				reportModelRetry(ctx, retryCtx.RetryAttempt, retryCtx.Err)
 				return &adk.RetryDecision{Retry: true}
 			}
 		}

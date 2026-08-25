@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino/adk"
 )
 
@@ -41,5 +42,16 @@ func TestAgentShouldRetryHTTPTimeoutText(t *testing.T) {
 	err := errors.New(`Post "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`)
 	if !isRetryableAgentError(err) {
 		t.Fatal("isRetryableAgentError(Client.Timeout exceeded while awaiting headers) = false, want true")
+	}
+}
+
+func TestLLMShouldRetryHTTP429WithoutRateLimitText(t *testing.T) {
+	decision := llmShouldRetry(context.Background(), &adk.RetryContext{RetryAttempt: 1, Err: &openai.APIError{
+		HTTPStatusCode: 429,
+		HTTPStatus:     "429 Too Many Requests",
+		Message:        "Provider returned error",
+	}})
+	if decision == nil || !decision.Retry {
+		t.Fatalf("llmShouldRetry(429) = %#v, want retry", decision)
 	}
 }

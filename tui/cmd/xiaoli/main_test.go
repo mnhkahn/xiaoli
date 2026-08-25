@@ -2508,7 +2508,7 @@ func TestToolEventsRenderWorkplaceStatusRows(t *testing.T) {
 		t.Fatalf("tool event roles = %q/%q/%q", start.role, done.role, failed.role)
 	}
 	got := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start, done, failed}, 100, 3))
-	for _, want := range []string{"Tracing bash: git status --porcelain=v1", "Validated bash: git status --porcelain=v1", "Blocked bash"} {
+	for _, want := range []string{"Ran a command", "$ git status --porcelain=v1", "Completed", "Blocked bash"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("tool render = %q, missing %q", got, want)
 		}
@@ -2526,13 +2526,13 @@ func TestToolEventsRenderFileOperationDetails(t *testing.T) {
 		args string
 		want string
 	}{
-		{name: "read_file", args: `{"path":"tui/cmd/xiaoli/main.go"}`, want: "Tracing read_file: tui/cmd/xiaoli/main.go"},
-		{name: "edit_file", args: `{"path":"internal/agent/runtime/agent.go"}`, want: "Tracing edit_file: internal/agent/runtime/agent.go"},
-		{name: "glob", args: `{"pattern":"**/*.go"}`, want: "Tracing glob: **/*.go"},
-		{name: "grep", args: `{"pattern":"toolEvent","glob":"**/*.go"}`, want: `Tracing grep: "toolEvent" in **/*.go`},
-		{name: "file_write", args: `{"filename":"report.md"}`, want: "Tracing file_write: report.md"},
-		{name: "webfetch", args: `{"url":"https://example.com/article"}`, want: "Tracing webfetch: https://example.com/article"},
-		{name: "websearch", args: `{"query":"latest AI news"}`, want: "Tracing websearch: latest AI news"},
+		{name: "read_file", args: `{"path":"tui/cmd/xiaoli/main.go"}`, want: "Ran read_file"},
+		{name: "edit_file", args: `{"path":"internal/agent/runtime/agent.go"}`, want: "Ran edit_file"},
+		{name: "glob", args: `{"pattern":"**/*.go"}`, want: "Ran glob"},
+		{name: "grep", args: `{"pattern":"toolEvent","glob":"**/*.go"}`, want: "Ran grep"},
+		{name: "file_write", args: `{"filename":"report.md"}`, want: "Ran file_write"},
+		{name: "webfetch", args: `{"url":"https://example.com/article"}`, want: "Ran webfetch"},
+		{name: "websearch", args: `{"query":"latest AI news"}`, want: "Ran websearch"},
 	}
 	for _, tc := range cases {
 		item := eventTranscriptItem(agentevent.Event{
@@ -2543,6 +2543,28 @@ func TestToolEventsRenderFileOperationDetails(t *testing.T) {
 		if !strings.Contains(got, tc.want) {
 			t.Fatalf("%s render = %q, missing %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestToolEventCardRedactsBashSecretsAndCompletesInPlace(t *testing.T) {
+	start := agentevent.Event{
+		Type: agentevent.TypeAgentToolStarted,
+		Data: map[string]any{"name": "bash", "arguments": `{"command":"curl -H 'Authorization: Bearer real-secret' -H 'X-API-Key: another-secret' https://example.com"}`},
+	}
+	item := eventTranscriptItem(start)
+	if !strings.Contains(item.text, "Ran a command") || !strings.Contains(item.text, "$ curl") {
+		t.Fatalf("start card = %q", item.text)
+	}
+	if strings.Contains(item.text, "real-secret") || strings.Contains(item.text, "another-secret") {
+		t.Fatalf("start card leaked secret: %q", item.text)
+	}
+	m := model{items: []transcriptItem{item}, runPulseFrame: 3}
+	if !m.completeToolEvent(agentevent.Event{Type: agentevent.TypeAgentToolFinished, Data: map[string]any{"name": "bash", "elapsed_ms": int64(42)}}) {
+		t.Fatal("tool completion did not update active card")
+	}
+	got := m.items[0]
+	if got.role != "tool-done" || !strings.Contains(got.text, "Completed · 42ms") || !strings.Contains(got.text, "$ curl") {
+		t.Fatalf("completed card = %#v", got)
 	}
 }
 

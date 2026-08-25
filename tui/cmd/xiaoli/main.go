@@ -1101,11 +1101,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				text = cmd.prompt
 			}
 			m.input.SetValue("")
-			m.clearPastedContents()
 			m.hadChatInput = true
 			if m.sessionID == "" {
 				m.sessionID = m.createProjectSession()
 			}
+			m.storeImageAttachments(m.sessionID)
+			m.clearPastedContents()
 			m.recordCurrentSession()
 			m.busy = true
 			m.status = "running"
@@ -1564,6 +1565,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if isSilentPermissionEvent(msg.event) {
 			return m, waitForEvent(m.events)
 		}
+		if msg.event.Type == agentevent.TypeAgentToolFinished && m.completeToolEvent(msg.event) {
+			m.refreshContextUsage()
+			m.syncViewport(true)
+			return m, tea.Batch(waitForEvent(m.events), terminalTitleCmd(m))
+		}
 		item := eventTranscriptItem(msg.event)
 		item.frame = m.runPulseFrame
 		switch item.role {
@@ -1899,13 +1905,13 @@ func renderTranscriptContentWithFrameAndLinks(items []transcriptItem, width int,
 			plain = renderRunEventLine(label, width, itemFrame, runEventFailed)
 			custom = true
 		case "tool-active":
-			plain = renderRunEventLine(item.text, width, itemFrame, runEventToolActive)
+			plain = renderToolEventCard(item.text, width, itemFrame, runEventToolActive)
 			custom = true
 		case "tool-done":
-			plain = renderRunEventLine(item.text, width, itemFrame, runEventToolDone)
+			plain = renderToolEventCard(item.text, width, itemFrame, runEventToolDone)
 			custom = true
 		case "tool-failed":
-			plain = renderRunEventLine(item.text, width, itemFrame, runEventToolFailed)
+			plain = renderToolEventCard(item.text, width, itemFrame, runEventToolFailed)
 			custom = true
 		case "error":
 			linked = renderLinkedText(item.text, textWidth, "error: ")
@@ -2064,6 +2070,18 @@ func renderRunEventLine(label string, width int, frame int, state runEventState)
 	return shimmerText(fitDisplay(prefix+" "+label, width), colors, frame)
 }
 
+func renderToolEventCard(text string, width int, frame int, state runEventState) string {
+	parts := strings.Split(text, "\n")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return renderRunEventLine("Ran tool", width, frame, state)
+	}
+	lines := []string{renderRunEventLine(parts[0], width, frame, state)}
+	for _, part := range parts[1:] {
+		lines = append(lines, shellStyle.Render(fitDisplay("  "+part, width)))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func positiveMod(value, base int) int {
 	if base <= 0 {
 		return 0
@@ -2147,11 +2165,11 @@ func renderTranscript(items []transcriptItem, width, height int, scroll int) str
 			}
 			lines = append(lines, renderRunEventLine(label, width, item.frame, runEventFailed))
 		case "tool-active":
-			lines = append(lines, renderRunEventLine(item.text, width, item.frame, runEventToolActive))
+			lines = append(lines, renderToolEventCard(item.text, width, item.frame, runEventToolActive))
 		case "tool-done":
-			lines = append(lines, renderRunEventLine(item.text, width, item.frame, runEventToolDone))
+			lines = append(lines, renderToolEventCard(item.text, width, item.frame, runEventToolDone))
 		case "tool-failed":
-			lines = append(lines, renderRunEventLine(item.text, width, item.frame, runEventToolFailed))
+			lines = append(lines, renderToolEventCard(item.text, width, item.frame, runEventToolFailed))
 		case "error":
 			lines = append(lines, errStyle.Render(wrapWithPrefix("error: ", item.text, textWidth)))
 		default:
@@ -4875,6 +4893,27 @@ func (m *model) addImageAttachment(path, mediaType string) {
 	m.insertInputText(formatImagePasteRef(id))
 }
 
+func (m *model) storeImageAttachments(sessionID string) {
+	if m == nil || m.app == nil || m.app.Agent == nil || sessionID == "" {
+		return
+	}
+	for _, content := range m.pastedContents {
+		if content.Type != pastedContentImage || content.Path == "" {
+			continue
+		}
+		body, err := os.ReadFile(content.Path)
+		if err != nil {
+			logger.Infof("tui image attachment read failed: path=%s err=%v", content.Path, err)
+			continue
+		}
+		if len(body) == 0 || len(body) > 2*1024*1024 {
+			logger.Infof("tui image attachment ignored: path=%s bytes=%d", content.Path, len(body))
+			continue
+		}
+		m.app.Agent.StoreRecentImage(context.Background(), sessionID, content.MediaType, body)
+	}
+}
+
 func (m *model) nextPastedID() int {
 	if m.nextPasteID <= 0 {
 		maxID := 0
@@ -6023,15 +6062,70 @@ func eventTranscriptItem(e agentevent.Event) transcriptItem {
 	case agentevent.TypeAgentRunFailed:
 		return transcriptItem{role: "run-failed", text: "Blocked"}
 	case agentevent.TypeAgentToolStarted:
-		return transcriptItem{role: "tool-active", text: toolEventText(e, "Tracing")}
+		return transcriptItem{role: "tool-active", text: toolEventCardStart(e)}
 	case agentevent.TypeAgentToolFinished:
 		if toolEventError(e) != "" {
 			return transcriptItem{role: "tool-failed", text: toolEventText(e, "Blocked")}
 		}
-		return transcriptItem{role: "tool-done", text: toolEventText(e, "Validated")}
+		return transcriptItem{role: "tool-done", text: toolEventCardEnd(e)}
+	case agentevent.TypeAgentRetrying:
+		if data, ok := e.Data.(map[string]any); ok {
+			return transcriptItem{role: "run-active", text: stringMapValue(data, "message")}
+		}
+		return transcriptItem{role: "run-active", text: "Retrying model request…"}
 	default:
 		return transcriptItem{role: "event", text: eventSummary(e)}
 	}
+}
+
+func (m *model) completeToolEvent(e agentevent.Event) bool {
+	for i := len(m.items) - 1; i >= 0; i-- {
+		if m.items[i].role != "tool-active" {
+			continue
+		}
+		if toolEventError(e) != "" {
+			m.items[i].role = "tool-failed"
+		} else {
+			m.items[i].role = "tool-done"
+		}
+		m.items[i].text += "\n" + toolEventCardEnd(e)
+		m.items[i].frame = m.runPulseFrame
+		return true
+	}
+	return false
+}
+
+func toolEventCardStart(e agentevent.Event) string {
+	data, _ := e.Data.(map[string]any)
+	name := stringMapValue(data, "name")
+	detail := toolEventDetail(name, data)
+	if name == "bash" && detail != "" {
+		return "Ran a command\n$ " + redactCommandForDisplay(detail)
+	}
+	if detail != "" {
+		return fmt.Sprintf("Ran %s\n$ %s", name, redactCommandForDisplay(detail))
+	}
+	return "Ran " + firstNonEmptyArg(name, "tool")
+}
+
+func toolEventCardEnd(e agentevent.Event) string {
+	data, _ := e.Data.(map[string]any)
+	elapsed, _ := data["elapsed_ms"].(int64)
+	if elapsed == 0 {
+		if n, ok := data["elapsed_ms"].(int); ok {
+			elapsed = int64(n)
+		}
+	}
+	if errText := toolEventError(e); errText != "" {
+		return fmt.Sprintf("Blocked · %dms · %s", elapsed, truncateRunEventDetail(errText, 100))
+	}
+	return fmt.Sprintf("Completed · %dms", elapsed)
+}
+
+func redactCommandForDisplay(value string) string {
+	value = regexp.MustCompile(`(?i)(authorization\s*:\s*bearer\s+)[^\s'"\x60]+`).ReplaceAllString(value, "$1***")
+	value = regexp.MustCompile(`(?i)((?:api[_-]?key|token|password|secret)\s*[=:]\s*)[^\s'"\x60]+`).ReplaceAllString(value, "$1***")
+	return truncateRunEventDetail(value, 180)
 }
 
 func eventSummary(e agentevent.Event) string {
@@ -6049,6 +6143,11 @@ func eventSummary(e agentevent.Event) string {
 			return fmt.Sprintf("%s: %s", toolEventText(e, "Blocked"), errText)
 		}
 		return toolEventText(e, "Validated")
+	case agentevent.TypeAgentRetrying:
+		if data, ok := e.Data.(map[string]any); ok {
+			return stringMapValue(data, "message")
+		}
+		return "Retrying model request…"
 	default:
 		return e.Type
 	}

@@ -455,11 +455,12 @@ func (r *Recorder) RecordToolError(toolName string) {
 }
 
 type toolCounter struct {
-	inner    tool.InvokableTool
-	toolName string
-	category string
-	recorder *Recorder
-	eventBus agentevent.Publisher
+	inner       tool.InvokableTool
+	toolName    string
+	category    string
+	recorder    *Recorder
+	eventBus    agentevent.Publisher
+	toolOutputs *toolOutputStore
 }
 
 type toolRunTracker struct {
@@ -493,13 +494,13 @@ func (t *toolRunTracker) Count() int {
 	return t.count
 }
 
-func newToolCounter(inner tool.InvokableTool, recorder *Recorder, category string, eventBus agentevent.Publisher) *toolCounter {
+func newToolCounter(inner tool.InvokableTool, recorder *Recorder, category string, eventBus agentevent.Publisher, toolOutputs *toolOutputStore) *toolCounter {
 	info, _ := inner.Info(context.Background())
 	toolName := "unknown"
 	if info != nil && info.Name != "" {
 		toolName = info.Name
 	}
-	return &toolCounter{inner: inner, toolName: toolName, category: category, recorder: recorder, eventBus: eventBus}
+	return &toolCounter{inner: inner, toolName: toolName, category: category, recorder: recorder, eventBus: eventBus, toolOutputs: toolOutputs}
 }
 
 func (w *toolCounter) Info(ctx context.Context) (*schema.ToolInfo, error) {
@@ -540,6 +541,7 @@ func (w *toolCounter) InvokableRun(ctx context.Context, argumentsInJSON string, 
 	data := map[string]any{
 		"name":       w.toolName,
 		"category":   w.category,
+		"arguments":  argumentsInJSON,
 		"elapsed_ms": time.Since(start).Milliseconds(),
 		"result_len": len(result),
 	}
@@ -550,6 +552,13 @@ func (w *toolCounter) InvokableRun(ctx context.Context, argumentsInJSON string, 
 		data["error"] = err.Error()
 	}
 	_ = publishRunEvent(ctx, w.eventBus, agentevent.TypeAgentToolFinished, sessionID, data)
+	if err == nil {
+		projected := projectToolOutput(w.toolName, result, w.toolOutputs)
+		if len(projected) != len(result) {
+			logger.Infof("tool output projected: tool=%s raw_bytes=%d model_bytes=%d", w.toolName, len(result), len(projected))
+		}
+		return projected, nil
+	}
 	return result, err
 }
 
@@ -558,7 +567,7 @@ func (a *Agent) WrapTool(t tool.BaseTool, category string) tool.BaseTool {
 		return t
 	}
 	if invokable, ok := t.(tool.InvokableTool); ok {
-		return newToolCounter(invokable, a.recorder, category, a.eventBus)
+		return newToolCounter(invokable, a.recorder, category, a.eventBus, a.toolOutputs)
 	}
 	return t
 }
