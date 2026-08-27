@@ -74,6 +74,12 @@ type chatDoneMsg struct {
 	cancel    context.CancelFunc
 }
 
+type toolFailure struct {
+	name      string
+	arguments string
+	err       string
+}
+
 type chatTimeoutMsg struct {
 	runID int
 }
@@ -303,6 +309,11 @@ type model struct {
 	completionTokens            int
 	currentOutputChars          int
 	activeModelRequests         int
+	executionExpected           bool
+	toolCallsThisChat           int
+	toolRepairAttempts          int
+	lastToolFailure             *toolFailure
+	toolFailureRecoveryAttempts int
 	scroll                      int
 	viewport                    viewport.Model
 	streamingIndex              int
@@ -317,6 +328,7 @@ type model struct {
 	pendingToolConfirm          *agentbuiltin.PendingToolUseConfirm
 	pendingToolConfirmReviewFix bool
 	pendingToolConfirmQueue     []pendingToolConfirmQueueItem
+	handledToolConfirmIDs       map[string]struct{}
 	pendingQuestion             string
 	pendingOptions              []string
 	pendingChoice               int
@@ -1119,6 +1131,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamFlushPending = false
 			m.scroll = 0
 			m.syncViewport(true)
+			m.beginExecutionTracking(text)
 			chatCtx := m.beginChatContext()
 			text = m.promptWithQueuedUserPrompts(text)
 			return m, tea.Batch(startChatCmd(chatCtx, m.app.Agent, m.chatMsgs, m.sessionID, m.cwd, text, disabledToolsForPlanMode(m.planMode || planRequest)), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(m))
@@ -1251,23 +1264,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "waiting input"
 			}
 		}
+		if msg.err != nil && m.lastToolFailure != nil && !m.hasPendingBashConfirm() && !m.hasPendingOptions() {
+			return m.retryToolFailure(msg.reviewFix)
+		}
 		if fakeBashApprovalIndex >= 0 && !m.hasPendingBashConfirm() {
 			fakeText := m.items[fakeBashApprovalIndex].text
 			m.items[fakeBashApprovalIndex].role = "system"
 			m.items[fakeBashApprovalIndex].text = fakeBashApprovalTranscriptText(fakeText)
 			logger.Infof("tui invalidated fake bash approval transcript: index=%d reply_len=%d", fakeBashApprovalIndex, len([]rune(m.items[fakeBashApprovalIndex].text)))
 			if prompt := fakeBashApprovalCorrectionPrompt(fakeText); prompt != "" {
-				sessionID := m.activeSessionID()
-				if sessionID == "" {
-					sessionID = m.sessionID
-				}
-				m.busy = true
-				m.status = "running"
-				m.syncViewport(true)
-				chatCtx := m.beginChatContext()
-				return m, tea.Batch(m.startBashFollowupChat(chatCtx, sessionID, prompt, msg.reviewFix), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(m))
+				return m.retryMissingToolCall(prompt, msg.reviewFix)
 			}
 			m.status = "idle"
+		}
+		if msg.err == nil && m.executionExpected && !m.hasPendingBashConfirm() && !m.hasPendingOptions() {
+			for i := len(m.items) - 1; i >= 0; i-- {
+				if m.items[i].role != "assistant" {
+					continue
+				}
+				m.items[i].role = "system"
+				m.items[i].text = "本轮未产生真实工具调用，结果无效。\n\n" + m.items[i].text
+				break
+			}
+			return m.retryMissingToolCall(missingToolCallCorrectionPrompt(), msg.reviewFix)
 		}
 		if !m.hasPendingBashConfirm() && !m.hasPendingOptions() && m.app.Agent.ConsumeCommitRequest(channelUser) != nil {
 			if cmd := m.startGitCmsgSlash("/commit"); cmd != nil {
@@ -1575,6 +1594,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if isSilentPermissionEvent(msg.event) {
 			return m, waitForEvent(m.events)
 		}
+		if msg.event.Type == agentevent.TypeAgentToolStarted {
+			m.toolCallsThisChat++
+			m.executionExpected = false
+		}
+		if msg.event.Type == agentevent.TypeAgentRunCompleted && m.executionExpected {
+			// Wait for chatDone to verify the textual reply. A tool-required turn
+			// without a structured tool event must not be presented as Delivered.
+			return m, waitForEvent(m.events)
+		}
+		if msg.event.Type == agentevent.TypeAgentToolFinished {
+			if errText := toolEventError(msg.event); errText != "" {
+				data, _ := msg.event.Data.(map[string]any)
+				m.lastToolFailure = &toolFailure{name: stringMapValue(data, "name"), arguments: stringMapValue(data, "arguments"), err: errText}
+			}
+		}
 		if msg.event.Type == agentevent.TypeAgentToolFinished && m.completeToolEvent(msg.event) {
 			m.refreshContextUsage()
 			m.syncViewport(true)
@@ -1838,10 +1872,21 @@ func (m model) renderTranscriptItemsWithLinks(width int) (string, []transcriptLi
 	if thinking := m.thinkingStatus(); thinking != "" {
 		if index := latestActiveEventIndex(items); index >= 0 && items[index].role == "run-active" {
 			items[index].text = thinking
+			items = moveTranscriptItemToEnd(items, index)
 		}
 	}
 	rendered := renderTranscriptContentWithFrameAndLinks(items, width, m.runPulseFrame)
 	return rendered.content, rendered.links
+}
+
+func moveTranscriptItemToEnd(items []transcriptItem, index int) []transcriptItem {
+	if index < 0 || index >= len(items)-1 {
+		return items
+	}
+	item := items[index]
+	copy(items[index:], items[index+1:])
+	items[len(items)-1] = item
+	return items
 }
 
 func renderTranscriptContent(items []transcriptItem, width int) string {
@@ -4450,7 +4495,7 @@ func (m model) pendingConfirmSessionID(confirm *agentbuiltin.PendingToolUseConfi
 }
 
 func (m *model) enqueuePendingToolConfirm(confirm *agentbuiltin.PendingToolUseConfirm, reviewFix bool, source string) {
-	if confirm == nil || m.hasPendingToolConfirm(confirm) {
+	if confirm == nil || m.hasHandledToolConfirm(confirm) || m.hasPendingToolConfirm(confirm) {
 		return
 	}
 	m.markPendingToolUseConfirmInTranscript(confirm)
@@ -4462,6 +4507,39 @@ func (m *model) enqueuePendingToolConfirm(confirm *agentbuiltin.PendingToolUseCo
 	}
 	m.pendingToolConfirmQueue = append(m.pendingToolConfirmQueue, pendingToolConfirmQueueItem{confirm: confirm, reviewFix: reviewFix})
 	logger.Infof("tui pending tool confirm queued: source=%s session=%s tool=%s tool_use_id=%s queue=%d", source, confirm.SessionID, confirm.ToolName, confirm.ToolUseID, len(m.pendingToolConfirmQueue))
+}
+
+func toolConfirmIdentity(confirm *agentbuiltin.PendingToolUseConfirm) string {
+	if confirm == nil {
+		return ""
+	}
+	if toolUseID := strings.TrimSpace(confirm.ToolUseID); toolUseID != "" {
+		return "tool:" + toolUseID
+	}
+	if hash := strings.TrimSpace(confirm.BashHash); hash != "" {
+		return "bash:" + strings.TrimSpace(confirm.SessionID) + ":" + hash
+	}
+	return ""
+}
+
+func (m model) hasHandledToolConfirm(confirm *agentbuiltin.PendingToolUseConfirm) bool {
+	identity := toolConfirmIdentity(confirm)
+	if identity == "" {
+		return false
+	}
+	_, ok := m.handledToolConfirmIDs[identity]
+	return ok
+}
+
+func (m *model) markToolConfirmHandled(confirm *agentbuiltin.PendingToolUseConfirm) {
+	identity := toolConfirmIdentity(confirm)
+	if identity == "" {
+		return
+	}
+	if m.handledToolConfirmIDs == nil {
+		m.handledToolConfirmIDs = make(map[string]struct{})
+	}
+	m.handledToolConfirmIDs[identity] = struct{}{}
 }
 
 func (m model) hasPendingToolConfirm(confirm *agentbuiltin.PendingToolUseConfirm) bool {
@@ -4552,6 +4630,7 @@ func (m *model) promoteNextPendingToolConfirm(source string) {
 func (m *model) clearPendingToolConfirmState(sessionID string, clearApproval bool) {
 	confirm := m.pendingToolConfirm
 	reviewFix := m.pendingToolConfirmReviewFix
+	m.markToolConfirmHandled(confirm)
 	if clearApproval && confirm != nil && strings.TrimSpace(sessionID) != "" && strings.TrimSpace(confirm.BashHash) != "" {
 		agentbuiltin.ClearBashApprovalHash(sessionID, confirm.BashHash)
 	}
@@ -4564,6 +4643,7 @@ func (m *model) clearAllPendingToolConfirmState(sessionID string, clearApproval 
 		agentbuiltin.ClearBashApproval(sessionID)
 	}
 	m.pendingToolConfirmQueue = nil
+	m.handledToolConfirmIDs = nil
 	m.setPendingToolConfirm(nil, false)
 }
 
@@ -4619,6 +4699,94 @@ func (m *model) startBashFollowupChat(ctx context.Context, sessionID, prompt str
 		return startReviewFixChatCmd(ctx, m.appAgent(), m.chatMsgs, sessionID, m.cwd, prompt, disabledToolsForPlanMode(m.planMode))
 	}
 	return startChatCmd(ctx, m.appAgent(), m.chatMsgs, sessionID, m.cwd, prompt, disabledToolsForPlanMode(m.planMode))
+}
+
+func (m *model) beginExecutionTracking(prompt string) {
+	m.executionExpected = promptLikelyNeedsTool(prompt)
+	m.toolCallsThisChat = 0
+	m.toolRepairAttempts = 0
+	m.lastToolFailure = nil
+	m.toolFailureRecoveryAttempts = 0
+}
+
+func promptLikelyNeedsTool(prompt string) bool {
+	text := strings.ToLower(strings.TrimSpace(prompt))
+	if text == "" {
+		return false
+	}
+	// A continuation is only meaningful when the prior task is still in
+	// progress. Treat it as execution-required so a weak model cannot close the
+	// turn with prose such as "I'll run it" without issuing a real tool call.
+	if isContinuationText(text) {
+		return true
+	}
+	markers := []string{
+		"当前目录", "目录", "文件", "日志", "最近提交", "git ", "运行", "执行", "命令", "测试", "构建", "编译", "修改", "修复", "查看当前", "检查当前",
+		"read ", "inspect ", "run ", "execute ", "test ", "build ", "compile ", "modify ", "fix ",
+	}
+	return hasAny(text, markers...)
+}
+
+func missingToolCallCorrectionPrompt() string {
+	return "本回合无效：用户的请求需要访问或改变外部状态，但你没有发出任何真实结构化工具调用。\n\n现在必须调用合适的工具（例如 bash、task 或 MCP 工具）来完成工作；不要再用“正在看”“等待结果”“我会执行”等普通文本代替工具调用。若确实没有可用工具或缺少必要信息，请明确说明阻塞原因。"
+}
+
+func (m *model) retryMissingToolCall(prompt string, reviewFix bool) (tea.Model, tea.Cmd) {
+	if m.toolRepairAttempts >= 1 {
+		m.executionExpected = false
+		m.status = "idle"
+		m.items = append(m.items, transcriptItem{role: "error", text: "模型连续两次未发出真实工具调用，已停止自动续办。请重试或切换更稳定的免费模型。"})
+		m.syncViewport(true)
+		return *m, tea.Batch(waitForEvent(m.events), terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
+	}
+	m.toolRepairAttempts++
+	m.busy = true
+	m.status = "running"
+	m.syncViewport(true)
+	chatCtx := m.beginChatContext()
+	sessionID := m.activeSessionID()
+	if sessionID == "" {
+		sessionID = m.sessionID
+	}
+	var start tea.Cmd
+	if reviewFix {
+		start = startReviewFixChatCmd(chatCtx, m.appAgent(), m.chatMsgs, sessionID, m.cwd, prompt, disabledToolsForPlanMode(m.planMode))
+	} else {
+		start = startChatCmd(chatCtx, m.appAgent(), m.chatMsgs, sessionID, m.cwd, prompt, disabledToolsForPlanMode(m.planMode))
+	}
+	return *m, tea.Batch(start, waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(*m))
+}
+
+func (m *model) retryToolFailure(reviewFix bool) (tea.Model, tea.Cmd) {
+	failure := m.lastToolFailure
+	if failure == nil || m.toolFailureRecoveryAttempts >= 1 {
+		m.status = "idle"
+		m.items = append(m.items, transcriptItem{role: "error", text: "工具连续调用失败，已停止自动续办。请根据错误调整请求或更换模型后重试。"})
+		m.syncViewport(true)
+		return *m, tea.Batch(waitForEvent(m.events), terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
+	}
+	m.toolFailureRecoveryAttempts++
+	m.lastToolFailure = nil
+	m.busy = true
+	m.status = "running"
+	m.syncViewport(true)
+	var prompt strings.Builder
+	prompt.WriteString("[TOOL_RESULT]\n")
+	fmt.Fprintf(&prompt, "tool=%s\nstatus=error\n", firstNonEmpty(failure.name, "unknown"))
+	if strings.TrimSpace(failure.arguments) != "" {
+		fmt.Fprintf(&prompt, "arguments=%s\n", failure.arguments)
+	}
+	fmt.Fprintf(&prompt, "error=%s\n[/TOOL_RESULT]\n\n", failure.err)
+	prompt.WriteString("上一个真实工具调用失败。请根据错误修正参数、改用更合适的工具，或向用户说明具体阻塞原因；不要重复相同的无效调用，也不要把工具调用写成普通文本。")
+	chatCtx := m.beginChatContext()
+	sessionID := firstNonEmpty(m.activeSessionID(), m.sessionID)
+	var start tea.Cmd
+	if reviewFix {
+		start = startReviewFixChatCmd(chatCtx, m.appAgent(), m.chatMsgs, sessionID, m.cwd, prompt.String(), disabledToolsForPlanMode(m.planMode))
+	} else {
+		start = startChatCmd(chatCtx, m.appAgent(), m.chatMsgs, sessionID, m.cwd, prompt.String(), disabledToolsForPlanMode(m.planMode))
+	}
+	return *m, tea.Batch(start, waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(*m))
 }
 
 func (m *model) startNextBashFollowup() tea.Cmd {
@@ -5212,6 +5380,7 @@ func (m *model) startQueuedUserPromptChat() (tea.Model, tea.Cmd) {
 	}
 	m.recordCurrentSession()
 	prompt := m.promptWithQueuedUserPrompts("")
+	m.beginExecutionTracking(prompt)
 	m.busy = true
 	m.status = "running"
 	m.streamingIndex = -1

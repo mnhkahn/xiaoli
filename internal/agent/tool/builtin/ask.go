@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -68,8 +69,8 @@ func (t *AskUserQuestionTool) Info(context.Context) (*schema.ToolInfo, error) {
 
 func (t *AskUserQuestionTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...tool.Option) (string, error) {
 	var args struct {
-		Question string `json:"question"`
-		Options  string `json:"options"`
+		Question string          `json:"question"`
+		Options  json.RawMessage `json:"options"`
 	}
 	if err := json.Unmarshal([]byte(argumentsInJSON), &args); err != nil {
 		return "", fmt.Errorf("参数解析失败：%v", err)
@@ -78,14 +79,7 @@ func (t *AskUserQuestionTool) InvokableRun(ctx context.Context, argumentsInJSON 
 		return "", fmt.Errorf("question 参数是必填的")
 	}
 
-	options := strings.Split(args.Options, "|")
-	cleanOptions := make([]string, 0, len(options))
-	for _, opt := range options {
-		opt = strings.TrimSpace(opt)
-		if opt != "" {
-			cleanOptions = append(cleanOptions, opt)
-		}
-	}
+	cleanOptions := askOptions(args.Options)
 	if len(cleanOptions) == 0 {
 		cleanOptions = []string{"是", "否"}
 	}
@@ -98,4 +92,48 @@ func (t *AskUserQuestionTool) InvokableRun(ctx context.Context, argumentsInJSON 
 	}
 
 	return fmt.Sprintf("已向用户提问：%s，等待用户选择", args.Question), nil
+}
+
+func askOptions(raw json.RawMessage) []string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return []string{"是", "否"}
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return cleanAskOptions(strings.Split(text, "|"))
+	}
+	var values []string
+	if json.Unmarshal(raw, &values) == nil {
+		return cleanAskOptions(values)
+	}
+	var object map[string]any
+	if json.Unmarshal(raw, &object) == nil {
+		keys := make([]string, 0, len(object))
+		for key := range object {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if value, ok := object[key].(string); ok {
+				values = append(values, value)
+			}
+		}
+		if len(values) > 0 {
+			return cleanAskOptions(values)
+		}
+	}
+	return []string{"是", "否"}
+}
+
+func cleanAskOptions(options []string) []string {
+	clean := make([]string, 0, len(options))
+	for _, option := range options {
+		if option = strings.TrimSpace(option); option != "" {
+			clean = append(clean, option)
+		}
+	}
+	if len(clean) == 0 {
+		return []string{"是", "否"}
+	}
+	return clean
 }

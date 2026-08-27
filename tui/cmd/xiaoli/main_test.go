@@ -193,6 +193,21 @@ func TestThinkingUsageRendersInTranscriptProgressLine(t *testing.T) {
 	}
 }
 
+func TestThinkingProgressRendersAfterToolCards(t *testing.T) {
+	m := model{
+		busy:              true,
+		thinkingStartedAt: time.Now().Add(-2 * time.Second),
+		items: []transcriptItem{
+			{role: "run-active"},
+			{role: "tool-done", text: "Ran a command\n$ pwd\nCompleted · 1ms"},
+		},
+	}
+	got := stripTestANSI(m.renderTranscriptContent(120))
+	if strings.Index(got, "Ran a command") >= strings.Index(got, "Aligning") {
+		t.Fatalf("transcript order = %q, want tool card before thinking progress", got)
+	}
+}
+
 func TestModelUsageEventsUpdateThinkingTotals(t *testing.T) {
 	m := model{currentOutputChars: 400}
 	if !m.applyModelUsageEvent(agentevent.Event{Type: agentevent.TypeAgentModelStarted}) {
@@ -209,6 +224,56 @@ func TestModelUsageEventsUpdateThinkingTotals(t *testing.T) {
 	}
 	if m.promptTokens != 1200 || m.completionTokens != 345 || m.activeModelRequests != 0 {
 		t.Fatalf("finish state = prompt:%d completion:%d active:%d", m.promptTokens, m.completionTokens, m.activeModelRequests)
+	}
+}
+
+func TestPromptLikelyNeedsTool(t *testing.T) {
+	for _, tt := range []struct {
+		prompt string
+		want   bool
+	}{
+		{prompt: "看看当前目录和最近提交", want: true},
+		{prompt: "运行测试并修复失败", want: true},
+		{prompt: "go on", want: true},
+		{prompt: "解释一下 Go interface", want: false},
+	} {
+		if got := promptLikelyNeedsTool(tt.prompt); got != tt.want {
+			t.Fatalf("promptLikelyNeedsTool(%q) = %v, want %v", tt.prompt, got, tt.want)
+		}
+	}
+}
+
+func TestToolRequiredRunCompletionDoesNotRenderDelivered(t *testing.T) {
+	m := model{executionExpected: true, events: make(chan agentevent.Event)}
+	defer close(m.events)
+	next, _ := m.Update(eventMsg{event: agentevent.Event{Type: agentevent.TypeAgentRunCompleted}})
+	got := next.(model)
+	if len(got.items) != 0 {
+		t.Fatalf("items = %#v, want no Delivered item before tool-call verification", got.items)
+	}
+}
+
+func TestRetryMissingToolCallStopsAfterOneRecovery(t *testing.T) {
+	m := model{toolRepairAttempts: 1, executionExpected: true, events: make(chan agentevent.Event)}
+	defer close(m.events)
+	next, cmd := m.retryMissingToolCall("retry", false)
+	got := next.(model)
+	if cmd == nil || got.executionExpected || len(got.items) != 1 || got.items[0].role != "error" {
+		t.Fatalf("recovery stop = %#v, cmd=%v", got, cmd)
+	}
+}
+
+func TestRetryToolFailureStopsAfterOneRecovery(t *testing.T) {
+	m := model{
+		toolFailureRecoveryAttempts: 1,
+		lastToolFailure:             &toolFailure{name: "ask_user_question", err: "bad options"},
+		events:                      make(chan agentevent.Event),
+	}
+	defer close(m.events)
+	next, cmd := m.retryToolFailure(false)
+	got := next.(model)
+	if cmd == nil || len(got.items) != 1 || got.items[0].role != "error" {
+		t.Fatalf("failure recovery stop = %#v, cmd=%v", got, cmd)
 	}
 }
 
@@ -2039,6 +2104,21 @@ func TestPendingToolConfirmQueuePromotesAfterCurrentClear(t *testing.T) {
 	}
 	if len(m.pendingToolConfirmQueue) != 0 {
 		t.Fatalf("queue len = %d, want empty", len(m.pendingToolConfirmQueue))
+	}
+}
+
+func TestHandledToolConfirmIsNotEnqueuedAgain(t *testing.T) {
+	confirm := &agentbuiltin.PendingToolUseConfirm{
+		SessionID: "ses_duplicate",
+		ToolName:  "bash",
+		ToolUseID: "toolu_duplicate",
+		BashHash:  "hash_duplicate",
+	}
+	m := model{pendingToolConfirm: confirm}
+	m.clearPendingToolConfirmState(confirm.SessionID, false)
+	m.enqueuePendingToolConfirm(confirm, false, "late_chat_done")
+	if m.pendingToolConfirm != nil || len(m.pendingToolConfirmQueue) != 0 {
+		t.Fatalf("duplicate confirm was re-enqueued: current=%#v queue=%#v", m.pendingToolConfirm, m.pendingToolConfirmQueue)
 	}
 }
 
