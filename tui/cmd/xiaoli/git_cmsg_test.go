@@ -156,6 +156,20 @@ func TestFormatGitCmsgQuestionShowsNumstatOnce(t *testing.T) {
 	}
 }
 
+func TestFormatGitCommitPreviewUsesRequestedLayout(t *testing.T) {
+	got := formatGitCommitPreview("feat(kiosk): 修复授权\n\n- ignored", "120\t16\tapp/main.go\n2\t0\tapp/test.go")
+	for _, want := range []string{
+		"feat(kiosk): 修复授权",
+		"2 files changed, 122 insertions(+), 16 deletions(-)",
+		" app/main.go | 136 ",
+		" app/test.go | 2 ++",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("formatGitCommitPreview() = %q, want %q", got, want)
+		}
+	}
+}
+
 func TestPendingQuestionDisplayPreservesCommitStatLayout(t *testing.T) {
 	question := formatGitCmsgQuestion(gitCmsgPrepareMsg{
 		message: "feat(tui): 优化提交统计",

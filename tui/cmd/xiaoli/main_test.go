@@ -653,11 +653,12 @@ func TestStatusBarShowsSelectionMouseHint(t *testing.T) {
 
 func TestCtrlKOpensDiffExplorer(t *testing.T) {
 	input := textinput.New()
-	m := model{input: input, cwd: t.TempDir(), width: 100, height: 30}
+	input.SetValue("draft")
+	m := model{input: input, cwd: t.TempDir(), width: 100, height: 30, viewport: viewport.New(100, 10)}
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
 	got := next.(model)
 	if cmd != nil {
-		t.Fatalf("Ctrl-K returned command, want nil")
+		t.Fatal("Ctrl-K returned command, want diff explorer")
 	}
 	if got.explorer == nil || got.explorer.mode != explorerDiff {
 		t.Fatalf("Ctrl-K explorer = %#v, want diff explorer", got.explorer)
@@ -667,7 +668,7 @@ func TestCtrlKOpensDiffExplorer(t *testing.T) {
 	}
 }
 
-func TestCtrlKInDiffClosesExplorerAndStartsCommit(t *testing.T) {
+func TestCtrlKInDiffStartsAutoCommit(t *testing.T) {
 	input := textinput.New()
 	m := model{
 		app:      newTestLocalApp(t, t.TempDir()),
@@ -683,70 +684,71 @@ func TestCtrlKInDiffClosesExplorerAndStartsCommit(t *testing.T) {
 	got := next.(model)
 
 	if cmd == nil {
-		t.Fatal("Ctrl-K in diff returned nil command, want commit preparation")
-	}
-	if got.explorer != nil {
-		t.Fatalf("Ctrl-K in diff explorer = %#v, want explorer closed", got.explorer)
+		t.Fatal("Ctrl-K returned nil command, want commit preparation")
 	}
 	if !got.autoCommitGitCmsg || !got.busy || got.status != "commit" {
 		t.Fatalf("auto/busy/status = %v/%v/%q, want true/true/commit", got.autoCommitGitCmsg, got.busy, got.status)
 	}
 }
 
-func TestGitCmsgPrepareAutoCommitsFromDiffShortcut(t *testing.T) {
+func TestShortcutCommitShowsFormattedSummary(t *testing.T) {
 	input := textinput.New()
 	m := model{
-		input:             input,
-		cwd:               t.TempDir(),
-		width:             100,
-		height:            30,
-		viewport:          viewport.New(100, 10),
-		busy:              true,
-		autoCommitGitCmsg: true,
-		explorer:          &tuiExplorer{mode: explorerDiff},
+		input:    input,
+		cwd:      t.TempDir(),
+		width:    100,
+		height:   30,
+		viewport: viewport.New(100, 10),
+		busy:     true,
 	}
 
-	next, cmd := m.Update(gitCmsgPrepareMsg{args: "", message: "fix(tui): 快捷提交"})
+	next, cmd := m.Update(gitCmsgCommitMsg{summary: "fix(tui): 快捷提交\n\n1 files changed, 2 insertions(+)"})
 	got := next.(model)
 
-	if cmd == nil {
-		t.Fatal("auto commit preparation returned nil command, want git commit")
+	if cmd == nil || got.busy || got.status != "idle" {
+		t.Fatalf("cmd/busy/status = %v/%v/%q, want title command/false/idle", cmd != nil, got.busy, got.status)
 	}
-	if got.autoCommitGitCmsg || got.pendingGitCmsg.Active || got.pendingQuestion != "" || got.pendingOptions != nil {
-		t.Fatalf("commit state = auto:%v pending:%#v question:%q options:%#v, want cleared", got.autoCommitGitCmsg, got.pendingGitCmsg, got.pendingQuestion, got.pendingOptions)
-	}
-	if !got.busy || got.status != "git commit" {
-		t.Fatalf("busy/status = %v/%q, want true/git commit", got.busy, got.status)
-	}
-	if got.explorer == nil || got.explorer.mode != explorerDiff {
-		t.Fatalf("explorer = %#v, want diff explorer unchanged", got.explorer)
+	if len(got.items) < 2 || got.items[len(got.items)-1].role != "commit-preview" || !strings.Contains(got.items[len(got.items)-1].text, "1 files changed") {
+		t.Fatalf("preview item = %#v, want formatted summary", got.items)
 	}
 }
 
-func TestCtrlKOpensAndClosesDiffWhileAgentIsBusy(t *testing.T) {
+func TestCommitPreviewKeepsFileRowsOnSeparateLines(t *testing.T) {
+	got := stripTestANSI(renderTranscriptContent([]transcriptItem{{
+		role: "commit-preview",
+		text: "feat(tui): preview\n\n2 files changed, 3 insertions(+)\n a.go | 2 ++\n b.go | 1 +",
+	}}, 100))
+	lines := strings.Split(got, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	got = strings.Join(lines, "\n")
+	if !strings.Contains(got, "a.go | 2 ++\n b.go | 1 +") {
+		t.Fatalf("commit preview rows were merged: %q", got)
+	}
+}
+
+func TestCtrlKDoesNothingWhileAgentIsBusy(t *testing.T) {
 	input := textinput.New()
 	m := model{input: input, cwd: t.TempDir(), width: 100, height: 30, busy: true, status: "working"}
 
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
 	got := next.(model)
 	if cmd != nil {
-		t.Fatal("Ctrl-K while busy returned command, want view-only")
+		t.Fatal("Ctrl-K while busy returned command, want no action")
 	}
 	if got.explorer == nil || got.explorer.mode != explorerDiff || !got.busy || got.status != "working" {
-		t.Fatalf("open diff while busy = explorer:%#v busy:%v status:%q", got.explorer, got.busy, got.status)
+		t.Fatalf("busy Ctrl-K = explorer:%#v busy:%v status:%q", got.explorer, got.busy, got.status)
 	}
 
 	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
 	got = next.(model)
-	if cmd != nil {
-		t.Fatal("second Ctrl-K while busy returned command, want view-only")
-	}
-	if got.explorer != nil || !got.busy || got.status != "working" {
-		t.Fatalf("close diff while busy = explorer:%#v busy:%v status:%q", got.explorer, got.busy, got.status)
+	if cmd != nil || got.explorer != nil || !got.busy || got.status != "working" {
+		t.Fatalf("second busy Ctrl-K = explorer:%#v busy:%v status:%q", got.explorer, got.busy, got.status)
 	}
 }
 
-func TestCtrlKCommitsWhenCommitPlanIsPending(t *testing.T) {
+func TestCtrlKDoesNotCommitWhenCommitPlanIsPending(t *testing.T) {
 	input := textinput.New()
 	m := model{
 		input:           input,
@@ -762,20 +764,17 @@ func TestCtrlKCommitsWhenCommitPlanIsPending(t *testing.T) {
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlK})
 	got := next.(model)
 
-	if cmd == nil {
-		t.Fatal("Ctrl-K returned nil command, want commit command")
+	if cmd != nil {
+		t.Fatal("Ctrl-K returned command, want no commit action")
 	}
 	if got.explorer != nil {
 		t.Fatalf("Ctrl-K explorer = %#v, want no diff explorer", got.explorer)
 	}
-	if got.pendingGitCmsg.Active || got.pendingQuestion != "" || got.pendingOptions != nil {
-		t.Fatalf("pending commit state = %#v question=%q options=%#v, want cleared", got.pendingGitCmsg, got.pendingQuestion, got.pendingOptions)
+	if !got.pendingGitCmsg.Active || got.pendingQuestion == "" || got.pendingOptions == nil {
+		t.Fatalf("pending commit state = %#v question=%q options=%#v, want unchanged", got.pendingGitCmsg, got.pendingQuestion, got.pendingOptions)
 	}
-	if !got.busy || got.status != "git commit && push" {
-		t.Fatalf("busy/status = %v/%q, want git commit && push", got.busy, got.status)
-	}
-	if len(got.items) == 0 || got.items[len(got.items)-1].role != "run-active" || got.items[len(got.items)-1].text != "Commit and push" {
-		t.Fatalf("last item = %#v, want Commit and push run-active", got.items)
+	if got.busy || got.status != "" {
+		t.Fatalf("busy/status = %v/%q, want false/empty", got.busy, got.status)
 	}
 }
 

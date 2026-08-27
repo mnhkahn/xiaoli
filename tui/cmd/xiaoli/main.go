@@ -825,8 +825,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.explorer != nil && m.explorer.mode == explorerDiff && msg.String() == "ctrl+k" {
 			m.explorer = nil
-			// Diff inspection remains available while an agent is running, but a
-			// commit would mutate the workspace and must wait for it to finish.
+			// Diff inspection remains available while an agent is running, but the
+			// shortcut commit must wait until it has finished.
 			if m.busy || m.hasPendingOptions() {
 				return m, nil
 			}
@@ -883,13 +883,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "opening project"
 			return m, openProjectEditorCmd(m.cwd)
 		case "ctrl+k":
-			if m.pendingGitCmsg.Active {
-				if m.busy {
-					return m, nil
-				}
-				cmd := m.handleGitCmsgChoice("提交并推送")
-				return m, cmd
-			}
 			if m.hasPendingOptions() && !m.busy {
 				return m, nil
 			}
@@ -1420,7 +1413,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncViewport(true)
 			return m, tea.Batch(terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
 		}
-		m.pendingGitCmsg = gitCmsgPending{Active: true, Args: msg.args, Message: msg.message}
+		m.pendingGitCmsg = gitCmsgPending{Active: true, Args: msg.args, Message: msg.message, Stat: msg.stat, Shortcut: autoCommit}
 		// The confirmation panel has its own frame and horizontal padding. Format
 		// the commit stat for its actual inner width so a +/− column never wraps
 		// ahead of the next file name.
@@ -1432,6 +1425,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.items = append(m.items, transcriptItem{role: "run-done", text: "Commit plan ready", frame: m.runPulseFrame})
 		m.items = append(m.items, transcriptItem{role: "assistant", text: m.pendingQuestion})
+		m.syncViewport(true)
+		return m, tea.Batch(terminalTitleTextCmd(terminalDoneTitle), terminalTitleResetCmd())
+	case gitCmsgPreviewMsg:
+		m.busy = false
+		m.status = "idle"
+		m.runPulseActive = false
+		if m.activeCancel != nil {
+			m.activeCancel()
+			m.activeCancel = nil
+		}
+		if msg.err != nil {
+			m.lastError = msg.err.Error()
+			m.items = append(m.items, transcriptItem{role: "run-failed", text: "Commit summary blocked", frame: m.runPulseFrame})
+			m.items = append(m.items, transcriptItem{role: "error", text: msg.err.Error()})
+			m.syncViewport(true)
+			return m, tea.Batch(terminalTitleTextCmd(terminalFailedTitle), terminalTitleResetCmd())
+		}
+		m.items = append(m.items, transcriptItem{role: "run-done", text: "Commit summary ready", frame: m.runPulseFrame})
+		m.items = append(m.items, transcriptItem{role: "commit-preview", text: msg.text})
 		m.syncViewport(true)
 		return m, tea.Batch(terminalTitleTextCmd(terminalDoneTitle), terminalTitleResetCmd())
 	case gitCmsgCommitMsg:
@@ -1463,9 +1475,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				doneText = "提交并推送完成。"
 			}
 			m.items = append(m.items, transcriptItem{role: "run-done", text: "Commit delivered", frame: m.runPulseFrame})
-			m.items = append(m.items, transcriptItem{role: "system", text: doneText})
-			if output := strings.TrimSpace(msg.output); output != "" {
-				m.items = append(m.items, transcriptItem{role: "shell", text: output})
+			if msg.summary != "" {
+				m.items = append(m.items, transcriptItem{role: "commit-preview", text: msg.summary})
+			} else {
+				m.items = append(m.items, transcriptItem{role: "system", text: doneText})
+				if output := strings.TrimSpace(msg.output); output != "" {
+					m.items = append(m.items, transcriptItem{role: "shell", text: output})
+				}
 			}
 		}
 		m.syncViewport(true)
@@ -1936,6 +1952,11 @@ func renderTranscriptContentWithFrameAndLinks(items []transcriptItem, width int,
 			linked = renderLinkedText(item.text, textWidth, "")
 			hasLinks = true
 			style = agentStyle
+		case "commit-preview":
+			// Git stat rows depend on literal line breaks. Markdown treats a
+			// single newline as whitespace, so render this terminal layout raw.
+			plain = agentStyle.Render(wrapText(item.text, textWidth))
+			custom = true
 		case "shell":
 			linked = renderLinkedText(item.text, textWidth, "")
 			hasLinks = true
@@ -2202,6 +2223,8 @@ func renderTranscript(items []transcriptItem, width, height int, scroll int) str
 		case "user":
 			lines = append(lines, userStyle.Render(wrapWithPrefix("› ", item.text, textWidth)))
 		case "assistant":
+			lines = append(lines, agentStyle.Render(wrapText(item.text, textWidth)))
+		case "commit-preview":
 			lines = append(lines, agentStyle.Render(wrapText(item.text, textWidth)))
 		case "shell":
 			lines = append(lines, shellStyle.Render(wrapText(item.text, textWidth)))
@@ -2741,7 +2764,7 @@ func renderWelcomeCommands(width int) string {
 		{Key: "Ctrl+S", Text: "git sync"},
 		{Key: "Ctrl+O", Text: "open project"},
 		{Key: "Ctrl+T", Text: "open tree"},
-		{Key: "Ctrl+K", Text: "diff / commit"},
+		{Key: "Ctrl+K", Text: "commit summary"},
 	}
 	if width <= 0 {
 		width = 40

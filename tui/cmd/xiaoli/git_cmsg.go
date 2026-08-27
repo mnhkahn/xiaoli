@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -16,9 +18,11 @@ import (
 )
 
 type gitCmsgPending struct {
-	Active  bool
-	Args    string
-	Message string
+	Active   bool
+	Args     string
+	Message  string
+	Stat     string
+	Shortcut bool
 }
 
 type gitCmsgPrepareMsg struct {
@@ -33,8 +37,16 @@ type gitCmsgPrepareMsg struct {
 type gitCmsgCommitMsg struct {
 	message string
 	output  string
+	summary string
 	push    bool
 	err     error
+}
+
+// gitCmsgPreviewMsg is intentionally separate from the /commit preparation
+// flow: Cmd+K must never stage, commit, or push changes.
+type gitCmsgPreviewMsg struct {
+	text string
+	err  error
 }
 
 const gitCommitMessageSystemPrompt = "你是 Git 提交信息助手。只输出中文 Conventional Commits 提交信息，不要解释，不要 Markdown。必须使用以下结构：第一行是 type(scope): 简短中文描述；随后空一行；再用 `- ` 开头的列表逐条说明主要变更。即使变更较小，也至少给出一条列表项。"
@@ -56,6 +68,7 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 	switch {
 	case choice == "提交并推送" || strings.EqualFold(choice, "push") || strings.EqualFold(choice, "commit and push"):
 		msg := m.pendingGitCmsg.Message
+		summary := m.pendingGitCmsg.summary()
 		m.pendingGitCmsg = gitCmsgPending{}
 		m.pendingQuestion = ""
 		m.pendingOptions = nil
@@ -68,9 +81,10 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		m.activeCancel = cancel
 		m.chatCanceled = false
-		return tea.Batch(startGitCmsgCommit(ctx, m.cwd, msg, true), tickRunPulse(), terminalTitleCmd(*m))
+		return tea.Batch(startGitCmsgCommit(ctx, m.cwd, msg, true, summary), tickRunPulse(), terminalTitleCmd(*m))
 	case choice == "确认提交" || strings.EqualFold(choice, "commit") || isApprove(choice):
 		msg := m.pendingGitCmsg.Message
+		summary := m.pendingGitCmsg.summary()
 		m.pendingGitCmsg = gitCmsgPending{}
 		m.pendingQuestion = ""
 		m.pendingOptions = nil
@@ -83,7 +97,7 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		m.activeCancel = cancel
 		m.chatCanceled = false
-		return tea.Batch(startGitCmsgCommit(ctx, m.cwd, msg, false), tickRunPulse(), terminalTitleCmd(*m))
+		return tea.Batch(startGitCmsgCommit(ctx, m.cwd, msg, false, summary), tickRunPulse(), terminalTitleCmd(*m))
 	case choice == "重新生成" || strings.EqualFold(choice, "regenerate"):
 		args := m.pendingGitCmsg.Args
 		m.pendingGitCmsg = gitCmsgPending{}
@@ -129,11 +143,32 @@ func startGitCmsgPrepare(ctx context.Context, agent *agentruntime.Agent, cwd, ar
 	}
 }
 
-func startGitCmsgCommit(ctx context.Context, cwd, message string, push bool) tea.Cmd {
+func startGitCmsgPreview(ctx context.Context, agent *agentruntime.Agent, cwd string) tea.Cmd {
+	return func() tea.Msg {
+		stat, files, diff, err := prepareGitPreviewDiff(ctx, cwd)
+		if err != nil {
+			return gitCmsgPreviewMsg{err: err}
+		}
+		message, err := generateGitCommitMessage(ctx, agent, stat, files, diff)
+		if err != nil {
+			return gitCmsgPreviewMsg{err: err}
+		}
+		return gitCmsgPreviewMsg{text: formatGitCommitPreview(message, stat)}
+	}
+}
+
+func (pending gitCmsgPending) summary() string {
+	if !pending.Shortcut {
+		return ""
+	}
+	return formatGitCommitPreview(pending.Message, pending.Stat)
+}
+
+func startGitCmsgCommit(ctx context.Context, cwd, message string, push bool, summary string) tea.Cmd {
 	return func() tea.Msg {
 		out, err := runGitCombinedContext(ctx, cwd, gitCommitMessageArgs(message)...)
 		if err != nil || !push {
-			return gitCmsgCommitMsg{message: message, output: out, push: push, err: err}
+			return gitCmsgCommitMsg{message: message, output: out, summary: summary, push: push, err: err}
 		}
 		pushOut, pushErr := runGitCombinedContext(ctx, cwd, "push")
 		combined := strings.TrimRight(out, "\n")
@@ -143,7 +178,7 @@ func startGitCmsgCommit(ctx context.Context, cwd, message string, push bool) tea
 			}
 			combined += strings.TrimRight(pushOut, "\n")
 		}
-		return gitCmsgCommitMsg{message: message, output: combined, push: push, err: pushErr}
+		return gitCmsgCommitMsg{message: message, output: combined, summary: summary, push: push, err: pushErr}
 	}
 }
 
@@ -180,6 +215,64 @@ func prepareGitCmsgDiff(ctx context.Context, cwd, args string) (string, string, 
 	diff, err := runGitCombinedContext(ctx, cwd, "diff", "--cached")
 	if err != nil {
 		return "", "", "", fmt.Errorf("读取暂存 diff 失败：%v\n%s", err, strings.TrimSpace(diff))
+	}
+	return stat, files, diff, nil
+}
+
+// prepareGitPreviewDiff reads the complete working-tree snapshot without
+// changing the index. git diff HEAD covers staged and unstaged tracked files;
+// untracked text files are appended so a newly created test/file is reflected
+// in Cmd+K's preview too.
+func prepareGitPreviewDiff(ctx context.Context, cwd string) (string, string, string, error) {
+	files, err := runGitCombinedContext(ctx, cwd, "diff", "HEAD", "--name-only")
+	if err != nil {
+		return "", "", "", fmt.Errorf("读取工作区文件失败：%v\n%s", err, strings.TrimSpace(files))
+	}
+	stat, err := runGitCombinedContext(ctx, cwd, "diff", "HEAD", "--numstat")
+	if err != nil {
+		return "", "", "", fmt.Errorf("读取工作区统计失败：%v\n%s", err, strings.TrimSpace(stat))
+	}
+	diff, err := runGitCombinedContext(ctx, cwd, "diff", "HEAD")
+	if err != nil {
+		return "", "", "", fmt.Errorf("读取工作区 diff 失败：%v\n%s", err, strings.TrimSpace(diff))
+	}
+
+	status, err := runGitCombinedContext(ctx, cwd, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return "", "", "", fmt.Errorf("读取未跟踪文件失败：%v\n%s", err, strings.TrimSpace(status))
+	}
+	for _, line := range strings.Split(strings.TrimRight(status, "\n"), "\n") {
+		if !strings.HasPrefix(line, "?? ") {
+			continue
+		}
+		path := strings.TrimPrefix(line, "?? ")
+		if path == "" {
+			continue
+		}
+		content, readErr := os.ReadFile(filepath.Join(cwd, path))
+		if readErr != nil {
+			return "", "", "", fmt.Errorf("读取未跟踪文件 %s 失败：%w", path, readErr)
+		}
+		additions := strings.Count(string(content), "\n")
+		if len(content) > 0 && content[len(content)-1] != '\n' {
+			additions++
+		}
+		if strings.TrimSpace(stat) != "" {
+			stat += "\n"
+		}
+		stat += fmt.Sprintf("%d\t0\t%s", additions, path)
+		if strings.TrimSpace(files) != "" {
+			files += "\n"
+		}
+		files += path
+		// Keep the generated title aware of new files, without overwhelming the
+		// model when a large generated file is present.
+		if len(content) <= 30000 {
+			diff += fmt.Sprintf("\n\n[untracked file: %s]\n%s", path, content)
+		}
+	}
+	if strings.TrimSpace(files) == "" {
+		return "", "", "", fmt.Errorf("工作区没有变更，无法生成提交摘要")
 	}
 	return stat, files, diff, nil
 }
@@ -262,6 +355,64 @@ func formatGitCmsgQuestion(msg gitCmsgPrepareMsg, width int) string {
 	if strings.TrimSpace(msg.stat) != "" {
 		b.WriteString("统计：\n")
 		b.WriteString(formatGitNumstat(msg.stat, width))
+	}
+	return b.String()
+}
+
+func formatGitCommitPreview(message, stat string) string {
+	title := strings.TrimSpace(strings.Split(strings.TrimSpace(message), "\n")[0])
+	if title == "" {
+		title = "chore: 更新工作区变更"
+	}
+	type row struct {
+		path       string
+		additions  int
+		deletions  int
+		binaryFile bool
+	}
+	var rows []row
+	totalAdditions, totalDeletions := 0, 0
+	for _, line := range strings.Split(strings.TrimSpace(stat), "\n") {
+		parts := strings.SplitN(line, "\t", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		item := row{path: parts[2]}
+		if parts[0] == "-" || parts[1] == "-" {
+			item.binaryFile = true
+		} else {
+			item.additions, _ = strconv.Atoi(parts[0])
+			item.deletions, _ = strconv.Atoi(parts[1])
+			totalAdditions += item.additions
+			totalDeletions += item.deletions
+		}
+		rows = append(rows, item)
+	}
+	var b strings.Builder
+	b.WriteString(title)
+	b.WriteString("\n\n")
+	fmt.Fprintf(&b, "%d files changed", len(rows))
+	if totalAdditions > 0 {
+		fmt.Fprintf(&b, ", %d insertions(+)", totalAdditions)
+	}
+	if totalDeletions > 0 {
+		fmt.Fprintf(&b, ", %d deletions(-)", totalDeletions)
+	}
+	for _, item := range rows {
+		b.WriteString("\n ")
+		b.WriteString(item.path)
+		b.WriteString(" | ")
+		if item.binaryFile {
+			b.WriteString("Bin")
+			continue
+		}
+		changes := item.additions + item.deletions
+		b.WriteString(strconv.Itoa(changes))
+		b.WriteByte(' ')
+		b.WriteString(strings.Repeat("+", min(changes, 48)))
+		if item.deletions > 0 {
+			b.WriteString(strings.Repeat("-", min(item.deletions, 24)))
+		}
 	}
 	return b.String()
 }
