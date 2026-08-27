@@ -175,16 +175,19 @@ func (s TaskContractState) missing() []string {
 	return missing
 }
 
-func taskContractExecutorPrompt(contract TaskContractState, userText string) string {
+func taskContractExecutorInstruction(contract TaskContractState) string {
 	data, _ := json.Marshal(contract.Contract)
 	missing := contract.missing()
-	return "执行用户请求。你是 Executor，不能自行宣布任务完成。必须通过真实工具结果满足合同；优先补足缺失能力。\n" +
-		"TaskContract: " + string(data) + "\n" +
-		"已缺失能力: " + strings.Join(missing, ", ") + "\n用户请求：" + userText
+	return "内部执行控制（绝不可在面向用户的回复中提及或复述）：\n" +
+		"必须通过真实工具结果满足以下内部合同，不能自行宣布完成；优先补足缺失项。\n" +
+		"合同：" + string(data) + "\n" +
+		"缺失项：" + strings.Join(missing, ", ") + "\n\n" +
+		"最终回复必须面向用户：先给结论，再说明为什么/采用的思路、实际改动（若有）和简明验证方式。" +
+		"不得提及合同、能力、证据、内部校验、工具名、原始工具输出或内部字段名。"
 }
 
-func taskContractStopMessage(reply string, missing []string) string {
-	message := "\n\n状态：未验证停止。仍缺少工具证据：" + strings.Join(missing, "、")
+func taskContractStopMessage(reply string, contract TaskContract) string {
+	message := "\n\n我还无法根据实际执行结果确认：" + contract.Verification + "。为避免误报，我先不将此标记为已完成。"
 	if strings.TrimSpace(reply) == "" {
 		return strings.TrimSpace(message)
 	}

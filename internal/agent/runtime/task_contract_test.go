@@ -67,8 +67,20 @@ func TestTaskContractStatePersistsLocally(t *testing.T) {
 }
 
 func TestTaskContractStopMessage(t *testing.T) {
-	got := taskContractStopMessage("已经完成", []string{"observability.error_stack"})
-	if !strings.Contains(got, "未验证停止") || !strings.Contains(got, "observability.error_stack") {
+	got := taskContractStopMessage("已经完成", TaskContract{Verification: "必须取得页面错误上下文"})
+	if !strings.Contains(got, "不将此标记为已完成") || !strings.Contains(got, "必须取得页面错误上下文") {
 		t.Fatalf("stop message = %q", got)
+	}
+}
+
+func TestTaskContractInstructionIsInternalAndUserTextStaysSeparate(t *testing.T) {
+	instruction := taskContractExecutorInstruction(TaskContractState{Contract: conservativeTaskContract("分析路由")})
+	for _, want := range []string{"内部执行控制", "最终回复必须面向用户", "不得提及合同"} {
+		if !strings.Contains(instruction, want) {
+			t.Fatalf("instruction = %q, missing %q", instruction, want)
+		}
+	}
+	if strings.Contains(instruction, "用户请求：") {
+		t.Fatalf("instruction must not contain user request: %q", instruction)
 	}
 }

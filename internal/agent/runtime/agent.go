@@ -1012,7 +1012,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		}
 	}
 
-	msgs := make([]*schema.Message, 0, len(history)+4)
+	msgs := make([]*schema.Message, 0, len(history)+5)
 	if a.cfg.LLMPrompt != "" {
 		msgs = append(msgs, schema.SystemMessage(a.cfg.LLMPrompt))
 	}
@@ -1022,8 +1022,8 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		msgs = append(msgs, schema.SystemMessage(memories))
 	}
 	msgs = append(msgs, history...)
-	executorText := taskContractExecutorPrompt(contractState, userText)
-	msgs = append(msgs, schema.UserMessage(executorText))
+	executorInstruction := taskContractExecutorInstruction(contractState)
+	msgs = append(msgs, schema.SystemMessage(executorInstruction), schema.UserMessage(userText))
 
 	var askHolder *agentbuiltin.AskDataHolder
 	ctx, askHolder = agentbuiltin.NewAskDataHolder(ctx)
@@ -1104,7 +1104,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 				}
 				logger.Infof("history truncated: %d → %d messages", oldLen, len(history))
 			}
-			msgs = make([]*schema.Message, 0, len(history)+4)
+			msgs = make([]*schema.Message, 0, len(history)+5)
 			if a.cfg.LLMPrompt != "" {
 				msgs = append(msgs, schema.SystemMessage(a.cfg.LLMPrompt))
 			}
@@ -1114,7 +1114,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 				msgs = append(msgs, schema.SystemMessage(memories))
 			}
 			msgs = append(msgs, history...)
-			msgs = append(msgs, schema.UserMessage(executorText))
+			msgs = append(msgs, schema.SystemMessage(executorInstruction), schema.UserMessage(userText))
 		}
 	}
 
@@ -1280,7 +1280,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		)
 	}
 	if contractState.Status == "unverified" {
-		result.Content = taskContractStopMessage(result.Content, missingCapabilities)
+		result.Content = taskContractStopMessage(result.Content, contractState.Contract)
 	}
 	if shouldContinueExecutionChecklist(ctx, history, userText, toolRuns.Count(), ask, confirms, sendStatus) {
 		logger.Infof("execution checklist continuing: memory=%s tools=%d pass=%d", memoryID, toolRuns.Count(), executionChecklistContinuationCount(ctx)+1)

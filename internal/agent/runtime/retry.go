@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,14 +27,6 @@ const (
 	agentBackoffCap  = 30 * time.Second
 )
 
-var rateLimitQuotaPhrases = []string{
-	"insufficient_quota",
-	"quota_exceeded",
-	"quota insufficient",
-	"out of quota",
-	"exceeded your current quota",
-}
-
 var rateLimitGenericPhrases = []string{
 	"rate limit",
 	"rate_limit",
@@ -42,6 +36,8 @@ var rateLimitGenericPhrases = []string{
 	"retry after",
 	"retry_after",
 }
+
+var httpStatusInErrorPattern = regexp.MustCompile(`(?i)\b(?:http\s+)?status(?:\s+code)?\s*[:=]?\s*(\d{3})\b`)
 
 var transientTimeoutPhrases = []string{
 	"context deadline exceeded",
@@ -77,56 +73,42 @@ func llmShouldRetry(ctx context.Context, retryCtx *adk.RetryContext) *adk.RetryD
 	if retryCtx.Err == nil {
 		return nil
 	}
-
-	isQuota := false
-
-	var apiErr *openai.APIError
-	if errors.As(retryCtx.Err, &apiErr) {
-		if apiErr.HTTPStatusCode == 429 || apiErr.HTTPStatusCode == 0 {
-			msg := strings.ToLower(apiErr.Message)
-			for _, p := range rateLimitQuotaPhrases {
-				if strings.Contains(msg, p) {
-					isQuota = true
-					break
-				}
-			}
-			if !isQuota {
-				if apiErr.HTTPStatusCode == 429 {
-					reportModelRetry(ctx, retryCtx.RetryAttempt, retryCtx.Err)
-					return &adk.RetryDecision{Retry: true}
-				}
-				for _, p := range rateLimitGenericPhrases {
-					if strings.Contains(msg, p) {
-						reportModelRetry(ctx, retryCtx.RetryAttempt, retryCtx.Err)
-						return &adk.RetryDecision{Retry: true}
-					}
-				}
-			}
-		} else if apiErr.HTTPStatusCode >= 500 {
-			return &adk.RetryDecision{Retry: true}
-		}
-	} else {
-		msg := strings.ToLower(retryCtx.Err.Error())
-		if isTransientTimeoutMessage(msg) {
+	if isRetryableHTTPStatus(httpStatusCode(retryCtx.Err)) {
+		reportModelRetry(ctx, retryCtx.RetryAttempt, retryCtx.Err)
+		return &adk.RetryDecision{Retry: true}
+	}
+	msg := strings.ToLower(retryCtx.Err.Error())
+	if isTransientTimeoutMessage(msg) {
+		reportModelRetry(ctx, retryCtx.RetryAttempt, retryCtx.Err)
+		return &adk.RetryDecision{Retry: true}
+	}
+	for _, p := range rateLimitGenericPhrases {
+		if strings.Contains(msg, p) {
 			reportModelRetry(ctx, retryCtx.RetryAttempt, retryCtx.Err)
 			return &adk.RetryDecision{Retry: true}
 		}
-		for _, p := range rateLimitGenericPhrases {
-			if strings.Contains(msg, p) {
-				reportModelRetry(ctx, retryCtx.RetryAttempt, retryCtx.Err)
-				return &adk.RetryDecision{Retry: true}
-			}
-		}
 	}
-
-	if isQuota {
-		return &adk.RetryDecision{
-			Retry:        false,
-			RewriteError: &quotaExceededError{msg: retryCtx.Err.Error()},
-		}
-	}
-
 	return nil
+}
+
+func httpStatusCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var apiErr *openai.APIError
+	if errors.As(err, &apiErr) && apiErr.HTTPStatusCode >= 100 && apiErr.HTTPStatusCode <= 599 {
+		return apiErr.HTTPStatusCode
+	}
+	match := httpStatusInErrorPattern.FindStringSubmatch(err.Error())
+	if len(match) != 2 {
+		return 0
+	}
+	status, _ := strconv.Atoi(match[1])
+	return status
+}
+
+func isRetryableHTTPStatus(status int) bool {
+	return status >= 400 && status <= 599
 }
 
 func isTransientTimeoutMessage(msg string) bool {
@@ -139,14 +121,6 @@ func isTransientTimeoutMessage(msg string) bool {
 		}
 	}
 	return false
-}
-
-type quotaExceededError struct {
-	msg string
-}
-
-func (e *quotaExceededError) Error() string {
-	return "quota exceeded: " + e.msg
 }
 
 func llmBackoffFunc(ctx context.Context, attempt int) time.Duration {
@@ -166,18 +140,13 @@ func newLLMRetryConfig() *adk.ModelRetryConfig {
 	}
 }
 
-func isQuotaError(err error) bool {
-	var qe *quotaExceededError
-	return errors.As(err, &qe)
-}
-
 func isRetryableAgentError(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	if isQuotaError(err) {
-		return false
+	if isRetryableHTTPStatus(httpStatusCode(err)) {
+		return true
 	}
 
 	msg := strings.ToLower(err.Error())
@@ -190,13 +159,7 @@ func isRetryableAgentError(err error) bool {
 		}
 	}
 
-	for _, p := range rateLimitQuotaPhrases {
-		if strings.Contains(msg, p) {
-			return false
-		}
-	}
-
-	if strings.Contains(msg, "5") || strings.Contains(msg, "internal error") || strings.Contains(msg, "server error") || strings.Contains(msg, "service unavailable") || strings.Contains(msg, "bad gateway") || strings.Contains(msg, "gateway timeout") {
+	if strings.Contains(msg, "internal error") || strings.Contains(msg, "server error") || strings.Contains(msg, "service unavailable") || strings.Contains(msg, "bad gateway") || strings.Contains(msg, "gateway timeout") {
 		return true
 	}
 
