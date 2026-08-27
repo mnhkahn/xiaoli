@@ -298,6 +298,11 @@ type model struct {
 	contextUsage                *agentruntime.ContextUsage
 	runPulseFrame               int
 	runPulseActive              bool
+	thinkingStartedAt           time.Time
+	promptTokens                int
+	completionTokens            int
+	currentOutputChars          int
+	activeModelRequests         int
 	scroll                      int
 	viewport                    viewport.Model
 	streamingIndex              int
@@ -1134,6 +1139,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitForChat(m.chatMsgs)
 		}
 		if msg.delta != "" {
+			m.currentOutputChars += len([]rune(msg.delta))
 			if m.streamingIndex < 0 || m.streamingIndex >= len(m.items) {
 				m.items = append(m.items, transcriptItem{role: "assistant", text: ""})
 				m.streamingIndex = len(m.items) - 1
@@ -1553,6 +1559,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case eventStreamClosedMsg:
 		return m, nil
 	case eventMsg:
+		if m.applyModelUsageEvent(msg.event) {
+			m.syncViewport(false)
+			return m, tea.Batch(waitForEvent(m.events), terminalTitleCmd(m))
+		}
 		if confirm := pendingToolConfirmFromPermissionEvent(msg.event); confirm != nil {
 			m.enqueuePendingToolConfirm(confirm, false, "permission_event")
 			m.refreshContextUsage()
@@ -1824,7 +1834,13 @@ func (m model) renderTranscriptItemsWithLinks(width int) (string, []transcriptLi
 	if len(m.items) == 1 && m.items[0].role == "banner" {
 		return renderWelcomeBanner(m, width), nil
 	}
-	rendered := renderTranscriptContentWithFrameAndLinks(m.items, width, m.runPulseFrame)
+	items := append([]transcriptItem(nil), m.items...)
+	if thinking := m.thinkingStatus(); thinking != "" {
+		if index := latestActiveEventIndex(items); index >= 0 && items[index].role == "run-active" {
+			items[index].text = thinking
+		}
+	}
+	rendered := renderTranscriptContentWithFrameAndLinks(items, width, m.runPulseFrame)
 	return rendered.content, rendered.links
 }
 
@@ -2007,7 +2023,7 @@ func activeRunStatus(frame int) string {
 	if len(runStatusPhrases) == 0 {
 		return "Working"
 	}
-	return runStatusPhrases[0]
+	return runStatusPhrases[positiveMod(frame/12, len(runStatusPhrases))]
 }
 
 func renderRunEventLine(label string, width int, frame int, state runEventState) string {
@@ -2520,9 +2536,7 @@ func renderStatusBar(m model, width int) string {
 	if status == "" {
 		status = "idle"
 	}
-	stateParts := []string{
-		status,
-	}
+	stateParts := []string{status}
 	if m.autoApproveBash {
 		stateParts = append(stateParts, "AUTO-BASH")
 	}
@@ -2544,6 +2558,31 @@ func renderStatusBar(m model, width int) string {
 		hintStyle.Render(fitDisplay(strings.Join(actionParts, " · "), bodyWidth)),
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (m model) thinkingStatus() string {
+	if !m.busy || m.thinkingStartedAt.IsZero() {
+		return ""
+	}
+	frames := []string{"◐", "◓", "◑", "◒"}
+	elapsed := time.Since(m.thinkingStartedAt).Round(time.Second)
+	outputTokens := m.completionTokens + max(0, m.currentOutputChars/4)
+	output := fmt.Sprintf("↓ ~%s", compactTokenCount(outputTokens))
+	if m.activeModelRequests == 0 && m.currentOutputChars == 0 && m.completionTokens > 0 {
+		output = fmt.Sprintf("↓ %s", compactTokenCount(outputTokens))
+	}
+	input := "↑ awaiting usage"
+	if m.promptTokens > 0 {
+		input = "↑ " + compactTokenCount(m.promptTokens)
+	}
+	return fmt.Sprintf("%s %s… %s · %s · %s · Esc to interrupt", frames[m.runPulseFrame%len(frames)], activeRunStatus(m.runPulseFrame), elapsed, input, output)
+}
+
+func compactTokenCount(tokens int) string {
+	if tokens >= 1000 {
+		return fmt.Sprintf("%.2fK tokens", float64(tokens)/1000)
+	}
+	return fmt.Sprintf("%d tokens", tokens)
 }
 
 func renderWelcomeBanner(m model, width int) string {
@@ -5921,6 +5960,11 @@ func (m *model) beginChatContext() context.Context {
 	m.chatCanceled = false
 	m.chatRunID++
 	m.activeChatRunID = m.chatRunID
+	m.thinkingStartedAt = time.Now()
+	m.promptTokens = 0
+	m.completionTokens = 0
+	m.currentOutputChars = 0
+	m.activeModelRequests = 0
 	ctx = context.WithValue(ctx, chatRunIDContextKey{}, m.chatRunID)
 	return context.WithValue(ctx, chatCancelContextKey{}, cancel)
 }
@@ -5967,6 +6011,45 @@ func (m *model) appendRunActiveEvent(label string) {
 	m.items = append(m.items, transcriptItem{role: "run-active", text: label, frame: m.runPulseFrame})
 	m.runPulseActive = true
 	m.runPulseFrame = 0
+}
+
+func (m *model) applyModelUsageEvent(e agentevent.Event) bool {
+	data, _ := e.Data.(map[string]any)
+	switch e.Type {
+	case agentevent.TypeAgentModelStarted:
+		m.activeModelRequests++
+		m.currentOutputChars = 0
+		return true
+	case agentevent.TypeAgentModelFinished:
+		if m.activeModelRequests > 0 {
+			m.activeModelRequests--
+		}
+		promptTokens := eventInt(data, "prompt_tokens")
+		completionTokens := eventInt(data, "completion_tokens")
+		if promptTokens > 0 {
+			m.promptTokens += promptTokens
+		}
+		if completionTokens > 0 {
+			m.completionTokens += completionTokens
+		}
+		m.currentOutputChars = 0
+		return true
+	default:
+		return false
+	}
+}
+
+func eventInt(data map[string]any, key string) int {
+	switch value := data[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
 }
 
 func pendingToolConfirmFromPermissionEvent(e agentevent.Event) *agentbuiltin.PendingToolUseConfirm {

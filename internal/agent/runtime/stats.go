@@ -185,6 +185,7 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 				logger.Infof("[LLM] ================================================")
 			}
 
+			publishModelUsageEvent(ctx, agentevent.TypeAgentModelStarted, map[string]any{"model": r.resolveModelID(ctx, nil)})
 			return ctx
 		}).
 		OnEndFn(func(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
@@ -206,6 +207,13 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 				completionTokens = mo.TokenUsage.CompletionTokens
 				totalTokens = mo.TokenUsage.TotalTokens
 			}
+			publishModelUsageEvent(ctx, agentevent.TypeAgentModelFinished, map[string]any{
+				"model":             mid,
+				"prompt_tokens":     promptTokens,
+				"completion_tokens": completionTokens,
+				"total_tokens":      totalTokens,
+				"elapsed_ms":        elapsed.Milliseconds(),
+			})
 
 			if run, _ := ctx.Value(traceRunKey{}).(traceRun); run.Step > 0 {
 				var msg *schema.Message

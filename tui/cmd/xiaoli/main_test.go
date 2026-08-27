@@ -171,6 +171,47 @@ func TestStatusBarShowsTwoRowsWithStateAndActions(t *testing.T) {
 	}
 }
 
+func TestThinkingUsageRendersInTranscriptProgressLine(t *testing.T) {
+	m := model{
+		busy:              true,
+		status:            "running",
+		thinkingStartedAt: time.Now().Add(-57 * time.Second),
+		promptTokens:      1240,
+		completionTokens:  4900,
+		runPulseFrame:     1,
+		items:             []transcriptItem{{role: "run-active"}},
+	}
+	got := stripTestANSI(m.renderTranscriptContent(160))
+	for _, want := range []string{"Aligning", "↑ 1.24K tokens", "↓ 4.90K tokens", "Esc to interrupt"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("renderTranscriptContent() = %q, want %q", got, want)
+		}
+	}
+	status := stripTestANSI(renderStatusBar(m, 160))
+	if !strings.Contains(status, "running") || strings.Contains(status, "Aligning") {
+		t.Fatalf("renderStatusBar() = %q, want unchanged status row", status)
+	}
+}
+
+func TestModelUsageEventsUpdateThinkingTotals(t *testing.T) {
+	m := model{currentOutputChars: 400}
+	if !m.applyModelUsageEvent(agentevent.Event{Type: agentevent.TypeAgentModelStarted}) {
+		t.Fatal("model started event was not handled")
+	}
+	if m.currentOutputChars != 0 || m.activeModelRequests != 1 {
+		t.Fatalf("start state = chars:%d active:%d", m.currentOutputChars, m.activeModelRequests)
+	}
+	if !m.applyModelUsageEvent(agentevent.Event{Type: agentevent.TypeAgentModelFinished, Data: map[string]any{
+		"prompt_tokens":     1200,
+		"completion_tokens": int64(345),
+	}}) {
+		t.Fatal("model finished event was not handled")
+	}
+	if m.promptTokens != 1200 || m.completionTokens != 345 || m.activeModelRequests != 0 {
+		t.Fatalf("finish state = prompt:%d completion:%d active:%d", m.promptTokens, m.completionTokens, m.activeModelRequests)
+	}
+}
+
 func TestNewModelDefaultsToMouseViewportScrolling(t *testing.T) {
 	m := newModel(newTestLocalApp(t, t.TempDir()), "", "")
 	if !m.mouseEnabled {
@@ -2141,8 +2182,8 @@ func TestRunEventsRenderGradientStatusRows(t *testing.T) {
 		t.Fatalf("loading frames = %q / %q, want stable kaomoji glyph", first, laterGlyph)
 	}
 	later := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{start}, 80, 32))
-	if later != first {
-		t.Fatalf("status phrase changed within one event: %q / %q", first, later)
+	if later == first || !strings.Contains(later, "Scoping") {
+		t.Fatalf("status phrase did not advance: %q / %q", first, later)
 	}
 }
 
@@ -2150,8 +2191,8 @@ func TestOnlyLatestRunEventAnimates(t *testing.T) {
 	first := transcriptItem{role: "run-active", frame: 0}
 	second := transcriptItem{role: "run-active"}
 	got := stripTestANSI(renderTranscriptContentWithFrame([]transcriptItem{first, second}, 80, 32))
-	if strings.Count(got, "Aligning") != 2 {
-		t.Fatalf("rendered active events = %q, want stable labels", got)
+	if strings.Count(got, "Aligning") != 1 || !strings.Contains(got, "Scoping") {
+		t.Fatalf("rendered active events = %q, want only latest progress label to advance", got)
 	}
 }
 

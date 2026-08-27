@@ -14,12 +14,14 @@ const (
 	TypeMessagePartDelta = "message.part.delta"
 
 	// Agent run events
-	TypeAgentRunStarted   = "agent.run.started"
-	TypeAgentRunCompleted = "agent.run.completed"
-	TypeAgentRunFailed    = "agent.run.failed"
-	TypeAgentToolStarted  = "agent.tool.started"
-	TypeAgentToolFinished = "agent.tool.finished"
-	TypeAgentRetrying     = "agent.retrying"
+	TypeAgentRunStarted    = "agent.run.started"
+	TypeAgentRunCompleted  = "agent.run.completed"
+	TypeAgentRunFailed     = "agent.run.failed"
+	TypeAgentToolStarted   = "agent.tool.started"
+	TypeAgentToolFinished  = "agent.tool.finished"
+	TypeAgentModelStarted  = "agent.model.started"
+	TypeAgentModelFinished = "agent.model.finished"
+	TypeAgentRetrying      = "agent.retrying"
 
 	// Session events
 	TypeSessionDiff  = "session.diff"

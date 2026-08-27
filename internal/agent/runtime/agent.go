@@ -960,6 +960,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	logger.Infof("Agent.Chat called: conversation=%s device=%s memory=%s text=%q", conversationID, deviceID, memoryID, userText)
 	ctx = withRunEventSession(ctx, memoryID)
 	ctx = withRetryReporter(ctx, a.eventBus, memoryID)
+	ctx = withModelUsageReporter(ctx, a.eventBus, memoryID)
 	_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunStarted, memoryID, map[string]any{
 		"conversation_id": conversationID,
 		"device_id":       deviceID,
