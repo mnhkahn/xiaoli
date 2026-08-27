@@ -304,11 +304,13 @@ type model struct {
 	contextUsage                *agentruntime.ContextUsage
 	runPulseFrame               int
 	runPulseActive              bool
+	runStatusText               string
 	thinkingStartedAt           time.Time
 	promptTokens                int
 	completionTokens            int
 	currentOutputChars          int
 	activeModelRequests         int
+	lastModelFinishReason       string
 	executionExpected           bool
 	toolCallsThisChat           int
 	toolRepairAttempts          int
@@ -1594,6 +1596,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case eventStreamClosedMsg:
 		return m, nil
 	case eventMsg:
+		if msg.event.Type == agentevent.TypeAgentRunStarted {
+			m.lastModelFinishReason = ""
+		}
 		if m.applyModelUsageEvent(msg.event) {
 			m.syncViewport(false)
 			return m, tea.Batch(waitForEvent(m.events), terminalTitleCmd(m))
@@ -1613,6 +1618,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.event.Type == agentevent.TypeAgentToolStarted {
 			m.toolCallsThisChat++
 			m.executionExpected = false
+			m.runStatusText = "Running " + toolEventName(msg.event)
 		}
 		if msg.event.Type == agentevent.TypeAgentRunCompleted && m.executionExpected {
 			// Wait for chatDone to verify the textual reply. A tool-required turn
@@ -1620,10 +1626,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitForEvent(m.events)
 		}
 		if msg.event.Type == agentevent.TypeAgentToolFinished {
+			if toolEventError(msg.event) != "" {
+				m.runStatusText = "Tool failed: " + toolEventName(msg.event)
+			} else {
+				m.runStatusText = "Validated " + toolEventName(msg.event)
+			}
 			if errText := toolEventError(msg.event); errText != "" {
 				data, _ := msg.event.Data.(map[string]any)
 				m.lastToolFailure = &toolFailure{name: stringMapValue(data, "name"), arguments: stringMapValue(data, "arguments"), err: errText}
 			}
+		}
+		if msg.event.Type == agentevent.TypeAgentRetrying {
+			m.runStatusText = "Retrying model request"
 		}
 		if msg.event.Type == agentevent.TypeAgentToolFinished && m.completeToolEvent(msg.event) {
 			m.refreshContextUsage()
@@ -1631,6 +1645,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(waitForEvent(m.events), terminalTitleCmd(m))
 		}
 		item := eventTranscriptItem(msg.event)
+		if msg.event.Type == agentevent.TypeAgentRunCompleted {
+			item.text = deliveredLabel(m.lastModelFinishReason)
+		}
 		item.frame = m.runPulseFrame
 		switch item.role {
 		case "run-active":
@@ -2643,7 +2660,11 @@ func (m model) thinkingStatus() string {
 	if m.promptTokens > 0 {
 		input = "↑ " + compactTokenCount(m.promptTokens)
 	}
-	return fmt.Sprintf("%s %s… %s · %s · %s · Esc to interrupt", frames[m.runPulseFrame%len(frames)], activeRunStatus(m.runPulseFrame), elapsed, input, output)
+	status := strings.TrimSpace(m.runStatusText)
+	if status == "" {
+		status = "Working"
+	}
+	return fmt.Sprintf("%s %s… %s · %s · %s · Esc to interrupt", frames[m.runPulseFrame%len(frames)], status, elapsed, input, output)
 }
 
 func compactTokenCount(tokens int) string {
@@ -6157,6 +6178,7 @@ func (m *model) beginChatContext() context.Context {
 	m.completionTokens = 0
 	m.currentOutputChars = 0
 	m.activeModelRequests = 0
+	m.runStatusText = "Working"
 	ctx = context.WithValue(ctx, chatRunIDContextKey{}, m.chatRunID)
 	return context.WithValue(ctx, chatCancelContextKey{}, cancel)
 }
@@ -6218,6 +6240,7 @@ func (m *model) applyModelUsageEvent(e agentevent.Event) bool {
 		}
 		promptTokens := eventInt(data, "prompt_tokens")
 		completionTokens := eventInt(data, "completion_tokens")
+		usageChanged := promptTokens > 0 || completionTokens > 0
 		if promptTokens > 0 {
 			m.promptTokens += promptTokens
 		}
@@ -6225,6 +6248,10 @@ func (m *model) applyModelUsageEvent(e agentevent.Event) bool {
 			m.completionTokens += completionTokens
 		}
 		m.currentOutputChars = 0
+		if usageChanged {
+			m.runStatusText = "Processing response"
+		}
+		m.lastModelFinishReason = strings.TrimSpace(stringMapValue(data, "finish_reason"))
 		return true
 	default:
 		return false
@@ -6353,6 +6380,14 @@ func eventTranscriptItem(e agentevent.Event) transcriptItem {
 	}
 }
 
+func deliveredLabel(finishReason string) string {
+	finishReason = strings.TrimSpace(finishReason)
+	if finishReason == "" || strings.EqualFold(finishReason, "unknown") {
+		return "Delivered"
+	}
+	return "Delivered · " + finishReason
+}
+
 func (m *model) completeToolEvent(e agentevent.Event) bool {
 	for i := len(m.items) - 1; i >= 0; i-- {
 		if m.items[i].role != "tool-active" {
@@ -6381,6 +6416,11 @@ func toolEventCardStart(e agentevent.Event) string {
 		return fmt.Sprintf("Ran %s\n$ %s", name, redactCommandForDisplay(detail))
 	}
 	return "Ran " + firstNonEmptyArg(name, "tool")
+}
+
+func toolEventName(e agentevent.Event) string {
+	data, _ := e.Data.(map[string]any)
+	return firstNonEmptyArg(strings.TrimSpace(stringMapValue(data, "name")), "tool")
 }
 
 func toolEventCardEnd(e agentevent.Event) string {

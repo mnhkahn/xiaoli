@@ -202,18 +202,19 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 			elapsed := time.Since(start)
 
 			promptTokens, completionTokens, totalTokens := 0, 0, 0
-			if mo != nil && mo.TokenUsage != nil {
-				promptTokens = mo.TokenUsage.PromptTokens
-				completionTokens = mo.TokenUsage.CompletionTokens
-				totalTokens = mo.TokenUsage.TotalTokens
+			finishReason := ""
+			if mo != nil {
+				if mo.TokenUsage != nil {
+					promptTokens = mo.TokenUsage.PromptTokens
+					completionTokens = mo.TokenUsage.CompletionTokens
+					totalTokens = mo.TokenUsage.TotalTokens
+				}
+				if mo.Message != nil && mo.Message.ResponseMeta != nil {
+					finishReason = mo.Message.ResponseMeta.FinishReason
+				}
 			}
-			publishModelUsageEvent(ctx, agentevent.TypeAgentModelFinished, map[string]any{
-				"model":             mid,
-				"prompt_tokens":     promptTokens,
-				"completion_tokens": completionTokens,
-				"total_tokens":      totalTokens,
-				"elapsed_ms":        elapsed.Milliseconds(),
-			})
+			finish := modelFinishedEventData(mid, promptTokens, completionTokens, totalTokens, finishReason, elapsed)
+			publishModelUsageEvent(ctx, agentevent.TypeAgentModelFinished, finish)
 
 			if run, _ := ctx.Value(traceRunKey{}).(traceRun); run.Step > 0 {
 				var msg *schema.Message
@@ -246,6 +247,17 @@ func (r *Recorder) buildHandler() callbacks.Handler {
 			return ctx
 		}).
 		Build()
+}
+
+func modelFinishedEventData(modelID string, promptTokens, completionTokens, totalTokens int, finishReason string, elapsed time.Duration) map[string]any {
+	return map[string]any{
+		"model":             modelID,
+		"prompt_tokens":     promptTokens,
+		"completion_tokens": completionTokens,
+		"total_tokens":      totalTokens,
+		"elapsed_ms":        elapsed.Milliseconds(),
+		"finish_reason":     finishReason,
+	}
 }
 
 func (r *Recorder) resolveModelID(ctx context.Context, output callbacks.CallbackOutput) string {
@@ -472,8 +484,9 @@ type toolCounter struct {
 }
 
 type toolRunTracker struct {
-	mu    sync.Mutex
-	count int
+	mu       sync.Mutex
+	count    int
+	evidence []ToolEvidence
 }
 
 type toolRunTrackerKey struct{}
@@ -493,6 +506,20 @@ func recordToolRun(ctx context.Context) {
 	tracker.mu.Unlock()
 }
 
+func recordToolEvidence(ctx context.Context, toolName, arguments, result string) {
+	tracker, _ := ctx.Value(toolRunTrackerKey{}).(*toolRunTracker)
+	if tracker == nil {
+		return
+	}
+	capabilities := capabilitiesFromToolOutput(toolName, arguments, result)
+	if len(capabilities) == 0 {
+		return
+	}
+	tracker.mu.Lock()
+	tracker.evidence = append(tracker.evidence, ToolEvidence{Tool: toolName, Capabilities: capabilities, RecordedAt: time.Now().UTC().Format(time.RFC3339)})
+	tracker.mu.Unlock()
+}
+
 func (t *toolRunTracker) Count() int {
 	if t == nil {
 		return 0
@@ -500,6 +527,15 @@ func (t *toolRunTracker) Count() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.count
+}
+
+func (t *toolRunTracker) Evidence() []ToolEvidence {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]ToolEvidence(nil), t.evidence...)
 }
 
 func newToolCounter(inner tool.InvokableTool, recorder *Recorder, category string, eventBus agentevent.Publisher, toolOutputs *toolOutputStore) *toolCounter {
@@ -561,6 +597,7 @@ func (w *toolCounter) InvokableRun(ctx context.Context, argumentsInJSON string, 
 	}
 	_ = publishRunEvent(ctx, w.eventBus, agentevent.TypeAgentToolFinished, sessionID, data)
 	if err == nil {
+		recordToolEvidence(ctx, w.toolName, argumentsInJSON, result)
 		projected := projectToolOutput(w.toolName, result, w.toolOutputs)
 		if len(projected) != len(result) {
 			logger.Infof("tool output projected: tool=%s raw_bytes=%d model_bytes=%d", w.toolName, len(result), len(projected))

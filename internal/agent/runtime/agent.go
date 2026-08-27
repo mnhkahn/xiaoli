@@ -958,6 +958,21 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	}
 
 	logger.Infof("Agent.Chat called: conversation=%s device=%s memory=%s text=%q", conversationID, deviceID, memoryID, userText)
+	continuingContract := executionContractContinuationCount(ctx) > 0
+	var contractState TaskContractState
+	if continuingContract {
+		if saved, ok := a.memory.LoadTaskContractState(ctx, memoryID); ok {
+			contractState = saved
+		} else {
+			contractState = TaskContractState{Contract: conservativeTaskContract(userText), Status: "active"}
+		}
+	} else {
+		contractState = TaskContractState{Contract: a.planTaskContract(ctx, userText), Status: "active"}
+	}
+	if contractState.Status == "" || contractState.Status == "complete" || contractState.Status == "unverified" {
+		contractState.Status = "active"
+	}
+	_ = a.memory.SaveTaskContractState(ctx, memoryID, contractState)
 	ctx = withRunEventSession(ctx, memoryID)
 	ctx = withRetryReporter(ctx, a.eventBus, memoryID)
 	ctx = withModelUsageReporter(ctx, a.eventBus, memoryID)
@@ -1007,7 +1022,8 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		msgs = append(msgs, schema.SystemMessage(memories))
 	}
 	msgs = append(msgs, history...)
-	msgs = append(msgs, schema.UserMessage(userText))
+	executorText := taskContractExecutorPrompt(contractState, userText)
+	msgs = append(msgs, schema.UserMessage(executorText))
 
 	var askHolder *agentbuiltin.AskDataHolder
 	ctx, askHolder = agentbuiltin.NewAskDataHolder(ctx)
@@ -1098,7 +1114,7 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 				msgs = append(msgs, schema.SystemMessage(memories))
 			}
 			msgs = append(msgs, history...)
-			msgs = append(msgs, schema.UserMessage(userText))
+			msgs = append(msgs, schema.UserMessage(executorText))
 		}
 	}
 
@@ -1166,6 +1182,9 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 			continue
 		}
 		if mv.IsStreaming && mv.MessageStream != nil {
+			streamStartedAt := time.Now()
+			var streamUsage *schema.TokenUsage
+			finishReason := ""
 			for {
 				chunk, recvErr := mv.MessageStream.Recv()
 				if recvErr != nil {
@@ -1175,6 +1194,15 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 					_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": recvErr.Error()})
 					return "", fmt.Errorf("agent stream error: %w", recvErr)
 				}
+				if chunk != nil && chunk.ResponseMeta != nil {
+					if chunk.ResponseMeta.FinishReason != "" {
+						finishReason = chunk.ResponseMeta.FinishReason
+					}
+					if chunk.ResponseMeta.Usage != nil {
+						usage := *chunk.ResponseMeta.Usage
+						streamUsage = &usage
+					}
+				}
 				if chunk != nil && chunk.Content != "" {
 					streamed.WriteString(chunk.Content)
 					if opts.Stream != nil && !opts.Stream(chunk.Content) {
@@ -1182,6 +1210,15 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 					}
 				}
 			}
+			// The ADK streaming path does not invoke the chat-model OnEnd callback,
+			// so forward the final stream metadata explicitly for the TUI.
+			promptTokens, completionTokens, totalTokens := 0, 0, 0
+			if streamUsage != nil {
+				promptTokens = streamUsage.PromptTokens
+				completionTokens = streamUsage.CompletionTokens
+				totalTokens = streamUsage.TotalTokens
+			}
+			publishModelUsageEvent(runCtx, agentevent.TypeAgentModelFinished, modelFinishedEventData(modelID, promptTokens, completionTokens, totalTokens, finishReason, time.Since(streamStartedAt)))
 			continue
 		}
 		if mv.Message != nil {
@@ -1221,6 +1258,30 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	for _, confirm := range confirms {
 		a.storeToolUseConfirm(ctx, conversationID, confirm)
 	}
+	contractState.mergeEvidence(toolRuns.Evidence())
+	contractState.Attempts++
+	missingCapabilities := contractState.missing()
+	if len(missingCapabilities) == 0 {
+		contractState.Status = "complete"
+	} else if ask != nil || len(confirms) > 0 || (sendStatus != nil && sendStatus.Sent()) {
+		contractState.Status = "active"
+	} else if executionContractContinuationCount(ctx) >= maxContractContinuations || toolRuns.Count() == 0 {
+		contractState.Status = "unverified"
+	}
+	_ = a.memory.SaveTaskContractState(ctx, memoryID, contractState)
+	if len(missingCapabilities) > 0 && contractState.Status == "active" && toolRuns.Count() > 0 {
+		logger.Infof("task contract continuing: memory=%s missing=%v pass=%d", memoryID, missingCapabilities, executionContractContinuationCount(ctx)+1)
+		return a.ChatWithContextOptions(
+			context.WithValue(ctx, taskContractContinuationKey{}, executionContractContinuationCount(ctx)+1),
+			conversationID,
+			deviceID,
+			"系统续办：合同尚未满足；仍缺少能力："+strings.Join(missingCapabilities, ", ")+"。继续调用适当工具获取真实证据，不要总结或结束。",
+			opts,
+		)
+	}
+	if contractState.Status == "unverified" {
+		result.Content = taskContractStopMessage(result.Content, missingCapabilities)
+	}
 	if shouldContinueExecutionChecklist(ctx, history, userText, toolRuns.Count(), ask, confirms, sendStatus) {
 		logger.Infof("execution checklist continuing: memory=%s tools=%d pass=%d", memoryID, toolRuns.Count(), executionChecklistContinuationCount(ctx)+1)
 		return a.ChatWithContextOptions(
@@ -1237,6 +1298,11 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 		"history_len": len(updated),
 	})
 	return result.Content, nil
+}
+
+func executionContractContinuationCount(ctx context.Context) int {
+	count, _ := ctx.Value(taskContractContinuationKey{}).(int)
+	return count
 }
 
 func shouldContinueExecutionChecklist(ctx context.Context, history []*schema.Message, userText string, toolRuns int, ask *agentbuiltin.AskData, confirms []*agentbuiltin.PendingToolUseConfirm, sendStatus *agentbuiltin.ChannelSendStatus) bool {

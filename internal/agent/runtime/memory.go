@@ -132,6 +132,57 @@ func (m *Memory) ConversationPath(conversationID string) string {
 	return filepath.Join(m.localDataDir, m.conversationDir, safeFileID(conversationID)+".json")
 }
 
+func (m *Memory) TaskContractPath(conversationID string) string {
+	if m == nil || m.localDataDir == "" {
+		return ""
+	}
+	return filepath.Join(m.localDataDir, "state", "task-contracts", safeFileID(conversationID)+".json")
+}
+
+func (m *Memory) LoadTaskContractState(ctx context.Context, conversationID string) (TaskContractState, bool) {
+	if m == nil || !m.Enabled() {
+		return TaskContractState{}, false
+	}
+	var data []byte
+	var err error
+	if m.localDataDir != "" {
+		data, err = os.ReadFile(m.TaskContractPath(conversationID))
+	} else {
+		data, err = m.client.Get(ctx, m.prefix+"task-contract:"+conversationID).Bytes()
+	}
+	if err != nil {
+		return TaskContractState{}, false
+	}
+	var state TaskContractState
+	if json.Unmarshal(data, &state) != nil || strings.TrimSpace(state.Contract.Goal) == "" {
+		return TaskContractState{}, false
+	}
+	return state, true
+}
+
+func (m *Memory) SaveTaskContractState(ctx context.Context, conversationID string, state TaskContractState) error {
+	if m == nil || !m.Enabled() {
+		return nil
+	}
+	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	if m.localDataDir != "" {
+		path := m.TaskContractPath(conversationID)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return err
+		}
+		tmp := path + ".tmp"
+		if err := os.WriteFile(tmp, data, 0600); err != nil {
+			return err
+		}
+		return os.Rename(tmp, path)
+	}
+	return m.client.Set(ctx, m.prefix+"task-contract:"+conversationID, data, m.ttl).Err()
+}
+
 func (m *Memory) MemoryBackends(channelName, deviceID string) *agentbuiltin.MemoryBackends {
 	if m == nil {
 		return nil

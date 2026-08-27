@@ -182,7 +182,7 @@ func TestThinkingUsageRendersInTranscriptProgressLine(t *testing.T) {
 		items:             []transcriptItem{{role: "run-active"}},
 	}
 	got := stripTestANSI(m.renderTranscriptContent(160))
-	for _, want := range []string{"Aligning", "↑ 1.24K tokens", "↓ 4.90K tokens", "Esc to interrupt"} {
+	for _, want := range []string{"Working", "↑ 1.24K tokens", "↓ 4.90K tokens", "Esc to interrupt"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("renderTranscriptContent() = %q, want %q", got, want)
 		}
@@ -203,8 +203,22 @@ func TestThinkingProgressRendersAfterToolCards(t *testing.T) {
 		},
 	}
 	got := stripTestANSI(m.renderTranscriptContent(120))
-	if strings.Index(got, "Ran a command") >= strings.Index(got, "Aligning") {
+	if strings.Index(got, "Ran a command") >= strings.Index(got, "Working") {
 		t.Fatalf("transcript order = %q, want tool card before thinking progress", got)
+	}
+}
+
+func TestThinkingStatusWordOnlyChangesOnMeaningfulEvent(t *testing.T) {
+	m := model{busy: true, thinkingStartedAt: time.Now().Add(-time.Second), runStatusText: "Working"}
+	before := m.thinkingStatus()
+	m.runPulseFrame = 100
+	afterPulse := m.thinkingStatus()
+	if !strings.Contains(before, "Working") || !strings.Contains(afterPulse, "Working") {
+		t.Fatalf("pulse changed status word: before=%q after=%q", before, afterPulse)
+	}
+	m.applyModelUsageEvent(agentevent.Event{Type: agentevent.TypeAgentModelFinished, Data: map[string]any{"completion_tokens": 1}})
+	if got := m.thinkingStatus(); !strings.Contains(got, "Processing response") {
+		t.Fatalf("usage event did not update status: %q", got)
 	}
 }
 
@@ -725,6 +739,17 @@ func TestCommitPreviewKeepsFileRowsOnSeparateLines(t *testing.T) {
 	got = strings.Join(lines, "\n")
 	if !strings.Contains(got, "a.go | 2 ++\n b.go | 1 +") {
 		t.Fatalf("commit preview rows were merged: %q", got)
+	}
+}
+
+func TestDeliveredLabelIncludesKnownFinishReasonOnly(t *testing.T) {
+	if got := deliveredLabel("tool_calls"); got != "Delivered · tool_calls" {
+		t.Fatalf("deliveredLabel(tool_calls) = %q", got)
+	}
+	for _, reason := range []string{"", "unknown", " UNKNOWN "} {
+		if got := deliveredLabel(reason); got != "Delivered" {
+			t.Fatalf("deliveredLabel(%q) = %q, want Delivered", reason, got)
+		}
 	}
 }
 

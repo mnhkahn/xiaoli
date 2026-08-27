@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
@@ -280,6 +281,13 @@ func TestRecordCachedTokens(t *testing.T) {
 	}
 	if b.promptTokens != 100 {
 		t.Fatalf("prompt = %d, want 100", b.promptTokens)
+	}
+}
+
+func TestModelFinishedEventDataPreservesFinishReason(t *testing.T) {
+	got := modelFinishedEventData("test-model", 12, 7, 19, "stop", 1250*time.Millisecond)
+	if got["finish_reason"] != "stop" || got["prompt_tokens"] != 12 || got["completion_tokens"] != 7 || got["total_tokens"] != 19 || got["elapsed_ms"] != int64(1250) {
+		t.Fatalf("modelFinishedEventData() = %#v", got)
 	}
 }
 
