@@ -274,7 +274,7 @@ func TestRunModelWizardOpenRouter(t *testing.T) {
 		t.Fatalf("default model = %q, want openrouter", cfg.Models.Default)
 	}
 	option := cfg.Models.Options["openrouter"]
-	if option.BaseURL != "https://openrouter.ai/api/v1" || option.Model != "openrouter/free" || option.APIKeyEnv != "OPENROUTER_API_KEY" {
+	if option.BaseURL != "https://openrouter.ai/api/v1" || option.Model != "minimax/minimax-m3:free" || option.APIKeyEnv != "OPENROUTER_API_KEY" || option.ContextLength != 1048576 {
 		t.Fatalf("openrouter option = %#v", option)
 	}
 	secrets, err := LoadSecrets(filepath.Join(filepath.Dir(settingsPath), "secrets.json"))

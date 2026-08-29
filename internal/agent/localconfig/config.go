@@ -280,7 +280,7 @@ type ModelProviderPreset struct {
 
 func ModelProviderPresets() []ModelProviderPreset {
 	return []ModelProviderPreset{
-		{ID: "openrouter", Label: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1", Model: "openrouter/free", APIKeyEnv: "OPENROUTER_API_KEY", MaxTokens: 4096, ContextLength: 128000},
+		{ID: "openrouter", Label: "OpenRouter", BaseURL: "https://openrouter.ai/api/v1", Model: "minimax/minimax-m3:free", APIKeyEnv: "OPENROUTER_API_KEY", MaxTokens: 4096, ContextLength: 1048576},
 		{ID: "siliconflow", Label: "SiliconFlow", BaseURL: "https://api.siliconflow.cn/v1", Model: "Qwen/Qwen3-8B", APIKeyEnv: "SILICONFLOW_API_KEY", MaxTokens: 4096, ContextLength: 32768},
 		{ID: "ark", Label: "Ark / 火山方舟", BaseURL: "https://ark.cn-beijing.volces.com/api/v3", APIKeyEnv: "ARK_API_KEY", MaxTokens: 4096, ContextLength: 32768, CustomModel: true},
 		{ID: "openai", Label: "OpenAI Compatible", BaseURL: "https://api.openai.com/v1", Model: "gpt-4.1-mini", APIKeyEnv: "OPENAI_API_KEY", MaxTokens: 4096, ContextLength: 128000, CustomBaseURL: true, CustomModel: true},

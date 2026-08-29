@@ -472,12 +472,14 @@ func (h Handler) modelList(ctx context.Context) string {
 		}
 	}
 	balances := h.deps.ProviderBalances(ctx)
-	if len(balances) > 0 {
-		b.WriteString("\n\n套餐余额：")
-		providers := make([]string, 0, len(balances))
-		for name := range balances {
+	providers := make([]string, 0, len(balances))
+	for name := range balances {
+		if name == "openrouter" || name == "deepseek" {
 			providers = append(providers, name)
 		}
+	}
+	if len(providers) > 0 {
+		b.WriteString("\n\n套餐余额：")
 		sort.Strings(providers)
 		for _, name := range providers {
 			fmt.Fprintf(&b, "\n- %s: %s", name, balances[name])

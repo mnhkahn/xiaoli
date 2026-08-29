@@ -1,7 +1,7 @@
 {
   "models": {
     "llm": {
-      "default": "deepseek:v4-flash",
+      "default": "openrouter:minimax-m3-free",
       "options": {
         "ark:code-latest": {
           "name": "ARK Code Latest",
@@ -50,6 +50,14 @@
           "api_key_env": "OPENROUTER_API_KEY",
           "max_tokens": 8192,
           "context_length": 262144
+        },
+        "openrouter:minimax-m3-free": {
+          "name": "OpenRouter MiniMax M3 Free",
+          "base_url": "https://openrouter.ai/api/v1",
+          "model": "minimax/minimax-m3:free",
+          "api_key_env": "OPENROUTER_API_KEY",
+          "max_tokens": 8192,
+          "context_length": 1048576
         }
       }
     },

@@ -64,7 +64,13 @@ func (fakeDeps) SessionContext(_ context.Context, id string) string {
 }
 
 func (fakeDeps) ProviderBalances(_ context.Context) map[string]string {
-	return map[string]string{"test-provider": "¥10.00", "free-provider": "N/A"}
+	return map[string]string{
+		"openrouter":  "¥10.00",
+		"deepseek":    "¥5.00",
+		"ark":         "¥3.00",
+		"nvidia":      "¥2.00",
+		"siliconflow": "¥1.00",
+	}
 }
 
 func (fakeDeps) CompressSession(_ context.Context) string {
@@ -186,7 +192,7 @@ func TestUsage(t *testing.T) {
 	handler := NewHandler(&fakeDeps{})
 
 	reply, handled := handler.Handle(context.Background(), channel.TypeLark, "/usage")
-	if !handled || !strings.Contains(reply, "当前模型用量") || !strings.Contains(reply, "test-provider") || !strings.Contains(reply, "¥10.00") {
+	if !handled || !strings.Contains(reply, "当前模型用量") || !strings.Contains(reply, "openrouter") || !strings.Contains(reply, "¥10.00") {
 		t.Fatalf("/usage reply=%q handled=%v, want provider usage", reply, handled)
 	}
 }
@@ -252,6 +258,14 @@ func TestModelListAndUse(t *testing.T) {
 	reply, handled := handler.Handle(context.Background(), channel.TypeLark, "/model list")
 	if !handled || !strings.Contains(reply, "llm-test 当前") || !strings.Contains(reply, "llm-next") {
 		t.Fatalf("/model list reply=%q handled=%v, want model options", reply, handled)
+	}
+	if !strings.Contains(reply, "- openrouter: ¥10.00") || !strings.Contains(reply, "- deepseek: ¥5.00") {
+		t.Fatalf("/model list reply=%q, want OpenRouter and DeepSeek balances", reply)
+	}
+	for _, provider := range []string{"ark", "nvidia", "siliconflow"} {
+		if strings.Contains(reply, "- "+provider+":") {
+			t.Fatalf("/model list reply=%q, unexpectedly includes %s balance", reply, provider)
+		}
 	}
 
 	reply, handled = handler.Handle(context.Background(), channel.TypeLark, "/model use llm-next")
