@@ -20,6 +20,16 @@ func TestLLMShouldRetryContextDeadlineExceeded(t *testing.T) {
 	}
 }
 
+func TestLLMShouldRetryFirstTokenTimeout(t *testing.T) {
+	decision := llmShouldRetry(context.Background(), &adk.RetryContext{
+		Err: errors.New("first token timeout after 15s"),
+	})
+
+	if decision == nil || !decision.Retry {
+		t.Fatalf("llmShouldRetry(first token timeout) = %#v, want retry", decision)
+	}
+}
+
 func TestAgentShouldRetryContextDeadlineExceeded(t *testing.T) {
 	if !isRetryableAgentError(context.DeadlineExceeded) {
 		t.Fatal("isRetryableAgentError(context deadline exceeded) = false, want true")

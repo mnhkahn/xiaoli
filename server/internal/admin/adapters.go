@@ -599,7 +599,13 @@ func (p *ConversationPipeline) runWorkflowStep(ctx context.Context, turn Convers
 		return ConversationReply{Text: "我现在还没有配置语言模型。"}, nil
 	}
 	if chat, ok := p.chat.(conversationChatWithOptions); ok {
-		answer, err := chat.ChatWithOptions(ctx, turn, ChatOptions{MaxIterations: maxSteps, Channel: string(turn.Channel), SendTarget: turn.SendTarget})
+		opts := ChatOptions{MaxIterations: maxSteps, Channel: string(turn.Channel), SendTarget: turn.SendTarget}
+		// WeChat only sends a final message, but use the streaming model path so
+		// the runtime can enforce and retry the first-token timeout before reply.
+		if turn.Channel == ChannelWechatText {
+			opts.Stream = func(string) bool { return true }
+		}
+		answer, err := chat.ChatWithOptions(ctx, turn, opts)
 		if err != nil {
 			return ConversationReply{}, err
 		}

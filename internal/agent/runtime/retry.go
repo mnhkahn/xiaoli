@@ -19,12 +19,13 @@ import (
 )
 
 const (
-	llmRetryMax      = 5
-	llmBackoffBase   = time.Second
-	llmBackoffCap    = 30 * time.Second
-	agentRetryMax    = 1
-	agentBackoffBase = 2 * time.Second
-	agentBackoffCap  = 30 * time.Second
+	llmRetryMax          = 5
+	llmBackoffBase       = time.Second
+	llmBackoffCap        = 30 * time.Second
+	llmFirstTokenTimeout = 15 * time.Second
+	agentRetryMax        = 1
+	agentBackoffBase     = 2 * time.Second
+	agentBackoffCap      = 30 * time.Second
 )
 
 var rateLimitGenericPhrases = []string{
@@ -45,6 +46,7 @@ var transientTimeoutPhrases = []string{
 	"i/o timeout",
 	"timeout awaiting headers",
 	"timeout awaiting response headers",
+	"first token timeout",
 }
 
 type retryReporter struct {

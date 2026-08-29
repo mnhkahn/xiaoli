@@ -1152,77 +1152,128 @@ func (a *Agent) ChatWithContextOptions(ctx context.Context, conversationID strin
 	})
 
 	runCtx := a.recorder.WithContext(ctx, modelID)
-	events, err := runWithRetry(runCtx, runner, msgs)
-	if err != nil {
-		if sendStatus.Sent() {
-			logger.Infof("Agent.Chat completed after channel_send despite runner error: %v", err)
-			return a.completeAfterChannelSend(ctx, conversationID, memoryID, usingSession, channelName, channelUser, epochToday, history, userText, askHolder, toolUseConfirmHolder), nil
-		}
-		_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": err.Error()})
-		return "", fmt.Errorf("agent error: %w", err)
-	}
-
 	var result *schema.Message
 	var streamed strings.Builder
-	for _, event := range events {
-		if event.Err != nil {
-			logger.Infof("Agent.Chat event error: %v", event.Err)
+	for firstTokenRetry := 0; ; firstTokenRetry++ {
+		attemptCtx, cancelAttempt := context.WithCancel(runCtx)
+		events, err := runWithRetry(attemptCtx, runner, msgs)
+		if err != nil {
+			cancelAttempt()
 			if sendStatus.Sent() {
-				logger.Infof("Agent.Chat completed after channel_send despite event error: %v", event.Err)
+				logger.Infof("Agent.Chat completed after channel_send despite runner error: %v", err)
 				return a.completeAfterChannelSend(ctx, conversationID, memoryID, usingSession, channelName, channelUser, epochToday, history, userText, askHolder, toolUseConfirmHolder), nil
 			}
-			_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": event.Err.Error()})
-			return "", fmt.Errorf("agent error: %w", event.Err)
+			_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": err.Error()})
+			return "", fmt.Errorf("agent error: %w", err)
 		}
-		if event.Output == nil || event.Output.MessageOutput == nil {
-			continue
-		}
-		mv := event.Output.MessageOutput
-		if mv.Role != schema.Assistant {
-			continue
-		}
-		if mv.IsStreaming && mv.MessageStream != nil {
-			streamStartedAt := time.Now()
-			var streamUsage *schema.TokenUsage
-			finishReason := ""
-			for {
-				chunk, recvErr := mv.MessageStream.Recv()
-				if recvErr != nil {
-					if recvErr == io.EOF {
-						break
-					}
-					_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": recvErr.Error()})
-					return "", fmt.Errorf("agent stream error: %w", recvErr)
+
+		firstTokenTimedOut := false
+		for _, event := range events {
+			if event.Err != nil {
+				logger.Infof("Agent.Chat event error: %v", event.Err)
+				cancelAttempt()
+				if sendStatus.Sent() {
+					logger.Infof("Agent.Chat completed after channel_send despite event error: %v", event.Err)
+					return a.completeAfterChannelSend(ctx, conversationID, memoryID, usingSession, channelName, channelUser, epochToday, history, userText, askHolder, toolUseConfirmHolder), nil
 				}
-				if chunk != nil && chunk.ResponseMeta != nil {
-					if chunk.ResponseMeta.FinishReason != "" {
-						finishReason = chunk.ResponseMeta.FinishReason
-					}
-					if chunk.ResponseMeta.Usage != nil {
-						usage := *chunk.ResponseMeta.Usage
-						streamUsage = &usage
-					}
-				}
-				if chunk != nil && chunk.Content != "" {
-					streamed.WriteString(chunk.Content)
-					if opts.Stream != nil && !opts.Stream(chunk.Content) {
-						return "", ctx.Err()
-					}
-				}
+				_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": event.Err.Error()})
+				return "", fmt.Errorf("agent error: %w", event.Err)
 			}
-			// The ADK streaming path does not invoke the chat-model OnEnd callback,
-			// so forward the final stream metadata explicitly for the TUI.
-			promptTokens, completionTokens, totalTokens := 0, 0, 0
-			if streamUsage != nil {
-				promptTokens = streamUsage.PromptTokens
-				completionTokens = streamUsage.CompletionTokens
-				totalTokens = streamUsage.TotalTokens
+			if event.Output == nil || event.Output.MessageOutput == nil {
+				continue
 			}
-			publishModelUsageEvent(runCtx, agentevent.TypeAgentModelFinished, modelFinishedEventData(modelID, promptTokens, completionTokens, totalTokens, finishReason, time.Since(streamStartedAt)))
-			continue
+			mv := event.Output.MessageOutput
+			if mv.Role != schema.Assistant {
+				continue
+			}
+			if mv.IsStreaming && mv.MessageStream != nil {
+				streamStartedAt := time.Now()
+				var streamUsage *schema.TokenUsage
+				finishReason := ""
+				firstChunkReceived := false
+				firstTokenTimeout := make(chan struct{})
+				firstTokenTimer := time.AfterFunc(llmFirstTokenTimeout, func() {
+					close(firstTokenTimeout)
+					cancelAttempt()
+				})
+				for {
+					chunk, recvErr := mv.MessageStream.Recv()
+					if recvErr != nil {
+						if recvErr == io.EOF {
+							break
+						}
+						select {
+						case <-firstTokenTimeout:
+							if !firstChunkReceived {
+								firstTokenTimedOut = true
+								break
+							}
+						default:
+						}
+						if firstTokenTimedOut {
+							break
+						}
+						_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": recvErr.Error()})
+						firstTokenTimer.Stop()
+						cancelAttempt()
+						return "", fmt.Errorf("agent stream error: %w", recvErr)
+					}
+					if !firstChunkReceived && chunk != nil {
+						firstChunkReceived = true
+						firstTokenTimer.Stop()
+					}
+					if chunk != nil && chunk.ResponseMeta != nil {
+						if chunk.ResponseMeta.FinishReason != "" {
+							finishReason = chunk.ResponseMeta.FinishReason
+						}
+						if chunk.ResponseMeta.Usage != nil {
+							usage := *chunk.ResponseMeta.Usage
+							streamUsage = &usage
+						}
+					}
+					if chunk != nil && chunk.Content != "" {
+						streamed.WriteString(chunk.Content)
+						if opts.Stream != nil && !opts.Stream(chunk.Content) {
+							return "", ctx.Err()
+						}
+					}
+				}
+				firstTokenTimer.Stop()
+				if firstTokenTimedOut {
+					break
+				}
+				// The ADK streaming path does not invoke the chat-model OnEnd callback,
+				// so forward the final stream metadata explicitly for the TUI.
+				promptTokens, completionTokens, totalTokens := 0, 0, 0
+				if streamUsage != nil {
+					promptTokens = streamUsage.PromptTokens
+					completionTokens = streamUsage.CompletionTokens
+					totalTokens = streamUsage.TotalTokens
+				}
+				publishModelUsageEvent(runCtx, agentevent.TypeAgentModelFinished, modelFinishedEventData(modelID, promptTokens, completionTokens, totalTokens, finishReason, time.Since(streamStartedAt)))
+				continue
+			}
+			if mv.Message != nil {
+				result = mv.Message
+			}
 		}
-		if mv.Message != nil {
-			result = mv.Message
+		if !firstTokenTimedOut {
+			cancelAttempt()
+			break
+		}
+		cancelAttempt()
+		if streamed.Len() > 0 || toolRuns.Count() > 0 || firstTokenRetry >= llmRetryMax {
+			err := fmt.Errorf("first token timeout after %s", llmFirstTokenTimeout)
+			_ = publishRunEvent(ctx, a.eventBus, agentevent.TypeAgentRunFailed, memoryID, map[string]any{"error": err.Error()})
+			return "", err
+		}
+		delay := llmBackoffFunc(runCtx, firstTokenRetry+1)
+		logger.Infof("first token timeout; retry attempt=%d after=%v", firstTokenRetry+1, delay)
+		reportModelRetry(runCtx, firstTokenRetry+1, fmt.Errorf("first token timeout after %s", llmFirstTokenTimeout))
+		select {
+		case <-runCtx.Done():
+			return "", runCtx.Err()
+		case <-time.After(delay):
 		}
 	}
 	ask := askHolder.Get()
