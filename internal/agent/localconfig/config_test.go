@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 )
 
 func TestLoadMissingUsesLocalSafeDefaults(t *testing.T) {
@@ -283,6 +285,18 @@ func TestRunModelWizardOpenRouter(t *testing.T) {
 	}
 	if secrets["OPENROUTER_API_KEY"] != "test-key" {
 		t.Fatalf("secret = %q, want test-key", secrets["OPENROUTER_API_KEY"])
+	}
+}
+
+func TestIsOpenRouterModel(t *testing.T) {
+	if !isOpenRouterModel("openrouter", agentruntime.LLMModelConfig{}) {
+		t.Fatal("OpenRouter preset ID was not recognized")
+	}
+	if !isOpenRouterModel("custom", agentruntime.LLMModelConfig{BaseURL: "https://openrouter.ai/api/v1"}) {
+		t.Fatal("OpenRouter base URL was not recognized")
+	}
+	if isOpenRouterModel("custom", agentruntime.LLMModelConfig{BaseURL: "https://example.test/v1"}) {
+		t.Fatal("non-OpenRouter model was recognized")
 	}
 }
 

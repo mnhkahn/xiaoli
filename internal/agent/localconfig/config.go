@@ -15,7 +15,11 @@ import (
 	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 )
 
-const defaultLLMTimeout = 240 * time.Second
+const (
+	defaultLLMTimeout       = 240 * time.Second
+	modelCatalogURL         = "https://www.cyeam.com/v1/models"
+	modelCatalogLoadTimeout = 5 * time.Second
+)
 
 type Config struct {
 	DataDir      string             `json:"data_dir"`
@@ -478,15 +482,31 @@ func (c Config) RuntimeConfig(prompt string) (agentruntime.Config, error) {
 			models[entry.ID] = agentruntime.LLMModelConfig{ID: entry.ID, DisplayName: entry.DisplayName, BaseURL: entry.BaseURL, Model: entry.Model, APIKey: apiKey, MaxTokens: entry.MaxTokens, ContextLength: entry.ContextLength}
 		}
 	}
-	selected, ok := models[c.Models.Default]
+	selectedID := c.Models.Default
+	selected, ok := models[selectedID]
 	if !ok {
-		return agentruntime.Config{}, fmt.Errorf("local config model %q is not configured", c.Models.Default)
+		return agentruntime.Config{}, fmt.Errorf("local config model %q is not configured", selectedID)
+	}
+	if isOpenRouterModel(selectedID, selected) {
+		if model := loadFirstOpenRouterFreeModel(c.DataDir); model != "" && model != selected.Model {
+			selectedID = "openrouter:" + model
+			selected = agentruntime.LLMModelConfig{
+				ID:            selectedID,
+				DisplayName:   "OpenRouter " + model,
+				BaseURL:       selected.BaseURL,
+				Model:         model,
+				APIKey:        selected.APIKey,
+				MaxTokens:     selected.MaxTokens,
+				ContextLength: selected.ContextLength,
+			}
+			models[selectedID] = selected
+		}
 	}
 	mcpEndpoints := c.mcpEndpoints()
 	return agentruntime.Config{
 		LLMURL:                  selected.BaseURL,
 		LLMAPIKey:               selected.APIKey,
-		LLMModel:                c.Models.Default,
+		LLMModel:                selectedID,
 		LLMModelConfigs:         models,
 		LLMPrompt:               prompt,
 		LLMTimeout:              defaultLLMTimeout,
@@ -510,6 +530,29 @@ func (c Config) RuntimeConfig(prompt string) (agentruntime.Config, error) {
 		LogDir:   filepath.Join(c.DataDir, "logs"),
 		Timezone: "Asia/Shanghai",
 	}, nil
+}
+
+func isOpenRouterModel(id string, model agentruntime.LLMModelConfig) bool {
+	return strings.EqualFold(strings.TrimSpace(id), "openrouter") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(id)), "openrouter:") || strings.Contains(strings.ToLower(model.BaseURL), "openrouter.ai")
+}
+
+func loadFirstOpenRouterFreeModel(dataDir string) string {
+	catalog, err := modelcatalog.Load(context.Background(), modelcatalog.Config{
+		Enabled:         true,
+		URL:             modelCatalogURL,
+		Timeout:         modelCatalogLoadTimeout,
+		RefreshInterval: 0,
+	}, filepath.Join(dataDir, "model_catalog.json"))
+	if err != nil {
+		return ""
+	}
+	for _, model := range catalog.Providers["openrouter"] {
+		model = strings.TrimSpace(model)
+		if strings.HasSuffix(strings.ToLower(model), ":free") {
+			return model
+		}
+	}
+	return ""
 }
 
 func (c Config) mcpEndpoints() []agentruntime.MCPEndpoint {
