@@ -193,6 +193,29 @@ func LoadConfig() Config {
 			goLLMModels = append(goLLMModels, entry.ID)
 		}
 	}
+	if settings.ModelRanking.Enabled {
+		if ranked, err := fetchTopOpenRouterFreeModel(context.Background(), settings.ModelRanking.URL, settings.ModelRanking.timeout()); err != nil {
+			logger.Infof("model ranking unavailable; using configured default %s: %v", goLLMModel, err)
+		} else if provider, ok := settings.ModelCatalog.Providers["openrouter"]; ok && strings.TrimSpace(provider.BaseURL) != "" {
+			id := rankedOpenRouterModelID(goLLMModelConfigs, ranked.Model)
+			if _, exists := goLLMModelConfigs[id]; !exists {
+				goLLMModelConfigs[id] = LLMModelConfig{
+					ID:            id,
+					DisplayName:   "OpenRouter " + ranked.Model,
+					BaseURL:       provider.BaseURL,
+					Model:         ranked.Model,
+					APIKey:        settingsAPIKey(provider.APIKeyEnv),
+					MaxTokens:     provider.MaxTokens,
+					ContextLength: ranked.ContextWindow,
+				}
+				goLLMModels = append(goLLMModels, id)
+			}
+			goLLMModel = id
+			logger.Infof("selected top ranked OpenRouter free model: %s (code_rank=%d code_elo=%.0f text_rank=%d text_elo=%.0f)", ranked.Model, ranked.CodeRank, ranked.CodeELO, ranked.TextRank, ranked.TextELO)
+		} else {
+			logger.Infof("model ranking unavailable; OpenRouter provider is not configured")
+		}
+	}
 	if goLLMModel == "" && len(goLLMModels) > 0 {
 		goLLMModel = goLLMModels[0]
 	}
@@ -342,6 +365,7 @@ func defaultSettingsPaths() []string {
 type settingsConfig struct {
 	Models       settingsModels                 `json:"models"`
 	ModelCatalog settingsModelCatalog           `json:"model_catalog"`
+	ModelRanking settingsModelRanking           `json:"model_ranking"`
 	MCPServers   []settingsMCPServer            `json:"mcp_servers"`
 	Tools        settingsTools                  `json:"tools"`
 	Storage      settingsStorage                `json:"storage"`
@@ -466,6 +490,30 @@ func (s settingsModelCatalog) catalogConfig() modelcatalog.Config {
 	refresh, _ := time.ParseDuration(s.RefreshInterval)
 	timeout, _ := time.ParseDuration(s.Timeout)
 	return modelcatalog.Config{Enabled: s.Enabled, URL: s.URL, RefreshInterval: refresh, Timeout: timeout, Providers: s.Providers}
+}
+
+type settingsModelRanking struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url"`
+	Timeout string `json:"timeout"`
+}
+
+func (s settingsModelRanking) timeout() time.Duration {
+	timeout, err := time.ParseDuration(s.Timeout)
+	if err != nil || timeout <= 0 {
+		return 5 * time.Second
+	}
+	return timeout
+}
+
+func rankedOpenRouterModelID(configs map[string]LLMModelConfig, model string) string {
+	model = strings.TrimSpace(model)
+	for id, config := range configs {
+		if strings.EqualFold(strings.TrimSpace(config.Model), model) {
+			return id
+		}
+	}
+	return "openrouter:" + model
 }
 
 type settingsMCPServer struct {

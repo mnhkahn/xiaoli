@@ -104,6 +104,11 @@
       }
     }
   },
+  "model_ranking": {
+    "enabled": true,
+    "url": "https://www.cyeam.com/ai/models",
+    "timeout": "5s"
+  },
   "mcp_servers": [
     {
       "name": "CYEAM",
