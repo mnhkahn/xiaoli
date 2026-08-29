@@ -82,7 +82,7 @@
   "model_catalog": {
     "enabled": true,
     "url": "https://www.cyeam.com/v1/models",
-    "refresh_interval": "6h",
+    "refresh_interval": "0s",
     "timeout": "5s",
     "providers": {
       "openrouter": {
@@ -103,11 +103,6 @@
         "id_aliases": { "tencent/Hunyuan-MT-7B": "siliconflow:hunyuan-mt-7b" }
       }
     }
-  },
-  "model_ranking": {
-    "enabled": true,
-    "url": "https://www.cyeam.com/ai/models",
-    "timeout": "5s"
   },
   "mcp_servers": [
     {

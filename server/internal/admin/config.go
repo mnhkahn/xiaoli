@@ -192,28 +192,27 @@ func LoadConfig() Config {
 			goLLMModelConfigs[entry.ID] = LLMModelConfig{ID: entry.ID, DisplayName: entry.DisplayName, BaseURL: entry.BaseURL, Model: entry.Model, APIKey: settingsAPIKey(entry.APIKeyEnv), MaxTokens: entry.MaxTokens, ContextLength: entry.ContextLength}
 			goLLMModels = append(goLLMModels, entry.ID)
 		}
-	}
-	if settings.ModelRanking.Enabled {
-		if ranked, err := fetchTopOpenRouterFreeModel(context.Background(), settings.ModelRanking.URL, settings.ModelRanking.timeout()); err != nil {
-			logger.Infof("model ranking unavailable; using configured default %s: %v", goLLMModel, err)
-		} else if provider, ok := settings.ModelCatalog.Providers["openrouter"]; ok && strings.TrimSpace(provider.BaseURL) != "" {
-			id := rankedOpenRouterModelID(goLLMModelConfigs, ranked.Model)
-			if _, exists := goLLMModelConfigs[id]; !exists {
-				goLLMModelConfigs[id] = LLMModelConfig{
-					ID:            id,
-					DisplayName:   "OpenRouter " + ranked.Model,
-					BaseURL:       provider.BaseURL,
-					Model:         ranked.Model,
-					APIKey:        settingsAPIKey(provider.APIKeyEnv),
-					MaxTokens:     provider.MaxTokens,
-					ContextLength: ranked.ContextWindow,
+		if model := firstOpenRouterFreeModel(catalog.Providers["openrouter"]); model != "" {
+			provider, ok := settings.ModelCatalog.Providers["openrouter"]
+			if !ok || strings.TrimSpace(provider.BaseURL) == "" {
+				logger.Infof("model catalog selected %s, but OpenRouter provider is not configured; using configured default %s", model, goLLMModel)
+			} else {
+				id := openRouterModelID(goLLMModelConfigs, model)
+				if _, exists := goLLMModelConfigs[id]; !exists {
+					goLLMModelConfigs[id] = LLMModelConfig{
+						ID:            id,
+						DisplayName:   "OpenRouter " + model,
+						BaseURL:       provider.BaseURL,
+						Model:         model,
+						APIKey:        settingsAPIKey(provider.APIKeyEnv),
+						MaxTokens:     provider.MaxTokens,
+						ContextLength: provider.ContextLength,
+					}
+					goLLMModels = append(goLLMModels, id)
 				}
-				goLLMModels = append(goLLMModels, id)
+				goLLMModel = id
+				logger.Infof("selected first OpenRouter free model from catalog: %s", model)
 			}
-			goLLMModel = id
-			logger.Infof("selected top ranked OpenRouter free model: %s (code_rank=%d code_elo=%.0f text_rank=%d text_elo=%.0f)", ranked.Model, ranked.CodeRank, ranked.CodeELO, ranked.TextRank, ranked.TextELO)
-		} else {
-			logger.Infof("model ranking unavailable; OpenRouter provider is not configured")
 		}
 	}
 	if goLLMModel == "" && len(goLLMModels) > 0 {
@@ -365,7 +364,6 @@ func defaultSettingsPaths() []string {
 type settingsConfig struct {
 	Models       settingsModels                 `json:"models"`
 	ModelCatalog settingsModelCatalog           `json:"model_catalog"`
-	ModelRanking settingsModelRanking           `json:"model_ranking"`
 	MCPServers   []settingsMCPServer            `json:"mcp_servers"`
 	Tools        settingsTools                  `json:"tools"`
 	Storage      settingsStorage                `json:"storage"`
@@ -492,21 +490,17 @@ func (s settingsModelCatalog) catalogConfig() modelcatalog.Config {
 	return modelcatalog.Config{Enabled: s.Enabled, URL: s.URL, RefreshInterval: refresh, Timeout: timeout, Providers: s.Providers}
 }
 
-type settingsModelRanking struct {
-	Enabled bool   `json:"enabled"`
-	URL     string `json:"url"`
-	Timeout string `json:"timeout"`
-}
-
-func (s settingsModelRanking) timeout() time.Duration {
-	timeout, err := time.ParseDuration(s.Timeout)
-	if err != nil || timeout <= 0 {
-		return 5 * time.Second
+func firstOpenRouterFreeModel(models []string) string {
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if strings.HasSuffix(strings.ToLower(model), ":free") {
+			return model
+		}
 	}
-	return timeout
+	return ""
 }
 
-func rankedOpenRouterModelID(configs map[string]LLMModelConfig, model string) string {
+func openRouterModelID(configs map[string]LLMModelConfig, model string) string {
 	model = strings.TrimSpace(model)
 	for id, config := range configs {
 		if strings.EqualFold(strings.TrimSpace(config.Model), model) {
