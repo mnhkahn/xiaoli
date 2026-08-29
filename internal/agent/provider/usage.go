@@ -49,7 +49,12 @@ func UsageFromModels(ctx context.Context, models []ModelConfig) map[string]strin
 			out[label] = "N/A"
 			continue
 		}
-		balance, err := checker.CheckBalance(ctx, apiKey)
+		accountChecker, ok := checker.(AccountBalanceChecker)
+		if !ok {
+			out[name] = "不支持查询账户余额"
+			continue
+		}
+		balance, err := accountChecker.CheckAccountBalance(ctx, apiKey)
 		if err != nil {
 			out[label] = "查询失败"
 			continue

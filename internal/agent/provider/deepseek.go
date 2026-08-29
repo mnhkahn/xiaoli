@@ -37,6 +37,10 @@ func (DeepSeek) CheckBalance(ctx context.Context, apiKey string) (string, error)
 	return parseDeepSeekBalance(body)
 }
 
+func (DeepSeek) CheckAccountBalance(ctx context.Context, apiKey string) (string, error) {
+	return DeepSeek{}.CheckBalance(ctx, apiKey)
+}
+
 func parseDeepSeekBalance(body []byte) (string, error) {
 	var result struct {
 		BalanceInfos []struct {

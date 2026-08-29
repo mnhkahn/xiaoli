@@ -7,6 +7,12 @@ type Checker interface {
 	CheckBalance(ctx context.Context, apiKey string) (string, error)
 }
 
+// AccountBalanceChecker reports the provider's account-level available balance.
+// CheckBalance may instead represent an API-key quota for backwards compatibility.
+type AccountBalanceChecker interface {
+	CheckAccountBalance(ctx context.Context, apiKey string) (string, error)
+}
+
 func Get(name string) Checker {
 	switch name {
 	case "siliconflow":

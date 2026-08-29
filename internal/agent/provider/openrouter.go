@@ -40,6 +40,29 @@ func (OpenRouter) CheckBalance(ctx context.Context, apiKey string) (string, erro
 	return parseOpenRouterKeyUsage(body)
 }
 
+func (OpenRouter) CheckAccountBalance(ctx context.Context, apiKey string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://openrouter.ai/api/v1/credits", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return parseOpenRouterCredits(body)
+}
+
 func parseOpenRouterKeyUsage(body []byte) (string, error) {
 	var result struct {
 		Data *struct {
@@ -68,4 +91,20 @@ func parseOpenRouterKeyUsage(body []byte) (string, error) {
 		tier = " (free tier)"
 	}
 	return fmt.Sprintf("$%.2f used%s", result.Data.Usage, tier), nil
+}
+
+func parseOpenRouterCredits(body []byte) (string, error) {
+	var result struct {
+		Data *struct {
+			TotalCredits float64 `json:"total_credits"`
+			TotalUsage   float64 `json:"total_usage"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("unmarshal: %w", err)
+	}
+	if result.Data == nil {
+		return "", fmt.Errorf("response missing data field")
+	}
+	return fmt.Sprintf("$%.2f", result.Data.TotalCredits-result.Data.TotalUsage), nil
 }

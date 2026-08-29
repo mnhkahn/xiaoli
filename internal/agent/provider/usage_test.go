@@ -54,6 +54,16 @@ func TestParseOpenRouterKeyUsage(t *testing.T) {
 	}
 }
 
+func TestParseOpenRouterCredits(t *testing.T) {
+	got, err := parseOpenRouterCredits([]byte(`{"data":{"total_credits":100.5,"total_usage":25.75}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "$74.75" {
+		t.Fatalf("credits = %q, want remaining account balance", got)
+	}
+}
+
 func TestParseDeepSeekBalance(t *testing.T) {
 	got, err := parseDeepSeekBalance([]byte(`{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"110.00"},{"currency":"USD","total_balance":"2.50"}]}`))
 	if err != nil {
