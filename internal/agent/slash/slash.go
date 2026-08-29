@@ -67,6 +67,7 @@ type Dependencies interface {
 	SessionContext(ctx context.Context, id string) string
 	CompressSession(ctx context.Context) string
 	ProviderBalances(ctx context.Context) map[string]string
+	ModelPackageBalances(ctx context.Context) map[string]string
 	MemoryList(ctx context.Context) string
 	MemorySave(ctx context.Context, key, value string) string
 	MemoryForget(ctx context.Context, key string) string
@@ -471,18 +472,14 @@ func (h Handler) modelList(ctx context.Context) string {
 			}
 		}
 	}
-	balances := h.deps.ProviderBalances(ctx)
-	providers := make([]string, 0, len(balances))
-	for name := range balances {
-		if name == "openrouter" || name == "deepseek" {
-			providers = append(providers, name)
-		}
-	}
-	if len(providers) > 0 {
+	balances := h.deps.ModelPackageBalances(ctx)
+	providers := []string{"openrouter", "deepseek"}
+	if len(balances) > 0 {
 		b.WriteString("\n\n套餐余额：")
-		sort.Strings(providers)
 		for _, name := range providers {
-			fmt.Fprintf(&b, "\n- %s: %s", name, balances[name])
+			if balance, ok := balances[name]; ok {
+				fmt.Fprintf(&b, "\n- %s: %s", name, balance)
+			}
 		}
 	}
 	return b.String()

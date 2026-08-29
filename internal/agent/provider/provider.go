@@ -13,6 +13,8 @@ func Get(name string) Checker {
 		return SiliconFlow{}
 	case "openrouter":
 		return OpenRouter{}
+	case "deepseek":
+		return DeepSeek{}
 	case "ark":
 		return ARK{}
 	case "nvidia":

@@ -228,6 +228,28 @@ func (d *tuiSlashDeps) ProviderBalances(ctx context.Context) map[string]string {
 	return provider.UsageFromModels(ctx, models)
 }
 
+func (d *tuiSlashDeps) ModelPackageBalances(ctx context.Context) map[string]string {
+	if d == nil || d.app == nil {
+		return nil
+	}
+	apiKeys := modelProviderAPIKeys(d.app.Runtime.LLMModelConfigs)
+	return provider.UsageForProviders(ctx, apiKeys, "openrouter", "deepseek")
+}
+
+func modelProviderAPIKeys(models map[string]agentruntime.LLMModelConfig) map[string]string {
+	apiKeys := map[string]string{}
+	for id, model := range models {
+		if model.ID == "" {
+			model.ID = id
+		}
+		name := provider.DetectProvider(model.ID, model.BaseURL)
+		if apiKeys[name] == "" && model.APIKey != "" {
+			apiKeys[name] = model.APIKey
+		}
+	}
+	return apiKeys
+}
+
 func (d *tuiSlashDeps) MemoryList(ctx context.Context) string {
 	backends := d.memoryBackends()
 	if backends == nil {

@@ -73,6 +73,10 @@ func (fakeDeps) ProviderBalances(_ context.Context) map[string]string {
 	}
 }
 
+func (fakeDeps) ModelPackageBalances(_ context.Context) map[string]string {
+	return map[string]string{"openrouter": "¥10.00", "deepseek": "¥5.00"}
+}
+
 func (fakeDeps) CompressSession(_ context.Context) string {
 	return "压缩完成"
 }

@@ -14,6 +14,8 @@ func TestDetectProvider(t *testing.T) {
 	}{
 		{id: "openrouter:qwen", want: "openrouter"},
 		{id: "openrouter", want: "openrouter"},
+		{id: "deepseek:v4-flash", want: "deepseek"},
+		{baseURL: "https://api.deepseek.com/v1", want: "deepseek"},
 		{baseURL: "https://api.siliconflow.cn/v1", want: "siliconflow"},
 		{baseURL: "https://ark.cn-beijing.volces.com/api/v3", want: "ark"},
 		{baseURL: "https://integrate.api.nvidia.com/v1", want: "nvidia"},
@@ -23,6 +25,13 @@ func TestDetectProvider(t *testing.T) {
 		if got := DetectProvider(tt.id, tt.baseURL); got != tt.want {
 			t.Fatalf("DetectProvider(%q, %q) = %q, want %q", tt.id, tt.baseURL, got, tt.want)
 		}
+	}
+}
+
+func TestUsageForProvidersMissingKeysUsesStableIDs(t *testing.T) {
+	got := UsageForProviders(context.Background(), nil, "openrouter", "deepseek")
+	if got["openrouter"] != "未配置 API Key" || got["deepseek"] != "未配置 API Key" {
+		t.Fatalf("UsageForProviders() = %#v, want missing-key statuses by stable ID", got)
 	}
 }
 
@@ -42,5 +51,15 @@ func TestParseOpenRouterKeyUsage(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("usage = %q, want %q", got, want)
 		}
+	}
+}
+
+func TestParseDeepSeekBalance(t *testing.T) {
+	got, err := parseDeepSeekBalance([]byte(`{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"110.00"},{"currency":"USD","total_balance":"2.50"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "¥110.00, $2.50" {
+		t.Fatalf("balance = %q, want formatted CNY and USD totals", got)
 	}
 }

@@ -422,6 +422,24 @@ func (d adminSlashDeps) ProviderBalances(ctx context.Context) map[string]string 
 	return provider.UsageFromModels(ctx, items)
 }
 
+func (d adminSlashDeps) ModelPackageBalances(ctx context.Context) map[string]string {
+	models := d.s.cfg.GoLLMModelConfigs
+	if models == nil {
+		return nil
+	}
+	apiKeys := map[string]string{}
+	for id, m := range models {
+		if m.ID == "" {
+			m.ID = id
+		}
+		name := provider.DetectProvider(m.ID, m.BaseURL)
+		if apiKeys[name] == "" && m.APIKey != "" {
+			apiKeys[name] = m.APIKey
+		}
+	}
+	return provider.UsageForProviders(ctx, apiKeys, "openrouter", "deepseek")
+}
+
 func (d adminSlashDeps) SessionContext(ctx context.Context, id string) string {
 	if d.s.agent == nil {
 		return "LLM agent 未初始化。"
