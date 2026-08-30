@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -34,6 +35,13 @@ type gitCmsgPrepareMsg struct {
 	err     error
 }
 
+type gitCmsgProgressMsg struct {
+	source <-chan gitCmsgProgressMsg
+	text   string
+}
+
+type gitCmsgProgressClosedMsg struct{}
+
 type gitCmsgCommitMsg struct {
 	message string
 	output  string
@@ -53,7 +61,7 @@ const gitCommitMessageSystemPrompt = "你是 Git 提交信息助手。只输出�
 
 const (
 	gitCmsgPrepareTimeout = 15 * time.Second
-	gitCmsgPrepareRetries = 5
+	gitCmsgPrepareRetries = 2
 	gitCmsgRetryBackoff   = time.Second
 	gitCmsgDiffTotalLimit = 12 * 1024
 	gitCmsgFileDiffLimit  = 24 * 1024
@@ -71,7 +79,16 @@ func (m *model) startGitCmsgSlash(text string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.activeCancel = cancel
 	m.chatCanceled = false
-	return startGitCmsgPrepare(ctx, m.app.Agent, m.cwd, cmd.Args)
+	return m.startGitCmsgPrepare(ctx, cmd.Args)
+}
+
+func (m *model) startGitCmsgPrepare(ctx context.Context, args string) tea.Cmd {
+	progress := make(chan gitCmsgProgressMsg, gitCmsgPrepareRetries)
+	m.gitCmsgProgress = progress
+	return tea.Batch(
+		startGitCmsgPrepare(ctx, m.app.Agent, m.cwd, args, progress),
+		waitForGitCmsgProgress(progress),
+	)
 }
 
 func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
@@ -123,7 +140,7 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		ctx, cancel := context.WithCancel(context.Background())
 		m.activeCancel = cancel
 		m.chatCanceled = false
-		return tea.Batch(startGitCmsgPrepare(ctx, m.app.Agent, m.cwd, args), tickRunPulse(), terminalTitleCmd(*m))
+		return tea.Batch(m.startGitCmsgPrepare(ctx, args), tickRunPulse(), terminalTitleCmd(*m))
 	case choice == "取消操作" || isReject(choice):
 		m.pendingGitCmsg = gitCmsgPending{}
 		m.pendingQuestion = ""
@@ -140,8 +157,9 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 	}
 }
 
-func startGitCmsgPrepare(ctx context.Context, agent *agentruntime.Agent, cwd, args string) tea.Cmd {
+func startGitCmsgPrepare(ctx context.Context, agent *agentruntime.Agent, cwd, args string, progress chan gitCmsgProgressMsg) tea.Cmd {
 	return func() tea.Msg {
+		defer close(progress)
 		for attempt := 0; attempt <= gitCmsgPrepareRetries; attempt++ {
 			attemptCtx, cancel := context.WithTimeout(ctx, gitCmsgPrepareTimeout)
 			stat, files, diff, err := prepareGitCmsgDiff(attemptCtx, cwd, args)
@@ -153,10 +171,25 @@ func startGitCmsgPrepare(ctx context.Context, agent *agentruntime.Agent, cwd, ar
 					return gitCmsgPrepareMsg{args: args, stat: stat, files: files, diff: diff, message: msg}
 				}
 			}
-			retryable := attemptCtx.Err() == context.DeadlineExceeded || isRetryableGitCmsgError(err)
+			timedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
+			if timedOut {
+				err = fmt.Errorf("模型请求超时（单次上限 %s）：%w", gitCmsgPrepareTimeout, context.DeadlineExceeded)
+			}
+			retryable := timedOut || isRetryableGitCmsgError(err)
 			cancel()
 			if !retryable || attempt == gitCmsgPrepareRetries {
+				if timedOut {
+					err = fmt.Errorf("提交信息生成超时，已重试 %d 次仍未完成：%w", gitCmsgPrepareRetries, err)
+				}
 				return gitCmsgPrepareMsg{args: args, stat: stat, files: files, diff: diff, err: err}
+			}
+			progressText := fmt.Sprintf("提交信息生成失败，正在第 %d/%d 次重试（第 %d/%d 次尝试）", attempt+1, gitCmsgPrepareRetries, attempt+2, gitCmsgPrepareRetries+1)
+			if timedOut {
+				progressText = fmt.Sprintf("提交信息生成超时，正在第 %d/%d 次重试（第 %d/%d 次尝试）", attempt+1, gitCmsgPrepareRetries, attempt+2, gitCmsgPrepareRetries+1)
+			}
+			progress <- gitCmsgProgressMsg{
+				source: progress,
+				text:   progressText,
 			}
 			delay := gitCmsgRetryBackoff * (1 << attempt)
 			select {
@@ -166,6 +199,16 @@ func startGitCmsgPrepare(ctx context.Context, agent *agentruntime.Agent, cwd, ar
 			}
 		}
 		return gitCmsgPrepareMsg{args: args, err: context.DeadlineExceeded}
+	}
+}
+
+func waitForGitCmsgProgress(ch <-chan gitCmsgProgressMsg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return gitCmsgProgressClosedMsg{}
+		}
+		return msg
 	}
 }
 

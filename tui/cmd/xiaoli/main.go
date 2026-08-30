@@ -337,6 +337,7 @@ type model struct {
 	autoApproveBash             bool
 	autoCommitGitCmsg           bool
 	pendingGitCmsg              gitCmsgPending
+	gitCmsgProgress             <-chan gitCmsgProgressMsg
 	reviewLoop                  codexReviewLoop
 	explorer                    *tuiExplorer
 	mouseEnabled                bool
@@ -1394,6 +1395,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gitCmsgPrepareMsg:
 		autoCommit := m.autoCommitGitCmsg
 		m.autoCommitGitCmsg = false
+		m.gitCmsgProgress = nil
 		m.busy = false
 		m.status = "idle"
 		m.runPulseActive = false
@@ -1423,12 +1425,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingOptions = []string{"提交并推送", "确认提交", "重新生成", "取消操作"}
 		m.pendingChoice = 0
 		if autoCommit {
+			m.runStatusText = ""
 			return m, m.handleGitCmsgChoice("确认提交")
 		}
 		m.items = append(m.items, transcriptItem{role: "run-done", text: "Commit plan ready", frame: m.runPulseFrame})
 		m.items = append(m.items, transcriptItem{role: "assistant", text: m.pendingQuestion})
 		m.syncViewport(true)
 		return m, tea.Batch(terminalTitleTextCmd(terminalDoneTitle), terminalTitleResetCmd())
+	case gitCmsgProgressMsg:
+		if msg.source != m.gitCmsgProgress || !m.busy {
+			return m, nil
+		}
+		m.runStatusText = msg.text
+		m.syncViewport(true)
+		return m, waitForGitCmsgProgress(m.gitCmsgProgress)
+	case gitCmsgProgressClosedMsg:
+		return m, nil
 	case gitCmsgPreviewMsg:
 		m.busy = false
 		m.status = "idle"

@@ -2,6 +2,7 @@ package slash
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,6 +13,8 @@ import (
 type fakeDeps struct {
 	current string
 	used    string
+	models  []ModelOption
+	useErr  error
 }
 
 func (fakeDeps) ListSkills(context.Context) ([]SkillInfo, error) {
@@ -30,10 +33,16 @@ func (d *fakeDeps) ListModels(role model.Role) []ModelOption {
 	if role != model.RoleLLM {
 		return nil
 	}
+	if d.models != nil {
+		return d.models
+	}
 	return []ModelOption{{ID: "llm-test", Role: model.RoleLLM}, {ID: "llm-next", Role: model.RoleLLM}}
 }
 
 func (d *fakeDeps) UseModel(role model.Role, id string) error {
+	if d.useErr != nil {
+		return d.useErr
+	}
 	d.used = string(role) + ":" + id
 	d.current = id
 	return nil
@@ -283,5 +292,16 @@ func TestModelListAndUse(t *testing.T) {
 	reply, handled = handler.Handle(context.Background(), channel.TypeLark, "/model use asr asr-next")
 	if !handled || !strings.Contains(reply, "只支持切换 LLM") {
 		t.Fatalf("/model use asr reply=%q handled=%v, want unsupported role", reply, handled)
+	}
+}
+
+func TestModelUseFailureSuggestsConfiguredPrefix(t *testing.T) {
+	deps := &fakeDeps{
+		useErr: errors.New(`model "minimax/minimax-m3:free" is not configured for llm`),
+		models: []ModelOption{{ID: "openrouter:minimax/minimax-m3:free", Role: model.RoleLLM}},
+	}
+	reply, handled := NewHandler(deps).Handle(context.Background(), channel.TypeLark, "/model use minimax/minimax-m3:free")
+	if !handled || !strings.Contains(reply, "/model use openrouter:minimax/minimax-m3:free") {
+		t.Fatalf("/model use failure reply=%q handled=%v, want prefixed suggestion", reply, handled)
 	}
 }

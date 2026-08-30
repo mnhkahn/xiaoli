@@ -498,9 +498,39 @@ func (h Handler) modelUse(args []string) string {
 		modelID = strings.TrimSpace(strings.Join(args[1:], " "))
 	}
 	if err := h.deps.UseModel(role, modelID); err != nil {
-		return "切换模型失败：" + err.Error()
+		reply := "切换模型失败：" + err.Error()
+		if candidates := prefixedModelCandidates(modelID, h.deps.ListModels(role)); len(candidates) > 0 {
+			reply += "\n\n可使用以下已配置模型："
+			for _, candidate := range candidates {
+				reply += "\n/model use " + candidate
+			}
+		}
+		return reply
 	}
 	return "已切换 LLM 模型：" + modelID
+}
+
+func prefixedModelCandidates(modelID string, options []ModelOption) []string {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var candidates []string
+	for _, option := range options {
+		id := strings.TrimSpace(option.ID)
+		prefix, rawID, ok := strings.Cut(id, ":")
+		if !ok || prefix == "" || rawID != modelID {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		candidates = append(candidates, id)
+	}
+	sort.Strings(candidates)
+	return candidates
 }
 
 func isModelRole(value string) bool {

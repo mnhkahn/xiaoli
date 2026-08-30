@@ -705,6 +705,28 @@ func TestCtrlKInDiffStartsAutoCommit(t *testing.T) {
 	}
 }
 
+func TestGitCmsgRetryProgressUpdatesVisibleRunStatus(t *testing.T) {
+	progress := make(chan gitCmsgProgressMsg, 1)
+	m := model{
+		busy:            true,
+		status:          "commit",
+		gitCmsgProgress: progress,
+		viewport:        viewport.New(100, 10),
+	}
+
+	next, cmd := m.Update(gitCmsgProgressMsg{
+		source: progress,
+		text:   "提交信息生成超时，正在第 1/2 次重试（第 2/3 次尝试）",
+	})
+	got := next.(model)
+	if cmd == nil || got.runStatusText != "提交信息生成超时，正在第 1/2 次重试（第 2/3 次尝试）" {
+		t.Fatalf("retry progress = status:%q cmd:%v", got.runStatusText, cmd != nil)
+	}
+	if gitCmsgPrepareRetries != 2 {
+		t.Fatalf("gitCmsgPrepareRetries = %d, want 2", gitCmsgPrepareRetries)
+	}
+}
+
 func TestShortcutCommitShowsFormattedSummary(t *testing.T) {
 	input := textinput.New()
 	m := model{
