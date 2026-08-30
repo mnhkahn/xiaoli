@@ -2,11 +2,50 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestIsRetryableGitCmsgError(t *testing.T) {
+	if !isRetryableGitCmsgError(errors.New("agent error: received empty choices from OpenAI API response")) {
+		t.Fatal("empty choices error should retry")
+	}
+	if isRetryableGitCmsgError(errors.New("invalid API key")) {
+		t.Fatal("permanent error should not retry")
+	}
+}
+
+func TestCompactGitCommitDiffOmitsLargeFileBody(t *testing.T) {
+	largeBody := strings.Repeat("+词条内容\n", 8105)
+	diff := "diff --git a/resource/tygfhzb8105.txt b/resource/tygfhzb8105.txt\n" + largeBody
+
+	got := compactGitCommitDiff(diff)
+	if len(got) > gitCmsgDiffTotalLimit {
+		t.Fatalf("compact diff length = %d, limit = %d", len(got), gitCmsgDiffTotalLimit)
+	}
+	if !strings.Contains(got, "large diff omitted: 8107 lines") {
+		t.Fatalf("compact diff = %q, want large-diff marker", got)
+	}
+	if strings.Count(got, "+词条内容\n") > gitCmsgPreviewLines {
+		t.Fatalf("preview contains too many file lines: %d", strings.Count(got, "+词条内容\n"))
+	}
+}
+
+func TestCompactGitCommitDiffBoundsCombinedContext(t *testing.T) {
+	section := "diff --git a/a.txt b/a.txt\n" + strings.Repeat("+short line\n", 900)
+	diff := section + "\ndiff --git a/b.txt b/b.txt\n" + strings.Repeat("+another line\n", 900)
+
+	got := compactGitCommitDiff(diff)
+	if len(got) > gitCmsgDiffTotalLimit {
+		t.Fatalf("compact diff length = %d, limit = %d", len(got), gitCmsgDiffTotalLimit)
+	}
+	if !strings.Contains(got, "remaining diff omitted: total context limit") {
+		t.Fatalf("compact diff = %q, want total-limit marker", got)
+	}
+}
 
 func TestPrepareGitCmsgDiffKeepsExistingStagedSet(t *testing.T) {
 	if _, err := runGitCombined(t.TempDir(), "version"); err != nil {

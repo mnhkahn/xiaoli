@@ -51,13 +51,24 @@ type gitCmsgPreviewMsg struct {
 
 const gitCommitMessageSystemPrompt = "你是 Git 提交信息助手。只输出中文 Conventional Commits 提交信息，不要解释，不要 Markdown。必须使用以下结构：第一行是 type(scope): 简短中文描述；随后空一行；再用 `- ` 开头的列表逐条说明主要变更。即使变更较小，也至少给出一条列表项。"
 
+const (
+	gitCmsgPrepareTimeout = 15 * time.Second
+	gitCmsgPrepareRetries = 5
+	gitCmsgRetryBackoff   = time.Second
+	gitCmsgDiffTotalLimit = 12 * 1024
+	gitCmsgFileDiffLimit  = 24 * 1024
+	gitCmsgFileLineLimit  = 1000
+	gitCmsgPreviewLimit   = 4 * 1024
+	gitCmsgPreviewLines   = 80
+)
+
 func (m *model) startGitCmsgSlash(text string) tea.Cmd {
 	cmd, ok := slash.Parse(text)
 	if !ok || cmd.Name != "commit" {
 		return nil
 	}
 	m.pendingGitCmsg = gitCmsgPending{}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
 	m.activeCancel = cancel
 	m.chatCanceled = false
 	return startGitCmsgPrepare(ctx, m.app.Agent, m.cwd, cmd.Args)
@@ -109,7 +120,7 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 		m.status = "commit"
 		m.appendRunActiveEvent("Refreshing commit plan")
 		m.syncViewport(true)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		ctx, cancel := context.WithCancel(context.Background())
 		m.activeCancel = cancel
 		m.chatCanceled = false
 		return tea.Batch(startGitCmsgPrepare(ctx, m.app.Agent, m.cwd, args), tickRunPulse(), terminalTitleCmd(*m))
@@ -131,16 +142,40 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 
 func startGitCmsgPrepare(ctx context.Context, agent *agentruntime.Agent, cwd, args string) tea.Cmd {
 	return func() tea.Msg {
-		stat, files, diff, err := prepareGitCmsgDiff(ctx, cwd, args)
-		if err != nil {
-			return gitCmsgPrepareMsg{args: args, err: err}
+		for attempt := 0; attempt <= gitCmsgPrepareRetries; attempt++ {
+			attemptCtx, cancel := context.WithTimeout(ctx, gitCmsgPrepareTimeout)
+			stat, files, diff, err := prepareGitCmsgDiff(attemptCtx, cwd, args)
+			if err == nil {
+				var msg string
+				msg, err = generateGitCommitMessage(attemptCtx, agent, stat, files, diff)
+				if err == nil {
+					cancel()
+					return gitCmsgPrepareMsg{args: args, stat: stat, files: files, diff: diff, message: msg}
+				}
+			}
+			retryable := attemptCtx.Err() == context.DeadlineExceeded || isRetryableGitCmsgError(err)
+			cancel()
+			if !retryable || attempt == gitCmsgPrepareRetries {
+				return gitCmsgPrepareMsg{args: args, stat: stat, files: files, diff: diff, err: err}
+			}
+			delay := gitCmsgRetryBackoff * (1 << attempt)
+			select {
+			case <-ctx.Done():
+				return gitCmsgPrepareMsg{args: args, stat: stat, files: files, diff: diff, err: ctx.Err()}
+			case <-time.After(delay):
+			}
 		}
-		msg, err := generateGitCommitMessage(ctx, agent, stat, files, diff)
-		if err != nil {
-			return gitCmsgPrepareMsg{args: args, stat: stat, files: files, diff: diff, err: err}
-		}
-		return gitCmsgPrepareMsg{args: args, stat: stat, files: files, diff: diff, message: msg}
+		return gitCmsgPrepareMsg{args: args, err: context.DeadlineExceeded}
 	}
+}
+
+func isRetryableGitCmsgError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "received empty choices") ||
+		strings.Contains(msg, "empty choices from openai api")
 }
 
 func startGitCmsgPreview(ctx context.Context, agent *agentruntime.Agent, cwd string) tea.Cmd {
@@ -281,10 +316,7 @@ func generateGitCommitMessage(ctx context.Context, agent *agentruntime.Agent, st
 	if agent == nil {
 		return "", fmt.Errorf("agent 未初始化")
 	}
-	const maxDiff = 30000
-	if len(diff) > maxDiff {
-		diff = diff[:maxDiff] + "\n\n[diff truncated]\n"
-	}
+	diff = compactGitCommitDiff(diff)
 	system := gitCommitMessageSystemPrompt
 	user := fmt.Sprintf("根据下面暂存区变更生成提交信息。\n\n文件：\n%s\n\n统计：\n%s\n\nDiff：\n%s", strings.TrimSpace(files), strings.TrimSpace(stat), diff)
 	msg, err := agent.Generate(ctx, system, user)
@@ -296,6 +328,63 @@ func generateGitCommitMessage(ctx context.Context, agent *agentruntime.Agent, st
 		return "", fmt.Errorf("生成提交信息为空")
 	}
 	return msg, nil
+}
+
+// compactGitCommitDiff bounds only the context sent to the commit-message
+// model. The staged Git content is intentionally left untouched.
+func compactGitCommitDiff(diff string) string {
+	if len(diff) <= gitCmsgDiffTotalLimit {
+		return diff
+	}
+
+	sections := strings.Split(diff, "\ndiff --git ")
+	var out strings.Builder
+	for i, section := range sections {
+		if i > 0 {
+			section = "diff --git " + section
+		}
+		if len(section) > gitCmsgFileDiffLimit || strings.Count(section, "\n")+1 > gitCmsgFileLineLimit {
+			originalBytes := len(section)
+			originalLines := strings.Count(section, "\n") + 1
+			section = truncateGitDiffLines(section, gitCmsgPreviewLines)
+			section = truncateGitDiffBytes(section, gitCmsgPreviewLimit)
+			section += fmt.Sprintf("\n\n[large diff omitted: %d lines, %d bytes]\n", originalLines, originalBytes)
+		}
+
+		if out.Len()+len(section) > gitCmsgDiffTotalLimit {
+			const omitted = "\n[remaining diff omitted: total context limit]\n"
+			remaining := gitCmsgDiffTotalLimit - out.Len() - len(omitted)
+			if remaining > 0 {
+				out.WriteString(truncateGitDiffBytes(section, remaining))
+			}
+			out.WriteString(omitted)
+			break
+		}
+		out.WriteString(section)
+	}
+	return out.String()
+}
+
+func truncateGitDiffLines(text string, maxLines int) string {
+	if maxLines <= 0 {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) <= maxLines {
+		return text
+	}
+	return strings.Join(lines[:maxLines], "\n")
+}
+
+func truncateGitDiffBytes(text string, maxBytes int) string {
+	if maxBytes <= 0 || len(text) <= maxBytes {
+		return text
+	}
+	limit := maxBytes
+	for limit > 0 && (text[limit]&0xC0) == 0x80 {
+		limit--
+	}
+	return text[:limit]
 }
 
 func sanitizeCommitMessage(msg string) string {
