@@ -221,25 +221,25 @@ func TestA2APipelineBuildsGeekNewsDeterministicallyFromCLIItems(t *testing.T) {
 	}
 }
 
-func TestProcessGeekNewsItemsKeepsGitHubTitleInSourceLanguage(t *testing.T) {
+func TestProcessGeekNewsItemsTranslatesGitHubTitle(t *testing.T) {
 	item := geekNewsItem{
 		Link:        "https://github.com/example/project/releases/tag/v1.2.3",
 		Title:       "Release v1.2.3 fixes parser regressions",
 		Description: strings.Repeat("source content ", 40),
 	}
-	agent := &fakeA2AAgent{structuredArguments: translatedNewsResponse(0, 300)}
+	agent := &fakeA2AAgent{structuredArgumentQueue: []string{translatedTitleResponse(0), translatedNewsResponse(0, 300)}}
 	pipeline := newA2APipeline(agent, nil)
 
 	processed := pipeline.processGeekNewsItems(context.Background(), a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:test"}, a2aPromptProfileSpec{}, "news", []geekNewsItem{item})
 
-	if got := processed[0].Title; got != item.Title {
-		t.Fatalf("GitHub title = %q, want original %q", got, item.Title)
+	if got := processed[0].Title; !containsChinese(got) {
+		t.Fatalf("GitHub title = %q, want Chinese translation", got)
 	}
 	if got := processed[0].SourceTitle; got != item.Title {
 		t.Fatalf("GitHub source_title = %q, want original %q", got, item.Title)
 	}
-	if agent.profileCalls != 1 || agent.profileRequests[0].Name != "geek-news-description" {
-		t.Fatalf("profile requests = %#v, want description translation only", agent.profileRequests)
+	if agent.profileCalls != 2 || agent.profileRequests[0].Name != "geek-news-title" || agent.profileRequests[1].Name != "geek-news-description" {
+		t.Fatalf("profile requests = %#v, want title and description translations", agent.profileRequests)
 	}
 }
 
@@ -278,31 +278,20 @@ func TestProcessGeekNewsItemsReturnsPartialSourceFallbackWithoutWaitingForBlocke
 	}
 }
 
-func TestIsGitHubNewsLink(t *testing.T) {
-	for _, test := range []struct {
-		link string
-		want bool
-	}{
-		{link: "https://github.com/example/project", want: true},
-		{link: "https://gist.github.com/example/123", want: true},
-		{link: "https://www.github.com/example/project", want: true},
-		{link: "https://github.com.example.com/article", want: false},
-		{link: "https://example.com/github", want: false},
-		{link: "://invalid", want: false},
-	} {
-		if got := isGitHubNewsLink(test.link); got != test.want {
-			t.Errorf("isGitHubNewsLink(%q) = %v, want %v", test.link, got, test.want)
-		}
-	}
-}
-
 func TestA2APipelineRanksNewsGroupsIndependently(t *testing.T) {
 	news := fiveSourceNews()
 	aiNews := fiveSourceNews()
 	for i := range aiNews {
 		aiNews[i].Link = "https://example.com/ai/" + strconv.Itoa(i)
 	}
-	agent := &fakeA2AAgent{structuredArguments: `{"ids":["n1","n0","n2","n3","n4"]}`}
+	translations := make([]string, 0, 10)
+	for i := 0; i < 10; i++ {
+		translations = append(translations, translatedNewsResponse(i, 300))
+	}
+	queue := append(translations, `{"ids":["n1","n0","n2","n3","n4"]}`)
+	queue = append(queue, translations...)
+	queue = append(queue, `{"ids":["n1","n0","n2","n3","n4"]}`)
+	agent := &fakeA2AAgent{structuredArgumentQueue: queue}
 	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{News: news, AINews: aiNews}})
 
 	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:rank-test", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`})
@@ -318,7 +307,7 @@ func TestA2APipelineRanksNewsGroupsIndependently(t *testing.T) {
 	}
 }
 
-func TestA2APipelineKeepsEverySourceItemInEachNewsGroup(t *testing.T) {
+func TestA2APipelineRejectsIncompleteTranslationForEachNewsGroup(t *testing.T) {
 	news := make([]geekNewsItem, 13)
 	aiNews := make([]geekNewsItem, 14)
 	for i := range news {
@@ -330,19 +319,8 @@ func TestA2APipelineKeepsEverySourceItemInEachNewsGroup(t *testing.T) {
 	agent := &fakeA2AAgent{structuredArguments: `{invalid`}
 	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{CreateTime: 1719532800, News: news, AINews: aiNews}})
 
-	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
-	}
-	var got geekNewsReply
-	if err := json.Unmarshal([]byte(reply.Text), &got); err != nil {
-		t.Fatalf("Unmarshal(reply) error = %v", err)
-	}
-	if len(got.News) != len(news) || len(got.AINews) != len(aiNews) {
-		t.Fatalf("news=%d ai_news=%d, want %d and %d", len(got.News), len(got.AINews), len(news), len(aiNews))
-	}
-	if got.News[12].Link != news[12].Link || got.News[12].SourceTitle != news[12].Title || got.AINews[13].Link != aiNews[13].Link || got.AINews[13].SourceTitle != aiNews[13].Title {
-		t.Fatalf("source identity changed: news=%#v ai_news=%#v", got.News[12], got.AINews[13])
+	if _, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`}); err == nil {
+		t.Fatal("Run() error = nil, want acceptance rejection for untranslated groups")
 	}
 }
 
@@ -357,8 +335,8 @@ func TestTranslateGeekNewsDescriptionRetriesShortDescription(t *testing.T) {
 	if err != nil {
 		t.Fatalf("translateGeekNewsDescription() error = %v", err)
 	}
-	if !geekNewsDescriptionValid(description) || len([]rune(description)) != 300 {
-		t.Fatalf("description length = %d, want 300 valid characters", len([]rune(description)))
+	if !geekNewsDescriptionValid(description) || countChineseRunes(description) != 300 {
+		t.Fatalf("description Chinese characters = %d, want 300", countChineseRunes(description))
 	}
 	if agent.profileCalls != 2 {
 		t.Fatalf("profile calls = %d, want retry after short description", agent.profileCalls)
@@ -372,21 +350,21 @@ func TestGeekNewsDescriptionStructuredOutputRejectsLongDescription(t *testing.T)
 	}
 }
 
-func TestA2APipelineGeekNewsFallsBackWhenItemOrRankingOutputIsInvalid(t *testing.T) {
+func TestGeekNewsDescriptionStructuredOutputRejectsEnglishAtValidRuneLength(t *testing.T) {
+	output := newGeekNewsDescriptionStructuredOutput()
+	value := `{"description":"` + strings.Repeat("english content ", 30) + `"}`
+	if _, err := output.Capture(value); err == nil {
+		t.Fatal("Capture() error = nil, want English description rejection")
+	}
+}
+
+func TestA2APipelineGeekNewsRejectsUnacceptedSourceFallback(t *testing.T) {
 	items := fiveSourceNews()
 	agent := &fakeA2AAgent{structuredArguments: `{invalid`}
 	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{CreateTime: 1719532800, News: items}})
 
-	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`})
-	if err != nil {
-		t.Fatalf("Run() error = %v, want source fallback", err)
-	}
-	var got geekNewsReply
-	if err := json.Unmarshal([]byte(reply.Text), &got); err != nil {
-		t.Fatalf("Unmarshal(reply) error = %v", err)
-	}
-	if len(got.News) != 5 || got.News[0].Title != items[0].Title {
-		t.Fatalf("news = %#v, want source-order fallback", got.News)
+	if _, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`}); err == nil {
+		t.Fatal("Run() error = nil, want final acceptance rejection")
 	}
 }
 
@@ -712,7 +690,9 @@ func TestA2APromptProfilesDefineEncouragementAndArchitect(t *testing.T) {
 		!strings.Contains(geekNews.SystemPrompt, "ai_news") ||
 		!strings.Contains(geekNews.SystemPrompt, "两个 Tab") ||
 		!strings.Contains(geekNews.SystemPrompt, "image") ||
-		!strings.Contains(geekNews.SystemPrompt, "create_time") {
+		!strings.Contains(geekNews.SystemPrompt, "create_time") ||
+		!strings.Contains(geekNews.SystemPrompt, "交付目标") ||
+		!strings.Contains(geekNews.SystemPrompt, "验收通过后") {
 		t.Fatalf("geek-news prompt = %q, want news skill guidance and GeekNews JSON fields", geekNews.SystemPrompt)
 	}
 }

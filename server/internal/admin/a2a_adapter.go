@@ -518,7 +518,8 @@ func a2aPromptProfile(name string) (a2aPromptProfileSpec, bool) {
 				"- structured_output 的顶层字段必须是 create_time、news、ai_news、summary\n" +
 				"- news 与 ai_news 都是数组，每条必须包含 link、title、source_title、description、image、create_time\n" +
 				"- 必须原样保留 cyeam 返回的 link、source_title、image、create_time；不得编造、替换或交换新闻记录\n" +
-				"- description 使用 cyeam 返回的长描述，不要压缩成一句话；如果是英文必须翻译、补写为 300–500 字中文\n" +
+				"- 交付目标：所有 title、description、summary 使用中文；description 必须为 300–500 个汉字。先完成翻译，再按此标准逐项自检；只有全部验收通过后才能调用 structured_output 提交\n" +
+				"- description 使用 cyeam 返回的长描述，不要压缩成一句话；如果是英文必须翻译、补写为 300–500 个汉字\n" +
 				"- summary 使用 cyeam 返回的 summary；如果是英文必须翻译成中文；缺失时再用中文概括最重要的 3-5 个趋势\n" +
 				"- 所有标题、描述、总结内容都必须是中文\n" +
 				"- 所有字符串内容里的英文双引号必须转义为 \\\"，或改用中文引号 “ ”；最终结果必须能被标准 JSON parser 解析\n" +

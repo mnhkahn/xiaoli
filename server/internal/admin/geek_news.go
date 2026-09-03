@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os/exec"
 	"strings"
 	"time"
@@ -145,6 +144,10 @@ func (p *a2aPipeline) runGeekNews(ctx context.Context, turn a2a.ConversationTurn
 		News:       news,
 		AINews:     aiNews,
 	}
+	if err := validateGeekNewsDelivery(result); err != nil {
+		logger.Infof("[A2A][geek-news][acceptance_failed] conversation_id=%s date=%s err=%v", turn.ConversationID, date, err)
+		return "", fmt.Errorf("geek-news acceptance failed: %w", err)
+	}
 	reply, err := normalizeGeekNewsReply(mustMarshalGeekNews(result))
 	if err != nil {
 		return "", err
@@ -193,7 +196,7 @@ func (p *a2aPipeline) processGeekNewsItems(ctx context.Context, turn a2a.Convers
 				return
 			}
 
-			if isPureEnglishTitle(item.SourceTitle) && !isGitHubNewsLink(item.Link) {
+			if isPureEnglishTitle(item.SourceTitle) {
 				if title, err := p.translateGeekNewsTitle(ctx, turn, profile, group, index, item.SourceTitle); err == nil {
 					item.Title = title
 				} else {
@@ -229,9 +232,15 @@ func (p *a2aPipeline) translateGeekNewsDescription(ctx context.Context, turn a2a
 	for attempt := 1; attempt <= geekNewsDescriptionAttempts; attempt++ {
 		output := newGeekNewsDescriptionStructuredOutput()
 		_, err := p.agent.RunPromptProfile(ctx, agentruntime.PromptProfileRequest{
-			Name:         "geek-news-description",
-			SystemPrompt: "将一篇科技新闻的 description 翻译、润色为中文。只提交 description；保持事实、专有名词和原意，不要编造。description 必须为 300–500 个中文字符，完整说明新闻背景、核心事实、关键细节和潜在影响。",
-			UserText:     string(input), ChannelName: turn.Channel, SessionKey: fmt.Sprintf("%s:%s:item:%d:description:%d", turn.ConversationID, group, index, attempt),
+			Name: "geek-news-description",
+			SystemPrompt: "任务目标：把一篇科技新闻的 description 翻译、润色成可直接发布的中文说明。\n" +
+				"验收标准（必须全部满足后才能调用 structured_output 提交）：\n" +
+				"1. 保持事实、专有名词和原意，不编造；\n" +
+				"2. 使用自然中文完整说明新闻背景、核心事实、关键细节和潜在影响；\n" +
+				"3. description 的汉字数必须为 300–500；\n" +
+				"4. 只提交 description，不要提交标题、链接或其他字段。\n" +
+				"执行方式：先完成翻译，再逐项自检；任一标准不满足时继续修改，验收通过后才调用 structured_output。",
+			UserText: string(input), ChannelName: turn.Channel, SessionKey: fmt.Sprintf("%s:%s:item:%d:description:%d", turn.ConversationID, group, index, attempt),
 			// Structured output consumes one model step and one tool-result step.
 			DisableHistory: true, AllowTools: false, MaxSteps: 2, Model: profile.Model, StructuredOutput: output,
 		})
@@ -272,7 +281,7 @@ func newGeekNewsDescriptionStructuredOutput() *agentruntime.PromptProfileStructu
 func (p *a2aPipeline) translateGeekNewsTitle(ctx context.Context, turn a2a.ConversationTurn, profile a2aPromptProfileSpec, group string, index int, sourceTitle string) (string, error) {
 	output := newGeekNewsTitleStructuredOutput()
 	_, err := p.agent.RunPromptProfile(ctx, agentruntime.PromptProfileRequest{
-		Name: "geek-news-title", SystemPrompt: "将给定的纯英文新闻标题翻译为中文。只提交 title；不得添加或改写新闻事实，不得输出链接、日期、描述或任何其他字段。",
+		Name: "geek-news-title", SystemPrompt: "任务目标：将给定的纯英文新闻标题翻译为中文标题。\n验收标准：保留原有新闻事实；标题必须包含中文；只提交 title，不得输出链接、日期、描述或任何其他字段。\n执行方式：先翻译并自检，验收通过后才调用 structured_output。",
 		UserText: sourceTitle, ChannelName: turn.Channel, SessionKey: fmt.Sprintf("%s:%s:item:%d:title", turn.ConversationID, group, index),
 		DisableHistory: true, AllowTools: false, MaxSteps: 2, Model: profile.Model, StructuredOutput: output,
 	})
@@ -326,18 +335,48 @@ func isPureEnglishTitle(title string) bool {
 	return hasLatin
 }
 
-func isGitHubNewsLink(link string) bool {
-	parsed, err := url.Parse(strings.TrimSpace(link))
-	if err != nil {
-		return false
-	}
-	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
-	return host == "github.com" || strings.HasSuffix(host, ".github.com")
+func geekNewsDescriptionValid(description string) bool {
+	chineseCount := countChineseRunes(description)
+	return chineseCount >= geekNewsDescriptionMinRunes && chineseCount <= geekNewsDescriptionMaxRunes
 }
 
-func geekNewsDescriptionValid(description string) bool {
-	length := len([]rune(strings.TrimSpace(description)))
-	return length >= geekNewsDescriptionMinRunes && length <= geekNewsDescriptionMaxRunes
+func countChineseRunes(text string) int {
+	count := 0
+	for _, r := range strings.TrimSpace(text) {
+		if unicode.Is(unicode.Han, r) {
+			count++
+		}
+	}
+	return count
+}
+
+func containsChinese(text string) bool {
+	return countChineseRunes(text) > 0
+}
+
+// validateGeekNewsDelivery is the final release gate. Source text may remain
+// temporarily while a worker retries, but no unaccepted item can be returned.
+func validateGeekNewsDelivery(reply geekNewsReply) error {
+	if !containsChinese(reply.Summary) {
+		return errors.New("summary must contain Chinese")
+	}
+	for _, group := range []struct {
+		name  string
+		items []geekNewsItem
+	}{
+		{name: "news", items: reply.News},
+		{name: "ai_news", items: reply.AINews},
+	} {
+		for index, item := range group.items {
+			if !containsChinese(item.Title) {
+				return fmt.Errorf("%s item %d title must contain Chinese", group.name, index)
+			}
+			if !geekNewsDescriptionValid(item.Description) {
+				return fmt.Errorf("%s item %d description must contain %d-%d Chinese characters", group.name, index, geekNewsDescriptionMinRunes, geekNewsDescriptionMaxRunes)
+			}
+		}
+	}
+	return nil
 }
 
 func (p *a2aPipeline) rankGeekNewsItems(ctx context.Context, turn a2a.ConversationTurn, profile a2aPromptProfileSpec, items []geekNewsItem) []geekNewsItem {
