@@ -168,7 +168,7 @@
         "allow_tools": true
       },
       "geek-news": {
-        "model": "ark:code-latest",
+        "model": "",
         "allow_tools": true
       },
       "encouragement": {
