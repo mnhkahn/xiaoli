@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,28 +66,6 @@ type fakeGeekNewsFetcher struct {
 	err   error
 }
 
-type blockedA2AAgent struct {
-	started chan struct{}
-	release chan struct{}
-}
-
-func (a *blockedA2AAgent) RunPromptProfile(context.Context, agentruntime.PromptProfileRequest) (string, error) {
-	select {
-	case a.started <- struct{}{}:
-	default:
-	}
-	<-a.release
-	return "", errors.New("blocked model call")
-}
-
-func (a *blockedA2AAgent) RunPromptProfileStream(context.Context, agentruntime.PromptProfileRequest, func(agentruntime.PromptProfileStreamEvent) bool) (agentruntime.PromptProfileStreamReply, error) {
-	return agentruntime.PromptProfileStreamReply{}, errors.New("blocked model call")
-}
-
-func (a *blockedA2AAgent) RunNamedSubAgent(context.Context, string, string, string, string) (string, error) {
-	return "", errors.New("blocked model call")
-}
-
 func (f fakeGeekNewsFetcher) Fetch(context.Context, string) (geekNewsReply, error) {
 	return f.batch, f.err
 }
@@ -107,6 +84,18 @@ func translatedNewsResponse(index, descriptionRunes int) string {
 
 func translatedTitleResponse(index int) string {
 	return `{"title":"中文标题 ` + strconv.Itoa(index) + `"}`
+}
+
+func translatedNewsBatchResponse(count, descriptionRunes int) string {
+	items := make([]geekNewsBatchTranslation, count)
+	for i := range items {
+		items[i] = geekNewsBatchTranslation{ID: i, Title: "中文标题 " + strconv.Itoa(i), Description: strings.Repeat("详", descriptionRunes)}
+	}
+	data, err := json.Marshal(geekNewsBatchTranslations{Items: items})
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
 }
 
 func (f *fakeA2AAgent) RunPromptProfileStream(ctx context.Context, req agentruntime.PromptProfileRequest, emit func(agentruntime.PromptProfileStreamEvent) bool) (agentruntime.PromptProfileStreamReply, error) {
@@ -182,11 +171,8 @@ func TestA2APipelineRoutesGeekNewsProfileToPromptProfile(t *testing.T) {
 func TestA2APipelineBuildsGeekNewsDeterministicallyFromCLIItems(t *testing.T) {
 	items := fiveSourceNews()
 	agent := &fakeA2AAgent{structuredArgumentQueue: []string{
-		translatedTitleResponse(0), translatedNewsResponse(0, 300),
-		translatedTitleResponse(1), translatedNewsResponse(1, 300),
-		translatedTitleResponse(2), translatedNewsResponse(2, 300),
-		translatedTitleResponse(3), translatedNewsResponse(3, 300),
-		translatedTitleResponse(4), translatedNewsResponse(4, 300),
+		translatedNewsBatchResponse(3, 300), translatedNewsBatchResponse(2, 300), `{"ids":["n0","n1","n2","n3","n4"]}`,
+		translatedNewsBatchResponse(3, 300), translatedNewsBatchResponse(2, 300), `{"ids":["n0","n1","n2","n3","n4"]}`,
 	}}
 	aiItems := fiveSourceNews()
 	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{CreateTime: 1719532800, News: items, AINews: aiItems}})
@@ -202,9 +188,10 @@ func TestA2APipelineBuildsGeekNewsDeterministicallyFromCLIItems(t *testing.T) {
 	if len(got.News) != 5 || len(got.AINews) != 5 || got.News[0].Link != items[0].Link {
 		t.Fatalf("news = %#v ai_news = %#v, want all source items when ranking falls back", got.News, got.AINews)
 	}
-	rankCalls := 0
+	batchCalls, rankCalls := 0, 0
 	for _, request := range agent.profileRequests {
-		if request.Name == "geek-news-title" || request.Name == "geek-news-description" {
+		if request.Name == "geek-news-batch-translation" {
+			batchCalls++
 			if request.MaxSteps != 2 {
 				t.Fatalf("%s MaxSteps = %d, want 2 for structured output", request.Name, request.MaxSteps)
 			}
@@ -216,8 +203,38 @@ func TestA2APipelineBuildsGeekNewsDeterministicallyFromCLIItems(t *testing.T) {
 	if rankCalls != 2 {
 		t.Fatalf("rank calls = %d, want one ranking request per news group", rankCalls)
 	}
+	if batchCalls != 4 || agent.profileCalls != 6 {
+		t.Fatalf("batch calls=%d total calls=%d, want four bounded batch translations and two rankings", batchCalls, agent.profileCalls)
+	}
 	if got.News[0].Image != items[0].Image || got.News[0].CreateTime != items[0].CreateTime || got.News[0].SourceTitle != items[0].Title {
 		t.Fatalf("item metadata changed: %#v", got.News[0])
+	}
+}
+
+func TestGeekNewsBatchIndexesBoundItemCountAndInputSize(t *testing.T) {
+	items := fiveSourceNews()
+	got := geekNewsBatchIndexes(items)
+	if len(got) != 2 || len(got[0]) != 3 || len(got[1]) != 2 {
+		t.Fatalf("batches = %#v, want 3 + 2 items", got)
+	}
+
+	longItems := []geekNewsItem{
+		{Title: "first", Description: strings.Repeat("x", geekNewsBatchMaxInputRunes+1)},
+		{Title: "second", Description: "short"},
+	}
+	got = geekNewsBatchIndexes(longItems)
+	if len(got) != 2 || len(got[0]) != 1 || got[0][0] != 0 || len(got[1]) != 1 || got[1][0] != 1 {
+		t.Fatalf("long-item batches = %#v, want each item isolated", got)
+	}
+}
+
+func TestGeekNewsTranslationInputBoundsLongSourceText(t *testing.T) {
+	input := geekNewsTranslationInput(strings.Repeat("标", geekNewsBatchMaxTitleRunes+1), strings.Repeat("首", 5000)+strings.Repeat("尾", 5000))
+	if len([]rune(input.Title))+len([]rune(input.Description)) > geekNewsBatchMaxInputRunes {
+		t.Fatalf("input exceeds budget: title=%d description=%d", len([]rune(input.Title)), len([]rune(input.Description)))
+	}
+	if !strings.Contains(input.Description, "仅保留开头和结尾") || !strings.HasPrefix(input.Description, "首") || !strings.HasSuffix(input.Description, "尾") {
+		t.Fatalf("description = %q, want bounded head and tail excerpt", input.Description)
 	}
 }
 
@@ -227,7 +244,7 @@ func TestProcessGeekNewsItemsTranslatesGitHubTitle(t *testing.T) {
 		Title:       "Release v1.2.3 fixes parser regressions",
 		Description: strings.Repeat("source content ", 40),
 	}
-	agent := &fakeA2AAgent{structuredArgumentQueue: []string{translatedTitleResponse(0), translatedNewsResponse(0, 300)}}
+	agent := &fakeA2AAgent{structuredArguments: translatedNewsBatchResponse(1, 300)}
 	pipeline := newA2APipeline(agent, nil)
 
 	processed := pipeline.processGeekNewsItems(context.Background(), a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:test"}, a2aPromptProfileSpec{}, "news", []geekNewsItem{item})
@@ -238,43 +255,8 @@ func TestProcessGeekNewsItemsTranslatesGitHubTitle(t *testing.T) {
 	if got := processed[0].SourceTitle; got != item.Title {
 		t.Fatalf("GitHub source_title = %q, want original %q", got, item.Title)
 	}
-	if agent.profileCalls != 2 || agent.profileRequests[0].Name != "geek-news-title" || agent.profileRequests[1].Name != "geek-news-description" {
-		t.Fatalf("profile requests = %#v, want title and description translations", agent.profileRequests)
-	}
-}
-
-func TestProcessGeekNewsItemsReturnsPartialSourceFallbackWithoutWaitingForBlockedModel(t *testing.T) {
-	items := fiveSourceNews()
-	agent := &blockedA2AAgent{started: make(chan struct{}, geekNewsConcurrentWorkers), release: make(chan struct{})}
-	pipeline := newA2APipeline(agent, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	defer close(agent.release)
-
-	result := make(chan []geekNewsItem, 1)
-	go func() {
-		result <- pipeline.processGeekNewsItems(ctx, a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:deadline-test"}, a2aPromptProfileSpec{}, "news", items)
-	}()
-	select {
-	case <-agent.started:
-	case <-time.After(time.Second):
-		t.Fatal("news processing did not start a model call")
-	}
-	cancel()
-
-	var processed []geekNewsItem
-	select {
-	case processed = <-result:
-	case <-time.After(time.Second):
-		t.Fatal("news processing waited for a blocked model call after cancellation")
-	}
-	if len(processed) != len(items) {
-		t.Fatalf("processed items = %d, want %d", len(processed), len(items))
-	}
-	for i, item := range processed {
-		if item.Title != items[i].Title || item.Description != items[i].Description || item.SourceTitle != items[i].Title {
-			t.Fatalf("item %d = %#v, want source fallback %#v", i, item, items[i])
-		}
+	if agent.profileCalls != 1 || agent.profileRequests[0].Name != "geek-news-batch-translation" {
+		t.Fatalf("profile requests = %#v, want one batch translation", agent.profileRequests)
 	}
 }
 
@@ -284,14 +266,10 @@ func TestA2APipelineRanksNewsGroupsIndependently(t *testing.T) {
 	for i := range aiNews {
 		aiNews[i].Link = "https://example.com/ai/" + strconv.Itoa(i)
 	}
-	translations := make([]string, 0, 10)
-	for i := 0; i < 10; i++ {
-		translations = append(translations, translatedNewsResponse(i, 300))
-	}
-	queue := append(translations, `{"ids":["n1","n0","n2","n3","n4"]}`)
-	queue = append(queue, translations...)
-	queue = append(queue, `{"ids":["n1","n0","n2","n3","n4"]}`)
-	agent := &fakeA2AAgent{structuredArgumentQueue: queue}
+	agent := &fakeA2AAgent{structuredArgumentQueue: []string{
+		translatedNewsBatchResponse(3, 300), translatedNewsBatchResponse(2, 300), `{"ids":["n1","n0","n2","n3","n4"]}`,
+		translatedNewsBatchResponse(3, 300), translatedNewsBatchResponse(2, 300), `{"ids":["n1","n0","n2","n3","n4"]}`,
+	}}
 	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{News: news, AINews: aiNews}})
 
 	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:rank-test", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`})
@@ -304,6 +282,31 @@ func TestA2APipelineRanksNewsGroupsIndependently(t *testing.T) {
 	}
 	if got.News[0].Link != news[1].Link || got.AINews[0].Link != aiNews[1].Link {
 		t.Fatalf("news groups were not ranked independently: news=%q ai_news=%q", got.News[0].Link, got.AINews[0].Link)
+	}
+}
+
+func TestProcessGeekNewsItemsRetriesOnlyInvalidBatchItems(t *testing.T) {
+	items := fiveSourceNews()[:2]
+	for i := range items {
+		items[i].Description = "short"
+	}
+	batch := geekNewsBatchTranslations{Items: []geekNewsBatchTranslation{
+		{ID: 0, Title: "中文标题 0", Description: strings.Repeat("详", 299)},
+		{ID: 1, Title: "中文标题 1", Description: strings.Repeat("详", 300)},
+	}}
+	data, err := json.Marshal(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &fakeA2AAgent{structuredArgumentQueue: []string{string(data), translatedNewsResponse(0, 300)}}
+	pipeline := newA2APipeline(agent, nil)
+
+	processed := pipeline.processGeekNewsItems(context.Background(), a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:test"}, a2aPromptProfileSpec{}, "news", items)
+	if agent.profileCalls != 2 || agent.profileRequests[0].Name != "geek-news-batch-translation" || agent.profileRequests[1].Name != "geek-news-description" {
+		t.Fatalf("profile requests = %#v, want batch translation plus one description retry", agent.profileRequests)
+	}
+	if !geekNewsDescriptionValid(processed[0].Description) || !geekNewsDescriptionValid(processed[1].Description) {
+		t.Fatalf("processed = %#v, want both descriptions accepted", processed)
 	}
 }
 
