@@ -779,3 +779,89 @@ func TestA2APipelineAppendsEncouragementDateGuardForNonTodayDate(t *testing.T) {
 		t.Fatalf("SystemPrompt missing date-guard override:\n%s", agent.lastProfile.SystemPrompt)
 	}
 }
+
+func TestGeekNewsPartialDeliveryKeepsAcceptedItems(t *testing.T) {
+	items := fiveSourceNews()[:2]
+	batch, _ := json.Marshal(geekNewsBatchTranslations{Items: []geekNewsBatchTranslation{
+		{ID: 0, Title: "合格新闻", Description: strings.Repeat("详", 300)},
+		{ID: 1, Title: "失败新闻", Description: "太短"},
+	}})
+	agent := &fakeA2AAgent{structuredArgumentQueue: []string{string(batch), translatedNewsResponse(0, 299), translatedNewsResponse(0, 299), `{"ids":["n0"]}`}}
+	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{News: items}})
+	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got geekNewsReply
+	if err := json.Unmarshal([]byte(reply.Text), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.News) != 1 || got.News[0].Link != items[0].Link {
+		t.Fatalf("unexpected delivery: %#v", got.News)
+	}
+	for _, req := range agent.profileRequests {
+		if req.Name == "geek-news-description" && !strings.Contains(req.SessionKey, ":item:1:") {
+			t.Fatalf("retried accepted item: %s", req.SessionKey)
+		}
+	}
+}
+
+func TestGeekNewsRepairsCurrentBatchBeforeNextBatch(t *testing.T) {
+	items := fiveSourceNews()[:4]
+	batch, _ := json.Marshal(geekNewsBatchTranslations{Items: []geekNewsBatchTranslation{
+		{ID: 0, Title: "待修正", Description: "太短"},
+		{ID: 1, Title: "合格一", Description: strings.Repeat("详", 300)},
+		{ID: 2, Title: "合格二", Description: strings.Repeat("详", 300)},
+	}})
+	agent := &fakeA2AAgent{structuredArgumentQueue: []string{string(batch), translatedNewsResponse(0, 300), translatedNewsBatchResponse(1, 300)}}
+	got := newA2APipeline(agent, nil).processGeekNewsItems(context.Background(), a2a.ConversationTurn{}, a2aPromptProfileSpec{}, "news", items)
+	if len(got) != 4 || agent.profileCalls != 3 || agent.profileRequests[1].Name != "geek-news-description" || agent.profileRequests[2].Name != "geek-news-batch-translation" {
+		t.Fatalf("items=%d requests=%#v", len(got), agent.profileRequests)
+	}
+}
+
+func TestGeekNewsCancelledProcessingDoesNotCallModel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	agent := &fakeA2AAgent{}
+	got := newA2APipeline(agent, nil).processGeekNewsItems(ctx, a2a.ConversationTurn{}, a2aPromptProfileSpec{}, "news", fiveSourceNews())
+	if len(got) != 0 || agent.profileCalls != 0 {
+		t.Fatalf("items=%d calls=%d", len(got), agent.profileCalls)
+	}
+}
+
+func TestGeekNewsDescriptionRetryIncludesFailedCandidate(t *testing.T) {
+	agent := &fakeA2AAgent{structuredArgumentQueue: []string{translatedNewsResponse(0, 299), translatedNewsResponse(0, 300)}}
+	_, err := newA2APipeline(agent, nil).translateGeekNewsDescription(context.Background(), a2a.ConversationTurn{}, a2aPromptProfileSpec{}, "news", 0, fiveSourceNews()[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feedback struct {
+		Previous string `json:"previous_description"`
+		Error    string `json:"validation_error"`
+	}
+	if err := json.Unmarshal([]byte(agent.profileRequests[1].UserText), &feedback); err != nil {
+		t.Fatal(err)
+	}
+	if countChineseRunes(feedback.Previous) != 299 || !strings.Contains(feedback.Error, "299") {
+		t.Fatalf("feedback=%#v", feedback)
+	}
+}
+
+type geekNewsTailErrorAgent struct{ fakeA2AAgent }
+
+func (f *geekNewsTailErrorAgent) RunPromptProfile(ctx context.Context, req agentruntime.PromptProfileRequest) (string, error) {
+	_, err := f.fakeA2AAgent.RunPromptProfile(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	return "", context.DeadlineExceeded
+}
+
+func TestGeekNewsKeepsCapturedBatchAfterRunnerError(t *testing.T) {
+	agent := &geekNewsTailErrorAgent{fakeA2AAgent{structuredArguments: translatedNewsBatchResponse(2, 300)}}
+	got := newA2APipeline(agent, nil).processGeekNewsItems(context.Background(), a2a.ConversationTurn{}, a2aPromptProfileSpec{}, "news", fiveSourceNews()[:2])
+	if len(got) != 2 || agent.profileCalls != 1 {
+		t.Fatalf("items=%d calls=%d, want captured results without retry", len(got), agent.profileCalls)
+	}
+}

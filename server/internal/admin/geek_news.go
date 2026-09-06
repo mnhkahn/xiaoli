@@ -130,21 +130,24 @@ func (p *a2aPipeline) runGeekNews(ctx context.Context, turn a2a.ConversationTurn
 	// each one. This preserves their product-level grouping without inheriting
 	// the upstream CLI's arbitrary source order.
 	news := p.processGeekNewsItems(processingCtx, turn, profile, "news", batch.News)
-	if processingCtx.Err() == nil {
+	if processingCtx.Err() == nil && len(news) > 1 {
 		news = p.rankGeekNewsItems(processingCtx, turn, profile, news)
 	}
 	aiNews := p.processGeekNewsItems(processingCtx, turn, profile, "ai_news", batch.AINews)
-	if processingCtx.Err() == nil {
+	if processingCtx.Err() == nil && len(aiNews) > 1 {
 		aiNews = p.rankGeekNewsItems(processingCtx, turn, profile, aiNews)
 	}
 	if errors.Is(processingCtx.Err(), context.DeadlineExceeded) {
-		logger.Infof("[A2A][geek-news][processing_deadline] conversation_id=%s date=%s fallback=partial_source_result", turn.ConversationID, date)
+		logger.Infof("[A2A][geek-news][processing_deadline] conversation_id=%s date=%s fallback=accepted_items", turn.ConversationID, date)
 	}
 	result := geekNewsReply{
 		CreateTime: batch.CreateTime,
 		Summary:    fmt.Sprintf("%s 科技新闻：技术动向 %d 条，AI 资讯 %d 条。", date, len(news), len(aiNews)),
 		News:       news,
 		AINews:     aiNews,
+	}
+	if len(result.News)+len(result.AINews) == 0 {
+		return "", errors.New("geek-news: no items passed validation")
 	}
 	if err := validateGeekNewsDelivery(result); err != nil {
 		logger.Infof("[A2A][geek-news][acceptance_failed] conversation_id=%s date=%s err=%v", turn.ConversationID, date, err)
@@ -179,44 +182,44 @@ func (p *a2aPipeline) processGeekNewsItems(ctx context.Context, turn a2a.Convers
 		processed[i].SourceTitle = items[i].Title
 	}
 
-	retryIndexes := make([]int, 0)
+	accepted := make([]geekNewsItem, 0, len(items))
 	for _, indexes := range geekNewsBatchIndexes(processed) {
+		if ctx.Err() != nil {
+			break
+		}
 		chunk := make([]geekNewsItem, len(indexes))
 		for i, index := range indexes {
 			chunk[i] = processed[index]
 		}
-		translated, retryChunkIndexes, err := p.translateGeekNewsBatch(ctx, turn, profile, group, chunk)
+		translated, _, err := p.translateGeekNewsBatch(ctx, turn, profile, group, chunk)
 		if err != nil {
 			logger.Infof("[A2A][geek-news][batch_translation_fallback] conversation_id=%s group=%s items=%d err=%v", turn.ConversationID, group, len(chunk), err)
-			retryIndexes = append(retryIndexes, indexes...)
-			continue
+		} else {
+			chunk = translated
 		}
-		for i, index := range indexes {
-			processed[index] = translated[i]
-		}
-		for _, chunkIndex := range retryChunkIndexes {
-			retryIndexes = append(retryIndexes, indexes[chunkIndex])
+		// Validate and repair this batch's items before starting the next batch.
+		// Only accepted items enter the delivery list; a failed sibling cannot
+		// invalidate them or cause them to be generated again.
+		for i, item := range chunk {
+			index := indexes[i]
+			if !containsChinese(item.Title) && ctx.Err() == nil {
+				if title, err := p.translateGeekNewsTitle(ctx, turn, profile, group, index, item.SourceTitle); err == nil {
+					item.Title = title
+				}
+			}
+			if containsChinese(item.Title) && !geekNewsDescriptionValid(item.Description) && ctx.Err() == nil {
+				if description, err := p.translateGeekNewsDescription(ctx, turn, profile, group, index, item); err == nil {
+					item.Description = description
+				}
+			}
+			if !containsChinese(item.Title) || !geekNewsDescriptionValid(item.Description) {
+				logger.Infof("[A2A][geek-news][item_rejected] conversation_id=%s group=%s item=%d chinese_chars=%d ctx_err=%v", turn.ConversationID, group, index, countChineseRunes(item.Description), ctx.Err())
+				continue
+			}
+			accepted = append(accepted, item)
 		}
 	}
-	for _, index := range retryIndexes {
-		item := processed[index]
-		if !containsChinese(item.Title) {
-			if title, err := p.translateGeekNewsTitle(ctx, turn, profile, group, index, item.SourceTitle); err == nil {
-				item.Title = title
-			} else {
-				logger.Infof("[A2A][geek-news][title_source_fallback] conversation_id=%s group=%s item=%d err=%v", turn.ConversationID, group, index, err)
-			}
-		}
-		if !geekNewsDescriptionValid(item.Description) {
-			if description, err := p.translateGeekNewsDescription(ctx, turn, profile, group, index, item); err == nil {
-				item.Description = description
-			} else {
-				logger.Infof("[A2A][geek-news][description_source_fallback] conversation_id=%s group=%s item=%d err=%v", turn.ConversationID, group, index, err)
-			}
-		}
-		processed[index] = item
-	}
-	return processed
+	return accepted
 }
 
 func geekNewsBatchIndexes(items []geekNewsItem) [][]int {
@@ -304,11 +307,12 @@ func (p *a2aPipeline) translateGeekNewsBatch(ctx context.Context, turn a2a.Conve
 		UserText: string(input), ChannelName: turn.Channel, SessionKey: turn.ConversationID + ":" + group + ":batch-translation",
 		DisableHistory: true, AllowTools: false, MaxSteps: 2, Model: profile.Model, StructuredOutput: output,
 	})
-	if err != nil {
-		return nil, nil, err
-	}
+	// Keep captured results even if the runner fails after submitting them.
 	raw, ok := output.Result()
 	if !ok {
+		if err != nil {
+			return nil, nil, err
+		}
 		return nil, nil, errors.New("batch translation did not submit structured output")
 	}
 	var translated geekNewsBatchTranslations
@@ -339,9 +343,8 @@ func (p *a2aPipeline) translateGeekNewsBatch(ctx context.Context, turn a2a.Conve
 		} else {
 			accepted = false
 		}
-		if geekNewsDescriptionValid(item.Description) {
-			processed[index].Description = item.Description
-		} else {
+		processed[index].Description = item.Description
+		if !geekNewsDescriptionValid(item.Description) {
 			accepted = false
 		}
 		if !accepted {
@@ -370,9 +373,17 @@ func newGeekNewsBatchStructuredOutput() *agentruntime.PromptProfileStructuredOut
 
 func (p *a2aPipeline) translateGeekNewsDescription(ctx context.Context, turn a2a.ConversationTurn, profile a2aPromptProfileSpec, group string, index int, item geekNewsItem) (string, error) {
 	translationInput := geekNewsTranslationInput(item.SourceTitle, item.Description)
-	input, _ := json.Marshal(translationInput)
 	var lastErr error
+	previous := item.Description
 	for attempt := 1; attempt <= geekNewsDescriptionAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		feedback := fmt.Sprintf("description must contain %d-%d Chinese characters; previous output contains %d", geekNewsDescriptionMinRunes, geekNewsDescriptionMaxRunes, countChineseRunes(previous))
+		if lastErr != nil {
+			feedback += "; " + lastErr.Error()
+		}
+		input, _ := json.Marshal(map[string]any{"source": translationInput, "previous_description": previous, "validation_error": feedback})
 		output := newGeekNewsDescriptionStructuredOutput()
 		_, err := p.agent.RunPromptProfile(ctx, agentruntime.PromptProfileRequest{
 			Name: "geek-news-description",
@@ -389,6 +400,12 @@ func (p *a2aPipeline) translateGeekNewsDescription(ctx context.Context, turn a2a
 		})
 		if err != nil {
 			lastErr = err
+			if raw, _, ok := output.Failure(); ok {
+				var failed geekNewsDescription
+				if json.Unmarshal([]byte(raw), &failed) == nil {
+					previous = failed.Description
+				}
+			}
 			continue
 		}
 		raw, ok := output.Result()
@@ -497,8 +514,8 @@ func containsChinese(text string) bool {
 	return countChineseRunes(text) > 0
 }
 
-// validateGeekNewsDelivery is the final release gate. Source text may remain
-// temporarily while a worker retries, but no unaccepted item can be returned.
+// validateGeekNewsDelivery checks delivery invariants for already accepted items.
+// Failed source items are excluded during processing, not rejected here as a batch.
 func validateGeekNewsDelivery(reply geekNewsReply) error {
 	if !containsChinese(reply.Summary) {
 		return errors.New("summary must contain Chinese")
