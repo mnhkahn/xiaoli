@@ -60,7 +60,7 @@ type gitCmsgPreviewMsg struct {
 const gitCommitMessageSystemPrompt = "你是 Git 提交信息助手。只输出中文 Conventional Commits 提交信息，不要解释，不要 Markdown。必须使用以下结构：第一行是 type(scope): 简短中文描述；随后空一行；再用 `- ` 开头的列表逐条说明主要变更。即使变更较小，也至少给出一条列表项。"
 
 const (
-	gitCmsgPrepareTimeout = 15 * time.Second
+	gitCmsgPrepareTimeout = 60 * time.Second
 	gitCmsgPrepareRetries = 2
 	gitCmsgRetryBackoff   = time.Second
 	gitCmsgDiffTotalLimit = 12 * 1024
@@ -160,20 +160,22 @@ func (m *model) handleGitCmsgChoice(text string) tea.Cmd {
 func startGitCmsgPrepare(ctx context.Context, agent *agentruntime.Agent, cwd, args string, progress chan gitCmsgProgressMsg) tea.Cmd {
 	return func() tea.Msg {
 		defer close(progress)
+		gitCtx, gitCancel := context.WithTimeout(ctx, 15*time.Second)
+		stat, files, diff, err := prepareGitCmsgDiff(gitCtx, cwd, args)
+		gitCancel()
+		if err != nil {
+			return gitCmsgPrepareMsg{args: args, err: err}
+		}
 		for attempt := 0; attempt <= gitCmsgPrepareRetries; attempt++ {
 			attemptCtx, cancel := context.WithTimeout(ctx, gitCmsgPrepareTimeout)
-			stat, files, diff, err := prepareGitCmsgDiff(attemptCtx, cwd, args)
+			msg, err := generateGitCommitMessage(attemptCtx, agent, stat, files, diff)
 			if err == nil {
-				var msg string
-				msg, err = generateGitCommitMessage(attemptCtx, agent, stat, files, diff)
-				if err == nil {
-					cancel()
-					return gitCmsgPrepareMsg{args: args, stat: stat, files: files, diff: diff, message: msg}
-				}
+				cancel()
+				return gitCmsgPrepareMsg{args: args, stat: stat, files: files, diff: diff, message: msg}
 			}
-			timedOut := errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
+			timedOut := errors.Is(err, context.DeadlineExceeded)
 			if timedOut {
-				err = fmt.Errorf("模型请求超时（单次上限 %s）：%w", gitCmsgPrepareTimeout, context.DeadlineExceeded)
+				err = fmt.Errorf("模型请求超时（单次上限 %s）：%w", gitCmsgPrepareTimeout, err)
 			}
 			retryable := timedOut || isRetryableGitCmsgError(err)
 			cancel()
@@ -213,12 +215,7 @@ func waitForGitCmsgProgress(ch <-chan gitCmsgProgressMsg) tea.Cmd {
 }
 
 func isRetryableGitCmsgError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "received empty choices") ||
-		strings.Contains(msg, "empty choices from openai api")
+	return agentruntime.IsRetryableGenerationError(err)
 }
 
 func startGitCmsgPreview(ctx context.Context, agent *agentruntime.Agent, cwd string) tea.Cmd {
@@ -362,7 +359,7 @@ func generateGitCommitMessage(ctx context.Context, agent *agentruntime.Agent, st
 	diff = compactGitCommitDiff(diff)
 	system := gitCommitMessageSystemPrompt
 	user := fmt.Sprintf("根据下面暂存区变更生成提交信息。\n\n文件：\n%s\n\n统计：\n%s\n\nDiff：\n%s", strings.TrimSpace(files), strings.TrimSpace(stat), diff)
-	msg, err := agent.Generate(ctx, system, user)
+	msg, err := agent.GenerateText(ctx, system, user)
 	if err != nil {
 		return "", fmt.Errorf("生成提交信息失败：%w", err)
 	}

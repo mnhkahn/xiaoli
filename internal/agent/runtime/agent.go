@@ -414,9 +414,18 @@ func (a *Agent) chatModelForID(ctx context.Context, modelID string) (*openai.Cha
 	if _, ok := a.cfg.LLMModelConfigs[modelID]; !ok && modelID != a.CurrentLLMModel() {
 		return nil, "", fmt.Errorf("LLM model %q is not configured", modelID)
 	}
+	model, err := a.newChatModel(ctx, modelID, llmResponseHeaderTimeout)
+	if err != nil {
+		return nil, "", err
+	}
+	a.chatModels[modelID] = model
+	return model, modelID, nil
+}
+
+func (a *Agent) newChatModel(ctx context.Context, modelID string, headerTimeout time.Duration) (*openai.ChatModel, error) {
 	modelCfg := a.cfg.selectedLLMModelConfigFor(modelID)
 	if modelCfg.Model == "" || modelCfg.BaseURL == "" || modelCfg.APIKey == "" {
-		return nil, "", fmt.Errorf("LLM model %q is incomplete", modelID)
+		return nil, fmt.Errorf("LLM model %q is incomplete", modelID)
 	}
 	baseURL := strings.TrimSuffix(modelCfg.BaseURL, "/chat/completions")
 	baseURL = strings.TrimRight(baseURL, "/")
@@ -425,19 +434,14 @@ func (a *Agent) chatModelForID(ctx context.Context, modelID string) (*openai.Cha
 	if maxTokens <= 0 {
 		maxTokens = 4096
 	}
-	model, err := openai.NewChatModel(ctx, &openai.ChatModelConfig{
+	return openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		BaseURL:     baseURL,
 		APIKey:      modelCfg.APIKey,
 		Model:       modelCfg.Model,
-		HTTPClient:  newLLMHTTPClient(a.cfg.LLMTimeout, llmResponseHeaderTimeout),
+		HTTPClient:  newLLMHTTPClient(a.cfg.LLMTimeout, headerTimeout),
 		Temperature: &temp,
 		MaxTokens:   &maxTokens,
 	})
-	if err != nil {
-		return nil, "", err
-	}
-	a.chatModels[modelID] = model
-	return model, modelID, nil
 }
 
 func (a *Agent) SetDeviceTools(hub DeviceTools) {

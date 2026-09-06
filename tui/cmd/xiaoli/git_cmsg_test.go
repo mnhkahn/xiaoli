@@ -3,11 +3,74 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 )
+
+func TestGitCmsgPrepareModelFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		body      string
+		wantCalls int32
+		wantError string
+	}{
+		{"daily limit", 429, `{"error":{"message":"Daily limit reached","type":"rate_limit","code":"429"}}`, 1, "Daily limit reached"},
+		{"temporary limit", 429, `{"error":{"message":"Too Many Requests","type":"rate_limit","code":"429"}}`, 3, ""},
+		{"empty choices", 200, `{"choices":[]}`, 3, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				n := calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				if n < 3 || tc.wantError != "" {
+					w.WriteHeader(tc.status)
+					fmt.Fprint(w, tc.body)
+					return
+				}
+				fmt.Fprint(w, `{"choices":[{"message":{"role":"assistant","content":"fix(test): 修复生成\n\n- 保持提交流程"},"finish_reason":"stop"}]}`)
+			}))
+			defer server.Close()
+			a := agentruntime.NewAgent(agentruntime.Config{LLMModel: "test", LLMAPIKey: "test", LLMURL: server.URL}, nil)
+			dir := t.TempDir()
+			mustRunGit(t, dir, "init")
+			if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("change"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			progress := make(chan gitCmsgProgressMsg, gitCmsgPrepareRetries)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			result := startGitCmsgPrepare(ctx, a, dir, "", progress)().(gitCmsgPrepareMsg)
+			if calls.Load() != tc.wantCalls {
+				t.Fatalf("calls=%d, want %d", calls.Load(), tc.wantCalls)
+			}
+			if tc.wantError != "" {
+				if result.err == nil || !strings.Contains(result.err.Error(), tc.wantError) {
+					t.Fatalf("err=%v", result.err)
+				}
+			} else if result.err != nil || !strings.HasPrefix(result.message, "fix(test):") {
+				t.Fatalf("message=%q err=%v", result.message, result.err)
+			}
+			if len(progress) != int(tc.wantCalls)-1 {
+				t.Fatalf("progress count=%d", len(progress))
+			}
+			files, err := runGitCombined(dir, "diff", "--cached", "--name-only")
+			if err != nil || strings.TrimSpace(files) != "a.txt" {
+				t.Fatalf("staged=%q err=%v", files, err)
+			}
+		})
+	}
+}
 
 func TestIsRetryableGitCmsgError(t *testing.T) {
 	if !isRetryableGitCmsgError(errors.New("agent error: received empty choices from OpenAI API response")) {
