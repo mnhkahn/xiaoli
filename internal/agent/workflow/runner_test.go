@@ -80,3 +80,31 @@ func TestRunnerStopsAtMaxSteps(t *testing.T) {
 		t.Fatalf("run = %#v, want failed after two steps", run)
 	}
 }
+
+func TestRunnerStopsImmediatelyOnTerminalError(t *testing.T) {
+	registry, err := NewRegistry(Definition{
+		ID:      "chat_react",
+		Enabled: true,
+		Agent:   AgentSpec{MaxSteps: 200, Timeout: time.Second},
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	agent := &terminalFakeAgent{}
+	runner := NewRunner(RunnerConfig{Registry: registry, Agent: agent})
+
+	run, err := runner.Run(context.Background(), "chat_react", Input{Text: "hello"})
+	if err == nil || !IsTerminalError(err) {
+		t.Fatalf("Run() error = %v, want terminal error", err)
+	}
+	if agent.calls != 1 || len(run.Steps) != 1 || run.Status != RunFailed {
+		t.Fatalf("run = %#v calls=%d, want one failed step", run, agent.calls)
+	}
+}
+
+type terminalFakeAgent struct{ calls int }
+
+func (a *terminalFakeAgent) Run(context.Context, AgentRequest) (AgentResponse, error) {
+	a.calls++
+	return AgentResponse{}, NewTerminalError(errors.New("model unavailable"))
+}

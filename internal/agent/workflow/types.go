@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -75,6 +76,34 @@ type AgentResponse struct {
 
 type Agent interface {
 	Run(ctx context.Context, request AgentRequest) (AgentResponse, error)
+}
+
+// TerminalError marks an error for which a workflow must not schedule another
+// step. It is used for configuration and authentication failures that cannot
+// be resolved by asking the same agent to try again.
+type TerminalError struct {
+	Err error
+}
+
+func (e *TerminalError) Error() string {
+	if e == nil || e.Err == nil {
+		return "terminal workflow error"
+	}
+	return e.Err.Error()
+}
+
+func (e *TerminalError) Unwrap() error { return e.Err }
+
+func NewTerminalError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &TerminalError{Err: err}
+}
+
+func IsTerminalError(err error) bool {
+	var terminal *TerminalError
+	return errors.As(err, &terminal)
 }
 
 type RunStatus string

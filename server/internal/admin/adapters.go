@@ -579,6 +579,9 @@ func (a conversationWorkflowAgent) Run(ctx context.Context, request agentworkflo
 	}
 	reply, err := a.pipeline.runWorkflowStep(ctx, turn, request.MaxSteps)
 	if err != nil {
+		if agentruntime.IsTerminalModelError(err) {
+			return agentworkflow.AgentResponse{}, agentworkflow.NewTerminalError(err)
+		}
 		return agentworkflow.AgentResponse{}, err
 	}
 	return agentworkflow.AgentResponse{Text: reply.Text, Finished: true}, nil

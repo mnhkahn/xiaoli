@@ -110,7 +110,18 @@ func httpStatusCode(err error) int {
 }
 
 func isRetryableHTTPStatus(status int) bool {
-	return status >= 400 && status <= 599
+	// 4xx (except 408/429) means the request or selected model is invalid for
+	// this account. Retrying the same request cannot fix it and previously let
+	// the server workflow spend its entire deadline on a permanently unavailable
+	// model.
+	return status == 408 || status == 429 || status >= 500 && status <= 599
+}
+
+// IsTerminalModelError reports failures that must be returned to the caller
+// immediately instead of becoming another workflow step.
+func IsTerminalModelError(err error) bool {
+	status := httpStatusCode(err)
+	return status >= 400 && status < 500 && status != 408 && status != 429
 }
 
 func isTransientTimeoutMessage(msg string) bool {

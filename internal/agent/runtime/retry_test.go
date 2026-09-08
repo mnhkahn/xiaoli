@@ -67,8 +67,8 @@ func TestLLMShouldRetryHTTP429WithoutRateLimitText(t *testing.T) {
 	}
 }
 
-func TestLLMShouldRetryAllHTTP4xxAnd5xx(t *testing.T) {
-	for _, status := range []int{400, 401, 402, 403, 404, 429, 500, 503} {
+func TestLLMShouldRetryOnlyTransientHTTPStatuses(t *testing.T) {
+	for _, status := range []int{408, 429, 500, 503} {
 		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
 			decision := llmShouldRetry(context.Background(), &adk.RetryContext{RetryAttempt: 1, Err: &openai.APIError{
 				HTTPStatusCode: status,
@@ -82,13 +82,30 @@ func TestLLMShouldRetryAllHTTP4xxAnd5xx(t *testing.T) {
 	}
 }
 
-func TestWrappedHTTPStatusIsRetryable(t *testing.T) {
+func TestLLMDoesNotRetryPermanentHTTP4xx(t *testing.T) {
+	for _, status := range []int{400, 401, 402, 403, 404} {
+		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
+			err := &openai.APIError{HTTPStatusCode: status, HTTPStatus: fmt.Sprintf("%d Provider error", status), Message: "model unavailable"}
+			if decision := llmShouldRetry(context.Background(), &adk.RetryContext{Err: err}); decision != nil && decision.Retry {
+				t.Fatalf("llmShouldRetry(%d) = %#v, want no retry", status, decision)
+			}
+			if !IsTerminalModelError(err) {
+				t.Fatalf("IsTerminalModelError(%d) = false, want true", status)
+			}
+		})
+	}
+}
+
+func TestWrappedPermanentHTTPStatusIsTerminal(t *testing.T) {
 	err := errors.New("[NodeRunError] error, status code: 402, status: 402 Payment Required")
 	if got := httpStatusCode(err); got != 402 {
 		t.Fatalf("httpStatusCode() = %d, want 402", got)
 	}
-	if !isRetryableAgentError(err) {
-		t.Fatal("wrapped 402 must be retryable")
+	if isRetryableAgentError(err) {
+		t.Fatal("wrapped 402 must not be retryable")
+	}
+	if !IsTerminalModelError(err) {
+		t.Fatal("wrapped 402 must be terminal")
 	}
 }
 

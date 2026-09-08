@@ -91,6 +91,11 @@ func (r *Runner) Run(ctx context.Context, workflowID string, input Input) (Run, 
 			step.Status = StepFailed
 			step.Error = lastErr
 			run.Steps = append(run.Steps, step)
+			if IsTerminalError(err) {
+				run.Error = lastErr
+				run.FinishedAt = r.now()
+				return run, err
+			}
 			if runCtx.Err() != nil {
 				break
 			}
