@@ -264,7 +264,7 @@ func TestSuggestionsIncludeBuiltinsAndSkills(t *testing.T) {
 	}
 }
 
-func TestModelListAndUse(t *testing.T) {
+func TestModelListAndSwitch(t *testing.T) {
 	deps := &fakeDeps{current: "llm-test"}
 	handler := NewHandler(deps)
 
@@ -281,17 +281,18 @@ func TestModelListAndUse(t *testing.T) {
 		}
 	}
 
-	reply, handled = handler.Handle(context.Background(), channel.TypeLark, "/model use llm-next")
+	reply, handled = handler.Handle(context.Background(), channel.TypeLark, "/model llm-next")
 	if !handled || !strings.Contains(reply, "已切换 LLM 模型：llm-next") {
-		t.Fatalf("/model use reply=%q handled=%v, want success", reply, handled)
+		t.Fatalf("/model reply=%q handled=%v, want success", reply, handled)
 	}
 	if deps.used != "llm:llm-next" {
 		t.Fatalf("used = %q, want llm:llm-next", deps.used)
 	}
 
-	reply, handled = handler.Handle(context.Background(), channel.TypeLark, "/model use asr asr-next")
-	if !handled || !strings.Contains(reply, "只支持切换 LLM") {
-		t.Fatalf("/model use asr reply=%q handled=%v, want unsupported role", reply, handled)
+	legacyHandler := NewHandler(&fakeDeps{useErr: errors.New("model is not configured")})
+	reply, handled = legacyHandler.Handle(context.Background(), channel.TypeLark, "/model use asr-next")
+	if !handled || !strings.Contains(reply, "切换模型失败") {
+		t.Fatalf("legacy /model use reply=%q handled=%v, want failure", reply, handled)
 	}
 }
 
@@ -300,8 +301,8 @@ func TestModelUseFailureSuggestsConfiguredPrefix(t *testing.T) {
 		useErr: errors.New(`model "minimax/minimax-m3:free" is not configured for llm`),
 		models: []ModelOption{{ID: "openrouter:minimax/minimax-m3:free", Role: model.RoleLLM}},
 	}
-	reply, handled := NewHandler(deps).Handle(context.Background(), channel.TypeLark, "/model use minimax/minimax-m3:free")
-	if !handled || !strings.Contains(reply, "/model use openrouter:minimax/minimax-m3:free") {
-		t.Fatalf("/model use failure reply=%q handled=%v, want prefixed suggestion", reply, handled)
+	reply, handled := NewHandler(deps).Handle(context.Background(), channel.TypeLark, "/model minimax/minimax-m3:free")
+	if !handled || !strings.Contains(reply, "/model openrouter:minimax/minimax-m3:free") {
+		t.Fatalf("/model failure reply=%q handled=%v, want prefixed suggestion", reply, handled)
 	}
 }

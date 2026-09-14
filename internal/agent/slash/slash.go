@@ -390,12 +390,10 @@ func (h Handler) skills(ctx context.Context) string {
 func (h Handler) model(ctx context.Context, args string) string {
 	fields := strings.Fields(args)
 	if len(fields) > 0 {
-		switch fields[0] {
-		case "list":
+		if fields[0] == "list" {
 			return h.modelList(ctx)
-		case "use":
-			return h.modelUse(fields[1:])
 		}
+		return h.modelSwitch(fields)
 	}
 	info := h.deps.ModelInfo()
 	var b strings.Builder
@@ -485,24 +483,18 @@ func (h Handler) modelList(ctx context.Context) string {
 	return b.String()
 }
 
-func (h Handler) modelUse(args []string) string {
+func (h Handler) modelSwitch(args []string) string {
 	if len(args) == 0 {
-		return "用法：/model use <model-id>"
+		return "用法：/model <model-id>"
 	}
 	role := model.RoleLLM
 	modelID := strings.TrimSpace(strings.Join(args, " "))
-	if len(args) >= 2 && isModelRole(args[0]) {
-		if model.Role(args[0]) != model.RoleLLM {
-			return "当前只支持切换 LLM 模型。"
-		}
-		modelID = strings.TrimSpace(strings.Join(args[1:], " "))
-	}
 	if err := h.deps.UseModel(role, modelID); err != nil {
 		reply := "切换模型失败：" + err.Error()
 		if candidates := prefixedModelCandidates(modelID, h.deps.ListModels(role)); len(candidates) > 0 {
 			reply += "\n\n可使用以下已配置模型："
 			for _, candidate := range candidates {
-				reply += "\n/model use " + candidate
+				reply += "\n/model " + candidate
 			}
 		}
 		return reply
@@ -531,15 +523,6 @@ func prefixedModelCandidates(modelID string, options []ModelOption) []string {
 	}
 	sort.Strings(candidates)
 	return candidates
-}
-
-func isModelRole(value string) bool {
-	switch model.Role(value) {
-	case model.RoleLLM, model.RoleVLLM, model.RoleASR, model.RoleTTS:
-		return true
-	default:
-		return false
-	}
 }
 
 func (h Handler) channels(ctx context.Context) string {
@@ -583,7 +566,7 @@ func helpText() string {
 	/skills     - 列出所有可用技能及其版本号
 	/tasks      - 查看 Task 任务面板
 	/task       - 查看 Task 运行状态（/task status <id>）
-	/model      - 查看或切换 LLM 模型（/model list 查看可选模型，/model use <id> 切换）
+	/model      - 查看或切换 LLM 模型（/model list 查看可选模型，/model <id> 切换）
 	/usage      - 查看当前配置模型供应商的用量/余额
 	/channel    - 查看可用消息渠道
 	/status     - 查看 LLM 调用统计

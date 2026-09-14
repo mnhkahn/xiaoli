@@ -71,7 +71,7 @@ terminal UI.
 ## Commands
 
 The TUI reuses the shared slash command handler. Useful local commands include
-`/cd <path>`, `/version`, `/upgrade`, `/skills`, `/model list`, `/model use <id>`,
+`/cd <path>`, `/version`, `/upgrade`, `/skills`, `/model list`, `/model <id>`,
 `/usage`, `/sessions`, `/resume <id>`, `/session <id>`, `/memory list`, `/mcp`,
 `/tasks`, `/log <keyword>`, and `/reminder list`. Local log search also supports
 `/log --all`, `/log --tools`, and `/log --errors`. When bash is enabled and a
