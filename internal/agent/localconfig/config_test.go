@@ -2,13 +2,13 @@ package localconfig
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	agentruntime "github.com/mnhkahn/xiaoli/internal/agent/runtime"
 )
 
 func TestLoadMissingUsesLocalSafeDefaults(t *testing.T) {
@@ -67,6 +67,53 @@ func TestRuntimeConfigResolvesModelAndSecrets(t *testing.T) {
 	}
 	if got := cfg.RunLogDir(); got != filepath.Join(dir, "runs") {
 		t.Fatalf("RunLogDir() = %q", got)
+	}
+}
+
+func TestRuntimeConfigKeepsExplicitOpenRouterDefaultWhenCatalogHasOtherFreeModel(t *testing.T) {
+	t.Setenv("LOCAL_TEST_API_KEY", "secret-env")
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"version":1,"providers":{"openrouter":["another/free-model:free"]}}`))
+	}))
+	t.Cleanup(catalog.Close)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	body := `{
+		"data_dir": "` + dir + `",
+		"models": {
+			"default": "openrouter:poolside",
+			"options": {
+				"openrouter:poolside": {
+					"base_url": "https://openrouter.ai/api/v1",
+					"model": "poolside/laguna-s-2.1:free",
+					"api_key_env": "LOCAL_TEST_API_KEY"
+				}
+			}
+		},
+		"model_catalog": {
+			"enabled": true,
+			"url": "` + catalog.URL + `",
+			"providers": {
+				"openrouter": {"base_url":"https://openrouter.ai/api/v1", "api_key_env":"LOCAL_TEST_API_KEY"}
+			}
+		}
+	}`
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	rt, err := cfg.RuntimeConfig("prompt")
+	if err != nil {
+		t.Fatalf("RuntimeConfig() error = %v", err)
+	}
+	if rt.LLMModel != "openrouter:poolside" || rt.LLMModelConfigs[rt.LLMModel].Model != "poolside/laguna-s-2.1:free" {
+		t.Fatalf("selected model = %q / %#v, want explicit Poolside config", rt.LLMModel, rt.LLMModelConfigs[rt.LLMModel])
+	}
+	if _, ok := rt.LLMModelConfigs["openrouter:another/free-model:free"]; !ok {
+		t.Fatalf("catalog model was not added: %#v", rt.LLMModelConfigs)
 	}
 }
 
@@ -285,18 +332,6 @@ func TestRunModelWizardOpenRouter(t *testing.T) {
 	}
 	if secrets["OPENROUTER_API_KEY"] != "test-key" {
 		t.Fatalf("secret = %q, want test-key", secrets["OPENROUTER_API_KEY"])
-	}
-}
-
-func TestIsOpenRouterModel(t *testing.T) {
-	if !isOpenRouterModel("openrouter", agentruntime.LLMModelConfig{}) {
-		t.Fatal("OpenRouter preset ID was not recognized")
-	}
-	if !isOpenRouterModel("custom", agentruntime.LLMModelConfig{BaseURL: "https://openrouter.ai/api/v1"}) {
-		t.Fatal("OpenRouter base URL was not recognized")
-	}
-	if isOpenRouterModel("custom", agentruntime.LLMModelConfig{BaseURL: "https://example.test/v1"}) {
-		t.Fatal("non-OpenRouter model was recognized")
 	}
 }
 

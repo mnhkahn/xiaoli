@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -63,6 +65,41 @@ func TestLoadConfigReadsLLMModelOptions(t *testing.T) {
 	}
 	if len(cfg.GoLLMModels) != 2 || cfg.GoLLMModels[0] != "model-a" || cfg.GoLLMModels[1] != "model-b" {
 		t.Fatalf("GoLLMModels = %#v, want model-a/model-b", cfg.GoLLMModels)
+	}
+}
+
+func TestLoadConfigKeepsExplicitOpenRouterDefaultWhenCatalogHasOtherFreeModel(t *testing.T) {
+	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"version":1,"providers":{"openrouter":["another/free-model:free"]}}`))
+	}))
+	t.Cleanup(catalog.Close)
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("XIAOLI_DATA_DIR", filepath.Join(dir, "data"))
+	t.Setenv("OPENROUTER_API_KEY", "test-key")
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{
+		"models": {"llm": {
+			"default": "openrouter:poolside",
+			"options": {"openrouter:poolside": {
+				"base_url": "https://openrouter.ai/api/v1",
+				"model": "poolside/laguna-s-2.1:free",
+				"api_key_env": "OPENROUTER_API_KEY"
+			}}
+		}},
+		"model_catalog": {
+			"enabled": true,
+			"url": "`+catalog.URL+`",
+			"providers": {"openrouter": {"base_url":"https://openrouter.ai/api/v1", "api_key_env":"OPENROUTER_API_KEY"}}
+		}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := LoadConfig()
+	if cfg.GoLLMModel != "openrouter:poolside" || cfg.GoLLMModelConfigs[cfg.GoLLMModel].Model != "poolside/laguna-s-2.1:free" {
+		t.Fatalf("selected model = %q / %#v, want explicit Poolside config", cfg.GoLLMModel, cfg.GoLLMModelConfigs[cfg.GoLLMModel])
+	}
+	if _, ok := cfg.GoLLMModelConfigs["openrouter:another/free-model:free"]; !ok {
+		t.Fatalf("catalog model was not added: %#v", cfg.GoLLMModelConfigs)
 	}
 }
 

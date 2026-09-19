@@ -487,21 +487,6 @@ func (c Config) RuntimeConfig(prompt string) (agentruntime.Config, error) {
 	if !ok {
 		return agentruntime.Config{}, fmt.Errorf("local config model %q is not configured", selectedID)
 	}
-	if isOpenRouterModel(selectedID, selected) {
-		if model := loadFirstOpenRouterFreeModel(c.DataDir); model != "" && model != selected.Model {
-			selectedID = "openrouter:" + model
-			selected = agentruntime.LLMModelConfig{
-				ID:            selectedID,
-				DisplayName:   "OpenRouter " + model,
-				BaseURL:       selected.BaseURL,
-				Model:         model,
-				APIKey:        selected.APIKey,
-				MaxTokens:     selected.MaxTokens,
-				ContextLength: selected.ContextLength,
-			}
-			models[selectedID] = selected
-		}
-	}
 	mcpEndpoints := c.mcpEndpoints()
 	return agentruntime.Config{
 		LLMURL:                  selected.BaseURL,
@@ -530,29 +515,6 @@ func (c Config) RuntimeConfig(prompt string) (agentruntime.Config, error) {
 		LogDir:   filepath.Join(c.DataDir, "logs"),
 		Timezone: "Asia/Shanghai",
 	}, nil
-}
-
-func isOpenRouterModel(id string, model agentruntime.LLMModelConfig) bool {
-	return strings.EqualFold(strings.TrimSpace(id), "openrouter") || strings.HasPrefix(strings.ToLower(strings.TrimSpace(id)), "openrouter:") || strings.Contains(strings.ToLower(model.BaseURL), "openrouter.ai")
-}
-
-func loadFirstOpenRouterFreeModel(dataDir string) string {
-	catalog, err := modelcatalog.Load(context.Background(), modelcatalog.Config{
-		Enabled:         true,
-		URL:             modelCatalogURL,
-		Timeout:         modelCatalogLoadTimeout,
-		RefreshInterval: 0,
-	}, filepath.Join(dataDir, "model_catalog.json"))
-	if err != nil {
-		return ""
-	}
-	for _, model := range catalog.Providers["openrouter"] {
-		model = strings.TrimSpace(model)
-		if strings.HasSuffix(strings.ToLower(model), ":free") {
-			return model
-		}
-	}
-	return ""
 }
 
 func (c Config) mcpEndpoints() []agentruntime.MCPEndpoint {

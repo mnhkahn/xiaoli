@@ -192,28 +192,6 @@ func LoadConfig() Config {
 			goLLMModelConfigs[entry.ID] = LLMModelConfig{ID: entry.ID, DisplayName: entry.DisplayName, BaseURL: entry.BaseURL, Model: entry.Model, APIKey: settingsAPIKey(entry.APIKeyEnv), MaxTokens: entry.MaxTokens, ContextLength: entry.ContextLength}
 			goLLMModels = append(goLLMModels, entry.ID)
 		}
-		if model := firstOpenRouterFreeModel(catalog.Providers["openrouter"]); model != "" {
-			provider, ok := settings.ModelCatalog.Providers["openrouter"]
-			if !ok || strings.TrimSpace(provider.BaseURL) == "" {
-				logger.Infof("model catalog selected %s, but OpenRouter provider is not configured; using configured default %s", model, goLLMModel)
-			} else {
-				id := openRouterModelID(goLLMModelConfigs, model)
-				if _, exists := goLLMModelConfigs[id]; !exists {
-					goLLMModelConfigs[id] = LLMModelConfig{
-						ID:            id,
-						DisplayName:   "OpenRouter " + model,
-						BaseURL:       provider.BaseURL,
-						Model:         model,
-						APIKey:        settingsAPIKey(provider.APIKeyEnv),
-						MaxTokens:     provider.MaxTokens,
-						ContextLength: provider.ContextLength,
-					}
-					goLLMModels = append(goLLMModels, id)
-				}
-				goLLMModel = id
-				logger.Infof("selected first OpenRouter free model from catalog: %s", model)
-			}
-		}
 	}
 	if goLLMModel == "" && len(goLLMModels) > 0 {
 		goLLMModel = goLLMModels[0]
@@ -488,26 +466,6 @@ func (s settingsModelCatalog) catalogConfig() modelcatalog.Config {
 	refresh, _ := time.ParseDuration(s.RefreshInterval)
 	timeout, _ := time.ParseDuration(s.Timeout)
 	return modelcatalog.Config{Enabled: s.Enabled, URL: s.URL, RefreshInterval: refresh, Timeout: timeout, Providers: s.Providers}
-}
-
-func firstOpenRouterFreeModel(models []string) string {
-	for _, model := range models {
-		model = strings.TrimSpace(model)
-		if strings.HasSuffix(strings.ToLower(model), ":free") {
-			return model
-		}
-	}
-	return ""
-}
-
-func openRouterModelID(configs map[string]LLMModelConfig, model string) string {
-	model = strings.TrimSpace(model)
-	for id, config := range configs {
-		if strings.EqualFold(strings.TrimSpace(config.Model), model) {
-			return id
-		}
-	}
-	return "openrouter:" + model
 }
 
 type settingsMCPServer struct {
