@@ -136,7 +136,7 @@ func (a *Agent) plannerChatModel(ctx context.Context) (*openai.ChatModel, error)
 		BaseURL:     baseURL,
 		APIKey:      modelCfg.APIKey,
 		Model:       modelCfg.Model,
-		HTTPClient:  newLLMHTTPClient(a.cfg.LLMTimeout, llmResponseHeaderTimeout),
+		HTTPClient:  newLLMHTTPClient(a.cfg.LLMTimeout, llmResponseHeaderTimeout, a.setActualLLMModel),
 		Temperature: &temperature,
 		MaxTokens:   &maxTokens,
 	})

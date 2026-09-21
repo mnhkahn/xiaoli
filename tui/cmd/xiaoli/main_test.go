@@ -171,6 +171,15 @@ func TestStatusBarShowsTwoRowsWithStateAndActions(t *testing.T) {
 	}
 }
 
+func TestFormatLLMModelShowsConcreteProviderModel(t *testing.T) {
+	if got := formatLLMModel("openrouter/free", "poolside/laguna-xs-2.1:free"); got != "openrouter/free (poolside/laguna-xs-2.1:free)" {
+		t.Fatalf("formatLLMModel() = %q", got)
+	}
+	if got := formatLLMModel("openrouter/free", ""); got != "openrouter/free" {
+		t.Fatalf("formatLLMModel() without actual = %q", got)
+	}
+}
+
 func TestThinkingUsageRendersInTranscriptProgressLine(t *testing.T) {
 	m := model{
 		busy:              true,

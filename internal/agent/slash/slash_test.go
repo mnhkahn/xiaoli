@@ -12,6 +12,7 @@ import (
 
 type fakeDeps struct {
 	current string
+	actual  string
 	used    string
 	models  []ModelOption
 	useErr  error
@@ -26,7 +27,7 @@ func (d *fakeDeps) ModelInfo() ModelInfo {
 	if current == "" {
 		current = "llm-test"
 	}
-	return ModelInfo{LLM: current, VLLM: "vllm-test"}
+	return ModelInfo{LLM: current, ActualLLM: d.actual, VLLM: "vllm-test"}
 }
 
 func (d *fakeDeps) ListModels(role model.Role) []ModelOption {
@@ -175,6 +176,14 @@ func TestHandleBuiltinsAndRejectsESP32(t *testing.T) {
 	reply, handled = handler.Handle(context.Background(), channel.TypeESP32, "/model")
 	if handled || reply != "" {
 		t.Fatalf("ESP32 handled=%v reply=%q, want passthrough", handled, reply)
+	}
+}
+
+func TestModelShowsActualProviderModel(t *testing.T) {
+	handler := NewHandler(&fakeDeps{current: "openrouter/free", actual: "poolside/laguna-xs-2.1:free"})
+	reply, handled := handler.Handle(context.Background(), channel.TypeLark, "/model")
+	if !handled || !strings.Contains(reply, "LLM: openrouter/free") || !strings.Contains(reply, "实际 LLM: poolside/laguna-xs-2.1:free") {
+		t.Fatalf("/model reply=%q handled=%v, want configured and actual model", reply, handled)
 	}
 }
 

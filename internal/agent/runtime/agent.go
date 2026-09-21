@@ -52,6 +52,8 @@ type MCPEndpointStatus struct {
 
 type Agent struct {
 	modelMu           sync.Mutex
+	actualModelMu     sync.RWMutex
+	actualLLMModel    string
 	chatModels        map[string]*openai.ChatModel
 	modelSelector     *agentmodel.Selector
 	memory            *Memory
@@ -380,11 +382,37 @@ func (a *Agent) CurrentLLMModel() string {
 	return a.modelSelector.Current(agentmodel.RoleLLM)
 }
 
+// ActualLLMModel returns the model reported by the provider for the most
+// recent successful LLM response. This may differ from CurrentLLMModel when a
+// router such as OpenRouter's openrouter/free selects the concrete model.
+func (a *Agent) ActualLLMModel() string {
+	if a == nil {
+		return ""
+	}
+	a.actualModelMu.RLock()
+	defer a.actualModelMu.RUnlock()
+	return a.actualLLMModel
+}
+
+func (a *Agent) setActualLLMModel(model string) {
+	if a == nil {
+		return
+	}
+	a.actualModelMu.Lock()
+	a.actualLLMModel = strings.TrimSpace(model)
+	a.actualModelMu.Unlock()
+}
+
 func (a *Agent) UseLLMModel(id string) error {
 	if a == nil || a.modelSelector == nil {
 		return fmt.Errorf("model selector is not configured")
 	}
-	return a.modelSelector.Use(agentmodel.RoleLLM, id)
+	if err := a.modelSelector.Use(agentmodel.RoleLLM, id); err != nil {
+		return err
+	}
+	// A provider-selected model belongs to the previous configured model.
+	a.setActualLLMModel("")
+	return nil
 }
 
 func (a *Agent) ListLLMModels() []agentmodel.Option {
@@ -438,7 +466,7 @@ func (a *Agent) newChatModel(ctx context.Context, modelID string, headerTimeout 
 		BaseURL:     baseURL,
 		APIKey:      modelCfg.APIKey,
 		Model:       modelCfg.Model,
-		HTTPClient:  newLLMHTTPClient(a.cfg.LLMTimeout, headerTimeout),
+		HTTPClient:  newLLMHTTPClient(a.cfg.LLMTimeout, headerTimeout, a.setActualLLMModel),
 		Temperature: &temp,
 		MaxTokens:   &maxTokens,
 	})

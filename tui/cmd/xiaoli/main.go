@@ -2638,7 +2638,7 @@ func renderStatusBar(m model, width int) string {
 		stateParts = append(stateParts, "AUTO-BASH")
 	}
 	if m.app != nil && m.app.Agent != nil {
-		if modelName := strings.TrimSpace(m.app.Agent.CurrentLLMModel()); modelName != "" {
+		if modelName := displayLLMModel(m.app.Agent); modelName != "" {
 			stateParts = append(stateParts, modelName)
 		}
 	}
@@ -3269,7 +3269,7 @@ func sidebarTopLines(m model, width int) []string {
 		titleStyle.Render("Xiaoli"),
 		"",
 		fmt.Sprintf("status: %s", m.status),
-		"model: " + truncateDisplay(m.app.Agent.CurrentLLMModel(), width),
+		"model: " + truncateDisplay(displayLLMModel(m.app.Agent), width),
 	}
 	if m.sessionID != "" {
 		lines = append(lines, "session: "+shortID(m.sessionID))
@@ -3282,6 +3282,22 @@ func sidebarTopLines(m model, width int) []string {
 		lines = append(lines, "log: "+truncateDisplay(filepath.Base(m.logPath), width))
 	}
 	return lines
+}
+
+func displayLLMModel(agent *agentruntime.Agent) string {
+	if agent == nil {
+		return ""
+	}
+	return formatLLMModel(agent.CurrentLLMModel(), agent.ActualLLMModel())
+}
+
+func formatLLMModel(configured, actual string) string {
+	configured = strings.TrimSpace(configured)
+	actual = strings.TrimSpace(actual)
+	if actual == "" {
+		return configured
+	}
+	return configured + " (" + actual + ")"
 }
 
 func sidebarFooterLines(m model, width int) []string {

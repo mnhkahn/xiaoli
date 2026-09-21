@@ -296,6 +296,7 @@ func (d adminSlashDeps) ModelInfo() slash.ModelInfo {
 	}
 	return slash.ModelInfo{
 		LLM:           llm,
+		ActualLLM:     d.s.agent.ActualLLMModel(),
 		VLLM:          d.s.cfg.GoVLLMModel,
 		ASR:           d.s.cfg.GoASRModel,
 		TTS:           d.s.cfg.GoTTSModel,

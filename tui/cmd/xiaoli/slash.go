@@ -62,6 +62,7 @@ func (d *tuiSlashDeps) ModelInfo() slash.ModelInfo {
 	cfg := d.app.Runtime.LLMModelConfigs[llm]
 	return slash.ModelInfo{
 		LLM:           llm,
+		ActualLLM:     d.app.Agent.ActualLLMModel(),
 		VLLM:          d.app.Runtime.VLLMModel,
 		ASR:           d.app.Runtime.ASRModel,
 		TTS:           d.app.Runtime.TTSModel,

@@ -45,6 +45,7 @@ type Suggestion struct {
 
 type ModelInfo struct {
 	LLM           string
+	ActualLLM     string
 	VLLM          string
 	ASR           string
 	TTS           string
@@ -399,6 +400,9 @@ func (h Handler) model(ctx context.Context, args string) string {
 	var b strings.Builder
 	b.WriteString("当前模型配置：")
 	writeValue(&b, "LLM", info.LLM)
+	if info.ActualLLM != "" {
+		writeValue(&b, "实际 LLM", info.ActualLLM)
+	}
 	if info.ContextLength > 0 {
 		b.WriteString(fmt.Sprintf("  窗口 %dK", info.ContextLength/1024))
 		if info.MaxTokens > 0 {
@@ -417,6 +421,11 @@ func (h Handler) status(ctx context.Context) string {
 	if info.LLM != "" {
 		b.WriteString("当前模型：")
 		b.WriteString(info.LLM)
+		if info.ActualLLM != "" {
+			b.WriteString("（实际：")
+			b.WriteString(info.ActualLLM)
+			b.WriteString("）")
+		}
 		if info.ContextLength > 0 {
 			fmt.Fprintf(&b, "\n窗口 %dK", info.ContextLength/1024)
 			if info.MaxTokens > 0 {
