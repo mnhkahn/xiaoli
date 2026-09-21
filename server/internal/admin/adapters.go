@@ -1975,18 +1975,60 @@ func (s *AdminServer) dailyEncouragement(ctx context.Context) string {
 		return ""
 	}
 
-	// Let the LLM generate the greeting — it has all external MCP tools available
-	// and can decide whether to call curl for weather, holiday info, etc.
+	// Let the LLM generate the greeting. The free router can select different
+	// models for each request, so retry a malformed or empty answer before
+	// falling back to the workflow's static greeting.
 	userMsg := fmt.Sprintf(
 		"今天的日期是 %s。请根据上面的规则生成今日鼓励，只返回一句话。",
 		s.cfg.now().Format("2006年1月2日 周一"),
 	)
-	greeting, err := s.agent.Generate(ctx, promptText, userMsg)
+	greeting, err := generateDailyEncouragement(ctx, promptText, userMsg, s.agent.Generate)
 	if err != nil {
-		logger.Infof("daily encouragement: generate error: %v", err)
+		logger.Infof("daily encouragement: generation failed after %d attempts: %v", dailyEncouragementMaxAttempts, err)
 		return ""
 	}
 	return greeting
+}
+
+const dailyEncouragementMaxAttempts = 3
+
+func generateDailyEncouragement(ctx context.Context, system, user string, generate func(context.Context, string, string) (string, error)) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= dailyEncouragementMaxAttempts; attempt++ {
+		greeting, err := generate(ctx, system, user)
+		greeting = strings.TrimSpace(greeting)
+		if err == nil && validDailyEncouragement(greeting) {
+			return greeting, nil
+		}
+		if err == nil {
+			err = fmt.Errorf("invalid response: %q", dailyEncouragementPreview(greeting, 160))
+		}
+		lastErr = err
+		logger.Infof("daily encouragement: attempt %d/%d failed: %v", attempt, dailyEncouragementMaxAttempts, err)
+	}
+	return "", lastErr
+}
+
+func validDailyEncouragement(text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	lower := strings.ToLower(text)
+	// A final daily greeting must not expose an unfinished tool invocation.
+	for _, marker := range []string{"<tool", "tool_call", "\"command\""} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+func dailyEncouragementPreview(text string, limit int) string {
+	runes := []rune(text)
+	if limit <= 0 || len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "…"
 }
 
 func (s *AdminServer) fetchMCPPrompt(ctx context.Context, promptName string) string {
