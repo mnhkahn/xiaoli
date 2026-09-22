@@ -148,7 +148,7 @@
     "study_monitor": {
       "name": "学习状态监控",
       "description": "在设定时间窗内定时调用摄像头检查学习状态，并按需发送语音提醒和飞书通知。",
-      "enabled": false,
+      "enabled": true,
       "trigger": {
         "every": "5m",
         "timezone": "Asia/Shanghai",
