@@ -2,6 +2,7 @@ package admin
 
 import (
 	agentworkflow "github.com/mnhkahn/xiaoli/internal/agent/workflow"
+	"strings"
 	"testing"
 	"time"
 )
@@ -171,5 +172,39 @@ func TestBuildLarkPostPayloadIncludesImageAndReminder(t *testing.T) {
 	}
 	if !foundImage {
 		t.Fatal("lark post payload did not include image")
+	}
+}
+
+func TestBuildLarkPostPayloadKeepsImageWhenAnalysisFails(t *testing.T) {
+	srv := NewServer(testConfig())
+	payload := srv.buildLarkPostPayload(studyLarkPayloadInput{
+		DeviceID:       "device-1",
+		AnalysisFailed: true,
+		AnalysisError:  "timeout",
+		ImageKey:       "img-key",
+		CheckedAt:      time.Date(2026, 5, 24, 18, 30, 0, 0, time.FixedZone("CST", 8*3600)),
+	})
+
+	content := payload["content"].(map[string]any)
+	post := content["post"].(map[string]any)
+	zh := post["zh_cn"].(map[string]any)
+	lines := zh["content"].([][]map[string]string)
+	var textItems []string
+	foundImage := false
+	for _, line := range lines {
+		for _, item := range line {
+			if item["tag"] == "text" {
+				textItems = append(textItems, item["text"])
+			}
+			if item["tag"] == "img" && item["image_key"] == "img-key" {
+				foundImage = true
+			}
+		}
+	}
+	if !foundImage {
+		t.Fatal("lark post payload did not include image after analysis failure")
+	}
+	if got := strings.Join(textItems, "\n"); !strings.Contains(got, "结论：分析失败") || !strings.Contains(got, "视觉分析失败：timeout") {
+		t.Fatalf("analysis failure details missing from %#v", textItems)
 	}
 }

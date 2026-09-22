@@ -2126,15 +2126,17 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, def agentworkflow
 	if err != nil {
 		return err
 	}
-	if !result.OK {
-		if message := strings.TrimSpace(result.Error); message != "" {
-			return fmt.Errorf("study monitor camera tool failed: %s", message)
-		}
-		return errors.New("study monitor camera tool returned an unsuccessful result")
+	analysisFailed := !result.OK
+	analysisError := strings.TrimSpace(result.Error)
+	if analysisFailed && analysisError == "" {
+		analysisError = "视觉分析未返回结果"
 	}
-	decision := s.parseStudyDecision(result.Result, metadataString(def.Metadata, "reminder_text", "请坐直，认真学习。"))
+	decision := studyDecision{}
+	if !analysisFailed {
+		decision = s.parseStudyDecision(result.Result, metadataString(def.Metadata, "reminder_text", "请坐直，认真学习。"))
+	}
 	reminderResult := ""
-	if decision.NeedReminder {
+	if !analysisFailed && decision.NeedReminder {
 		if response, err := controller.Speak(ctx, deviceID, decision.ReminderText); err == nil {
 			encoded, _ := json.Marshal(response)
 			reminderResult = string(encoded)
@@ -2143,7 +2145,8 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, def agentworkflow
 		}
 	}
 	imageKey := ""
-	if record := s.recentDeviceImageRecord(deviceID, started.Add(-2*time.Second)); record != nil {
+	record := s.recentDeviceImageRecord(deviceID, started.Add(-2*time.Second))
+	if record != nil {
 		logger.Infof("[lark] found device image for %s: bytes=%d content-type=%s", deviceID, len(record.Body), record.ContentType)
 		if key, err := s.uploadLarkImage(ctx, record.Body, record.ContentType); err == nil {
 			imageKey = key
@@ -2153,9 +2156,14 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, def agentworkflow
 	} else {
 		logger.Infof("[lark] no device image found for %s", deviceID)
 	}
+	if analysisFailed && record == nil {
+		return fmt.Errorf("study monitor camera tool failed: %s", analysisError)
+	}
 	return s.sendLarkStudyMessage(ctx, studyLarkPayloadInput{
 		DeviceID:       deviceID,
 		AnalysisText:   decision.AnalysisText,
+		AnalysisFailed: analysisFailed,
+		AnalysisError:  analysisError,
 		NeedReminder:   decision.NeedReminder,
 		ReminderText:   decision.ReminderText,
 		ImageKey:       imageKey,
@@ -2275,6 +2283,8 @@ func studyTextNeedsReminder(text string) bool {
 type studyLarkPayloadInput struct {
 	DeviceID       string
 	AnalysisText   string
+	AnalysisFailed bool
+	AnalysisError  string
 	NeedReminder   bool
 	ReminderText   string
 	ImageKey       string
@@ -2285,13 +2295,19 @@ type studyLarkPayloadInput struct {
 
 func (s *AdminServer) buildLarkPostPayload(input studyLarkPayloadInput) map[string]any {
 	status := "状态正常"
-	if input.NeedReminder {
+	if input.AnalysisFailed {
+		status = "分析失败"
+	} else if input.NeedReminder {
 		status = "需要提醒"
+	}
+	analysisText := firstText(input.AnalysisText, "无")
+	if input.AnalysisFailed {
+		analysisText = "视觉分析失败：" + firstText(input.AnalysisError, "未知错误")
 	}
 	lines := [][]map[string]string{
 		{{"tag": "text", "text": "设备：" + input.DeviceID}},
 		{{"tag": "text", "text": "结论：" + status}},
-		{{"tag": "text", "text": "解读：" + firstText(input.AnalysisText, "无")}},
+		{{"tag": "text", "text": "解读：" + analysisText}},
 	}
 	if input.NeedReminder {
 		lines = append(lines, []map[string]string{{"tag": "text", "text": "已提醒：" + input.ReminderText}})
