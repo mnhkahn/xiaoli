@@ -1074,13 +1074,23 @@ func (s *AdminServer) handleVisionExplain(w http.ResponseWriter, r *http.Request
 		http.Error(w, "missing device-id", http.StatusBadRequest)
 		return
 	}
-	if s.deviceHub != nil && !s.deviceHub.deviceAllowed(deviceID) {
-		http.Error(w, "device is not allowed", http.StatusForbidden)
-		return
-	}
-	if s.cfg.DeviceAuthEnabled && s.deviceHub != nil && !s.deviceHub.deviceAuthorized(r) {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+	if s.deviceRegistry != nil && s.deviceRegistry.IsKnown(deviceID) {
+		// Android devices are paired dynamically and use their own token rather
+		// than the legacy ESP32 allowlist and shared server token.
+		_, authorized := s.deviceRegistry.Authorize(deviceID, r.Header.Get("Authorization"))
+		if !authorized {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	} else {
+		if s.deviceHub != nil && !s.deviceHub.deviceAllowed(deviceID) {
+			http.Error(w, "device is not allowed", http.StatusForbidden)
+			return
+		}
+		if s.cfg.DeviceAuthEnabled && s.deviceHub != nil && !s.deviceHub.deviceAuthorized(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 	}
 	if s.deviceHub == nil || s.deviceHub.vision == nil {
 		http.Error(w, "vision model is not configured", http.StatusServiceUnavailable)

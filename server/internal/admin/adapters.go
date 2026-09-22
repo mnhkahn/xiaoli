@@ -2126,6 +2126,12 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, def agentworkflow
 	if err != nil {
 		return err
 	}
+	if !result.OK {
+		if message := strings.TrimSpace(result.Error); message != "" {
+			return fmt.Errorf("study monitor camera tool failed: %s", message)
+		}
+		return errors.New("study monitor camera tool returned an unsuccessful result")
+	}
 	decision := s.parseStudyDecision(result.Result, metadataString(def.Metadata, "reminder_text", "请坐直，认真学习。"))
 	reminderResult := ""
 	if decision.NeedReminder {

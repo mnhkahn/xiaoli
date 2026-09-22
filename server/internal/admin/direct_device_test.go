@@ -77,6 +77,36 @@ func TestDirectVisionExplainUsesGoVisionModel(t *testing.T) {
 	}
 }
 
+func TestDirectVisionExplainAcceptsPairedAndroidDevice(t *testing.T) {
+	cfg := testConfig()
+	cfg.DataDir = t.TempDir()
+	cfg.DirectDeviceServer = true
+	cfg.DeviceAuthEnabled = true
+	cfg.DeviceAuthKey = "legacy-token"
+	srv := NewServer(cfg)
+	srv.deviceHub.vision = fakeVisionAnalyzer{answer: "坐姿端正。"}
+
+	code, _, err := srv.deviceRegistry.CreatePairing("logto-user-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, err := srv.deviceRegistry.Claim(code, "homework-tablet-1234", "学习平板", "android")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/mcp/vision/explain", strings.NewReader("jpeg-bytes"))
+	req.Header.Set("Content-Type", "image/jpeg")
+	req.Header.Set("Device-Id", "homework-tablet-1234")
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+}
+
 func readServerFrame(conn net.Conn) (byte, []byte, error) {
 	header := make([]byte, 2)
 	if _, err := io.ReadFull(conn, header); err != nil {
