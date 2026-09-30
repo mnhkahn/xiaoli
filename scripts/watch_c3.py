@@ -73,6 +73,8 @@ def server_event(line: str, mac: str) -> str | None:
         ("voice model.start ", "语音模型请求开始"),
         ("voice model.end ", "语音模型请求结束"),
         ("voice model.error ", "语音模型请求失败"),
+        ("voice answer rejected for ", "语音回答已拦截，准备重试"),
+        ("voice answer retry rejected for ", "语音回答重试仍异常"),
         ("voice turn first sentence for ", "首句文本就绪"),
         ("voice turn audio frame for ", "首个音频帧已发送"),
         ("voice turn LLM answer for ", "生成回答文本"),
@@ -93,6 +95,7 @@ def server_event(line: str, mac: str) -> str | None:
 
 def device_event(line: str) -> str | None:
     for marker, label in (
+        ("PlaybackStats:", "播放统计"),
         ("Wake word detected:", "识别唤醒词"),
         ("ADC button ", "按键"),
         ("Volume overlay:", "屏幕音量条"),

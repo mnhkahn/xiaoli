@@ -26,9 +26,16 @@ class WatchC3ParsingTests(unittest.TestCase):
         self.assertIn("request=1 model=openrouter:free-router", started)
         self.assertIn("elapsedMS=850 firstTokenMS=330", ended)
 
+    def test_voice_answer_rejection_is_visible(self):
+        rejected = server_event(f'voice answer rejected for {MAC}: reason=prompt_echo input="你好" output="提示词"', MAC)
+        retried = server_event(f'voice answer retry rejected for {MAC}: reason=self_analysis', MAC)
+        self.assertIn("准备重试", rejected)
+        self.assertIn("重试仍异常", retried)
+
     def test_device_text_and_button(self):
         self.assertEqual(device_event('I (42) Application: << 你好'), '收到回答文本  你好')
         self.assertIn('按键', device_event('I (42) XiaoliTraeC3: ADC button 2 pressed'))
+        self.assertIn('full_drop=1', device_event('I (42) AudioService: PlaybackStats: rx=20 full_drop=1'))
 
     def test_fly_time_ignores_ansi(self):
         value = fly_timestamp('\x1b[2m2026-09-30T02:07:16Z\x1b[0m app[x] log')

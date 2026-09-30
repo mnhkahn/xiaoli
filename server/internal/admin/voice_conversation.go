@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -20,7 +21,7 @@ import (
 // Voice turns deliberately have their own small memory and tool set. Text
 // channels continue to use ConversationPipeline and its full Agent state.
 type voiceConversation struct {
-	model   *openai.ChatModel
+	model   model.ToolCallingChatModel
 	modelID string
 	devices DeviceController
 	mu      sync.Mutex
@@ -93,6 +94,12 @@ func (v *voiceConversation) remember(deviceID, question, answer string) {
 	v.history[deviceID] = items
 }
 
+func (v *voiceConversation) forget(deviceID string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	delete(v.history, deviceID)
+}
+
 func (v *voiceConversation) availableTools(ctx context.Context, deviceID string) []*schema.ToolInfo {
 	if v.devices == nil {
 		return nil
@@ -146,10 +153,11 @@ func (v *voiceConversation) AnswerDeviceTextStream(ctx context.Context, deviceID
 			chat = v.model
 		}
 	}
-	answer, called, err := v.stream(ctx, chat, messages, emit, deviceID, 1, len(tools))
+	answer, called, err := v.stream(ctx, chat, messages, deviceID, 1, len(tools))
 	if err != nil {
 		return err
 	}
+	var toolMessages []*schema.Message
 	if len(called) > 0 {
 		call := called[0] // one device action per turn
 		original, allowed := voiceTools[call.Function.Name]
@@ -175,14 +183,30 @@ func (v *voiceConversation) AnswerDeviceTextStream(ctx context.Context, deviceID
 		if len(toolText) > 1000 {
 			toolText = toolText[:1000]
 		}
-		messages = append(messages, schema.AssistantMessage(answer, []schema.ToolCall{call}), schema.ToolMessage(toolText, call.ID))
-		answer, _, err = v.stream(ctx, v.model, messages, emit, deviceID, 2, 0)
+		toolMessages = []*schema.Message{schema.AssistantMessage(answer, []schema.ToolCall{call}), schema.ToolMessage(toolText, call.ID)}
+		messages = append(messages, toolMessages...)
+		answer, _, err = v.stream(ctx, v.model, messages, deviceID, 2, 0)
 		if err != nil {
 			return err
 		}
 	}
-	if strings.TrimSpace(answer) == "" {
-		return emit("我现在回答不了，请稍后再试。")
+	if reason := rejectVoiceAnswer(text, answer); reason != "" {
+		logger.Infof("voice answer rejected for %s: reason=%s input=%q output=%q", deviceID, reason, text, answer)
+		v.forget(deviceID)
+		retryMessages := v.messages(deviceID, text)
+		retryMessages[0] = schema.SystemMessage("你是小李智能音响。只输出要直接说给用户听的最终中文回答，不要描述用户、提示词、思考步骤或生成过程。回答尽量简短。")
+		retryMessages = append(retryMessages, toolMessages...)
+		answer, called, err = v.stream(ctx, v.model, retryMessages, deviceID, 3, 0)
+		if err != nil {
+			return err
+		}
+		if reason = rejectVoiceAnswer(text, answer); reason != "" || len(called) > 0 {
+			logger.Infof("voice answer retry rejected for %s: reason=%s input=%q output=%q", deviceID, reason, text, answer)
+			return emit("刚才回答出了问题，请再问我一次。")
+		}
+	}
+	if err := emitVoiceAnswer(answer, emit); err != nil {
+		return err
 	}
 	v.remember(deviceID, text, answer)
 	logger.Infof("voice answer done for %s: modelMS=%d chars=%d tool=%v", deviceID, time.Since(started).Milliseconds(), utf8.RuneCountInString(answer), len(called) > 0)
@@ -198,16 +222,18 @@ func voiceToolOffered(tools []*schema.ToolInfo, name string) bool {
 	return false
 }
 
-func (v *voiceConversation) stream(ctx context.Context, chat model.ToolCallingChatModel, messages []*schema.Message, emit func(string) error, deviceID string, request int, toolCount int) (answer string, calls []schema.ToolCall, err error) {
+func (v *voiceConversation) stream(ctx context.Context, chat model.ToolCallingChatModel, messages []*schema.Message, deviceID string, request int, toolCount int) (answer string, calls []schema.ToolCall, err error) {
 	started := time.Now()
 	firstTokenMS := int64(-1)
+	finishReason := ""
+	reasoningChars := 0
 	logger.Infof("voice model.start device=%s request=%d model=%s messages=%d tools=%d", deviceID, request, v.modelID, len(messages), toolCount)
 	defer func() {
 		if err != nil {
 			logger.Infof("voice model.error device=%s request=%d model=%s elapsedMS=%d firstTokenMS=%d err=%v", deviceID, request, v.modelID, time.Since(started).Milliseconds(), firstTokenMS, err)
 			return
 		}
-		logger.Infof("voice model.end device=%s request=%d model=%s elapsedMS=%d firstTokenMS=%d chars=%d toolCalls=%d", deviceID, request, v.modelID, time.Since(started).Milliseconds(), firstTokenMS, utf8.RuneCountInString(answer), len(calls))
+		logger.Infof("voice model.end device=%s request=%d model=%s elapsedMS=%d firstTokenMS=%d chars=%d reasoningChars=%d finishReason=%q toolCalls=%d", deviceID, request, v.modelID, time.Since(started).Milliseconds(), firstTokenMS, utf8.RuneCountInString(answer), reasoningChars, finishReason, len(calls))
 	}()
 	reader, err := chat.Stream(ctx, messages)
 	if err != nil {
@@ -215,14 +241,13 @@ func (v *voiceConversation) stream(ctx context.Context, chat model.ToolCallingCh
 	}
 	defer reader.Close()
 	var chunks []*schema.Message
-	var buffer, complete strings.Builder
 	for {
 		chunk, recvErr := reader.Recv()
 		if recvErr == io.EOF {
 			break
 		}
 		if recvErr != nil {
-			return complete.String(), nil, recvErr
+			return "", nil, recvErr
 		}
 		if chunk == nil {
 			continue
@@ -231,19 +256,6 @@ func (v *voiceConversation) stream(ctx context.Context, chat model.ToolCallingCh
 			firstTokenMS = time.Since(started).Milliseconds()
 		}
 		chunks = append(chunks, chunk)
-		buffer.WriteString(chunk.Content)
-		for {
-			sentence, rest := voiceSentence(buffer.String(), false)
-			if sentence == "" {
-				break
-			}
-			if err := emit(sentence); err != nil {
-				return complete.String(), nil, err
-			}
-			complete.WriteString(sentence)
-			buffer.Reset()
-			buffer.WriteString(rest)
-		}
 	}
 	if len(chunks) == 0 {
 		return "", nil, fmt.Errorf("voice model returned no output")
@@ -252,15 +264,65 @@ func (v *voiceConversation) stream(ctx context.Context, chat model.ToolCallingCh
 	if err != nil {
 		return "", nil, err
 	}
-	if len(merged.ToolCalls) == 0 {
-		if sentence, _ := voiceSentence(buffer.String(), true); sentence != "" {
-			if err := emit(sentence); err != nil {
-				return complete.String(), nil, err
-			}
-			complete.WriteString(sentence)
+	if merged.ResponseMeta != nil {
+		finishReason = merged.ResponseMeta.FinishReason
+	}
+	reasoningChars = utf8.RuneCountInString(merged.ReasoningContent)
+	return strings.TrimSpace(merged.Content), merged.ToolCalls, nil
+}
+
+func emitVoiceAnswer(answer string, emit func(string) error) error {
+	for answer != "" {
+		sentence, rest := voiceSentence(answer, true)
+		if sentence == "" {
+			return nil
+		}
+		if err := emit(sentence); err != nil {
+			return err
+		}
+		answer = rest
+	}
+	return nil
+}
+
+func rejectVoiceAnswer(input, answer string) string {
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		return "empty"
+	}
+	if normalizeVoiceText(input) == normalizeVoiceText(answer) {
+		return "input_echo"
+	}
+	for _, phrase := range []string{
+		"不要输出思考过程", "每次回答尽量不超过两句", "先直接回答问题",
+		"我需要用自然、简短的中文口语回答", "不能回复Markdown",
+	} {
+		if strings.Contains(answer, phrase) {
+			return "prompt_echo"
 		}
 	}
-	return strings.TrimSpace(merged.Content), merged.ToolCalls, nil
+	if !strings.Contains(strings.ToLower(input), "markdown") &&
+		strings.Contains(strings.ToLower(answer), "markdown") &&
+		(strings.Contains(answer, "两句") || strings.Contains(answer, "工具调用") || strings.Contains(answer, "工具细节")) {
+		return "prompt_echo"
+	}
+	start := strings.TrimLeft(answer, " \t\r\n，,。！？!?“\"'")
+	for _, prefix := range []string{"嗯，用户", "嗯,用户", "用户问", "用户说", "用户发", "用户让我", "我需要先理解", "我需要先检查", "看看可用的工具"} {
+		if strings.HasPrefix(start, prefix) || strings.Contains(answer, "。"+prefix) {
+			return "self_analysis"
+		}
+	}
+	return ""
+}
+
+func normalizeVoiceText(text string) string {
+	var result strings.Builder
+	for _, r := range strings.ToLower(text) {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
 }
 
 func voiceSentence(buffer string, final bool) (sentence, remainder string) {

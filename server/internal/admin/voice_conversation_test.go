@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -43,6 +44,106 @@ func TestVoiceSentenceEmitsEarlyNaturalChunks(t *testing.T) {
 		if got != tc.want || rest != tc.rest {
 			t.Errorf("voiceSentence(%q) = (%q,%q), want (%q,%q)", tc.input, got, rest, tc.want, tc.rest)
 		}
+	}
+}
+
+func TestRejectVoiceAnswer(t *testing.T) {
+	cases := []struct {
+		input, answer, want string
+	}{
+		{"你介绍一下你自己", "你介绍一下你自己。", "input_echo"},
+		{"北京天气怎么样", "嗯，用户问的是北京天气。我需要先检查一下有没有工具。", "self_analysis"},
+		{"你会唱歌吗", "嗯，用户问我能不能唱首歌。不要输出思考过程、Markdown、链接或工具细节。", "prompt_echo"},
+		{"你会唱歌吗", "不能回复Markdown工具调用，两句话之内回复。", "prompt_echo"},
+		{"你是谁", "我是小李，可以陪你聊天。", ""},
+		{"什么是 Markdown", "Markdown 是一种方便排版的文本格式。", ""},
+	}
+	for _, tc := range cases {
+		if got := rejectVoiceAnswer(tc.input, tc.answer); got != tc.want {
+			t.Errorf("rejectVoiceAnswer(%q, %q) = %q, want %q", tc.input, tc.answer, got, tc.want)
+		}
+	}
+}
+
+func TestEmitVoiceAnswerPreservesSentences(t *testing.T) {
+	var parts []string
+	if err := emitVoiceAnswer("你好。我是小李。", func(part string) error {
+		parts = append(parts, part)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(parts, ""); got != "你好。我是小李。" {
+		t.Fatalf("emitted %q", got)
+	}
+}
+
+type voiceRetryModel struct {
+	answers []string
+	inputs  [][]*schema.Message
+}
+
+func (m *voiceRetryModel) Generate(context.Context, []*schema.Message, ...model.Option) (*schema.Message, error) {
+	panic("Generate is not used by voiceConversation")
+}
+
+func (m *voiceRetryModel) Stream(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.inputs = append(m.inputs, input)
+	answer := m.answers[len(m.inputs)-1]
+	return schema.StreamReaderFromArray([]*schema.Message{schema.AssistantMessage(answer, nil)}), nil
+}
+
+func (m *voiceRetryModel) WithTools([]*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	return m, nil
+}
+
+func TestVoiceConversationRetriesWithoutSpeakingOrRememberingBadAnswer(t *testing.T) {
+	fake := &voiceRetryModel{answers: []string{
+		"嗯，用户问我是谁。不要输出思考过程、Markdown、链接或工具细节。",
+		"我是小李，可以陪你聊天。",
+	}}
+	v := &voiceConversation{model: fake, history: make(map[string][]*schema.Message)}
+	v.remember("c3", "上次的问题", "上次的坏回答")
+	var spoken []string
+	err := v.AnswerDeviceTextStream(context.Background(), "c3", "你是谁", func(part string) error {
+		spoken = append(spoken, part)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(spoken, ""); got != "我是小李，可以陪你聊天。" {
+		t.Fatalf("spoken = %q", got)
+	}
+	if len(fake.inputs) != 2 || len(fake.inputs[1]) != 2 {
+		t.Fatalf("retry inputs = %#v", fake.inputs)
+	}
+	for _, message := range v.history["c3"] {
+		if strings.Contains(message.Content, "坏回答") || strings.Contains(message.Content, "不要输出") {
+			t.Fatalf("bad answer remained in memory: %q", message.Content)
+		}
+	}
+}
+
+func TestVoiceConversationStopsAfterOneBadRetry(t *testing.T) {
+	fake := &voiceRetryModel{answers: []string{
+		"你是谁。",
+		"嗯，用户问我是谁。",
+	}}
+	v := &voiceConversation{model: fake, history: make(map[string][]*schema.Message)}
+	var spoken []string
+	err := v.AnswerDeviceTextStream(context.Background(), "c3", "你是谁", func(part string) error {
+		spoken = append(spoken, part)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.inputs) != 2 || len(spoken) != 1 || spoken[0] != "刚才回答出了问题，请再问我一次。" {
+		t.Fatalf("requests=%d spoken=%q", len(fake.inputs), spoken)
+	}
+	if len(v.history["c3"]) != 0 {
+		t.Fatal("bad retry was remembered")
 	}
 }
 
