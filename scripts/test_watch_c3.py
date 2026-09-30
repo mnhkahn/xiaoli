@@ -18,6 +18,7 @@ class WatchC3ParsingTests(unittest.TestCase):
 
     def test_voice_turn_stages_are_distinct(self):
         self.assertIn("ASR 识别成功", server_event(f'voice turn ASR ok for {MAC}: text="你好"', MAC))
+        self.assertIn("已拦截", server_event(f'voice turn ASR rejected for {MAC}: reason=unsupported_language raw="こんにちは"', MAC))
         self.assertIn("语音帧发送完成", server_event(f'tts stream done for {MAC}: sent=20', MAC))
 
     def test_voice_model_timing_is_visible(self):

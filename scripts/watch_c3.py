@@ -70,6 +70,7 @@ def server_event(line: str, mac: str) -> str | None:
         ("audio recv from ", "收到麦克风音频"),
         ("voice turn ASR ok for ", "ASR 识别成功"),
         ("voice turn ASR failed for ", "ASR 识别失败"),
+        ("voice turn ASR rejected for ", "ASR 非中英语音已拦截"),
         ("voice model.start ", "语音模型请求开始"),
         ("voice model.end ", "语音模型请求结束"),
         ("voice model.error ", "语音模型请求失败"),

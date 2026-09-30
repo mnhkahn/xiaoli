@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/mnhkahn/gogogo/logger"
 
@@ -472,6 +473,13 @@ func (h *Hub) processVoiceTurn(session *Session, frames [][]byte) {
 		_ = h.playAssistantText(ctx, session, "这次没有听清楚。")
 		return
 	}
+	rawText := text
+	text, rejectReason := sanitizeDeviceTranscript(text)
+	if rejectReason != "" {
+		logger.Infof("voice turn ASR rejected for %s: reason=%s raw=%q", session.deviceID, rejectReason, rawText)
+		_ = h.playAssistantText(ctx, session, "只支持中文和英语，请再说一遍。")
+		return
+	}
 	logger.Infof("voice turn ASR ok for %s: text=%q elapsedMS=%d", session.deviceID, text, time.Since(turnStarted).Milliseconds())
 	_ = session.writeJSON(map[string]any{"type": "stt", "text": text})
 	if conversation, ok := h.deps.Conversation.(StreamingConversation); ok {
@@ -554,6 +562,35 @@ func (h *Hub) processVoiceTurn(session *Session, frames [][]byte) {
 		answer = "我现在还没想好怎么回答。"
 	}
 	_ = h.playAssistantText(ctx, session, answer)
+}
+
+// SiliconFlow's transcription endpoint does not expose a language restriction.
+// Keep Chinese and English transcripts on the device voice path while preserving
+// punctuation and emotion symbols returned alongside the spoken text.
+func sanitizeDeviceTranscript(raw string) (string, string) {
+	var cleaned strings.Builder
+	meaningful := false
+	for _, r := range strings.TrimSpace(raw) {
+		switch {
+		case unicode.In(r, unicode.Han, unicode.Latin), unicode.IsNumber(r):
+			cleaned.WriteRune(r)
+			meaningful = true
+		case unicode.IsLetter(r):
+			return "", "unsupported_language"
+		case unicode.IsSymbol(r):
+			cleaned.WriteRune(r)
+			meaningful = true
+		case unicode.IsControl(r):
+			// Control characters are not useful in a transcript.
+		default:
+			cleaned.WriteRune(r)
+		}
+	}
+	text := strings.TrimSpace(cleaned.String())
+	if !meaningful || text == "" {
+		return "", "no_supported_text"
+	}
+	return text, ""
 }
 
 func (h *Hub) answerUserText(ctx context.Context, session *Session, userText string) string {

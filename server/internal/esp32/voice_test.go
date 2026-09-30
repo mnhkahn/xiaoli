@@ -35,3 +35,28 @@ func TestVoiceRecorderProcessingLock(t *testing.T) {
 		t.Fatal("TryStartProcessing() after finish = false, want true")
 	}
 }
+
+func TestSanitizeDeviceTranscriptAllowsChineseAndEnglish(t *testing.T) {
+	for _, tc := range []struct {
+		raw, want string
+	}{
+		{"🎼你可以唱首歌吗？", "🎼你可以唱首歌吗？"},
+		{"🎼", "🎼"},
+		{"Hello, 小李!", "Hello, 小李!"},
+		{"C++ 怎么用？", "C++ 怎么用？"},
+	} {
+		got, reason := sanitizeDeviceTranscript(tc.raw)
+		if reason != "" || got != tc.want {
+			t.Errorf("sanitizeDeviceTranscript(%q) = %q, %q; want %q", tc.raw, got, reason, tc.want)
+		}
+	}
+}
+
+func TestSanitizeDeviceTranscriptRejectsOtherLanguages(t *testing.T) {
+	for _, raw := range []string{"うんうん。应那ちじ。", "こんにちは", "안녕하세요", "Привет", "!?"} {
+		got, reason := sanitizeDeviceTranscript(raw)
+		if got != "" || reason == "" {
+			t.Errorf("sanitizeDeviceTranscript(%q) = %q, %q; want rejection", raw, got, reason)
+		}
+	}
+}
