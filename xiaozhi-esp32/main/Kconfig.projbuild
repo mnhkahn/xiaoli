@@ -191,6 +191,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_BREAD_COMPACT_ESP32_LCD
         bool "Bread Compact ESP32 DevKit + LCD (面包板)"
         depends on IDF_TARGET_ESP32
+    config BOARD_TYPE_XIAOLI_TRAE_C3
+        bool "Xiaoli Trae Card C3 (8MB, ES8311, ST7789)"
+        depends on IDF_TARGET_ESP32C3
     config BOARD_TYPE_XMINI_C3_V3
         bool "Xmini C3 V3"
         depends on IDF_TARGET_ESP32C3
@@ -612,6 +615,22 @@ choice BOARD_TYPE
         bool "NULLLAB-AI-VOX3"
         depends on IDF_TARGET_ESP32S3
 endchoice
+
+menu "Xiaoli Trae C3 button mapping"
+    depends on BOARD_TYPE_XIAOLI_TRAE_C3
+    config XIAOLI_C3_CHAT_BUTTON
+        int "ADC button index for conversation"
+        range 0 2
+        default 2
+    config XIAOLI_C3_VOLUME_DOWN_BUTTON
+        int "ADC button index for volume down"
+        range 0 2
+        default 1
+    config XIAOLI_C3_VOLUME_UP_BUTTON
+        int "ADC button index for volume up"
+        range 0 2
+        default 0
+endmenu
 
 choice
     depends on BOARD_TYPE_LILYGO_T_DISPLAY_P4

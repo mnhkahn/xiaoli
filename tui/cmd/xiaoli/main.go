@@ -337,6 +337,7 @@ type model struct {
 	autoApproveBash             bool
 	autoCommitGitCmsg           bool
 	pendingGitCmsg              gitCmsgPending
+	pendingGitTag               gitTagPending
 	gitCmsgProgress             <-chan gitCmsgProgressMsg
 	reviewLoop                  codexReviewLoop
 	explorer                    *tuiExplorer
@@ -347,6 +348,7 @@ type model struct {
 	transcriptCache             transcriptRenderCache
 	streamFlushPending          bool
 	quitting                    bool
+	herdr                       *herdrReporter
 }
 
 type transcriptRenderCache struct {
@@ -463,8 +465,12 @@ func main() {
 	// Xiaoli is a full-screen TUI. The alternate screen buffer prevents normal
 	// terminal scrollback from pushing the explorer's title, file list, and
 	// top border out of view during redraws.
-	p := tea.NewProgram(newModel(app, *resumeSession, logPath), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	m := newModel(app, *resumeSession, logPath)
+	herdr := newHerdrReporterFromEnv()
+	m.herdr = herdr
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	finalModel, err := p.Run()
+	herdr.release()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "xiaoli: %v\n", err)
 		os.Exit(1)
@@ -561,6 +567,7 @@ func newModel(app *localapp.App, resumeSessionID string, logPath string) model {
 }
 
 func (m model) Init() tea.Cmd {
+	m.herdr.submit(herdrSnapshotOf(m))
 	cmds := []tea.Cmd{textinput.Blink, waitForEvent(m.events), terminalTitleCmd(m)}
 	if m.app != nil && strings.TrimSpace(m.app.Config.DataDir) != "" {
 		cmds = append(cmds, checkForUpdateCmd(m.app.Config.DataDir, buildVersion()))
@@ -736,6 +743,14 @@ func shellQuote(value string) string {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if nextModel, ok := next.(model); ok {
+		m.herdrSync(nextModel)
+	}
+	return next, cmd
+}
+
+func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -1014,6 +1029,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if strings.EqualFold(text, "/quit") || strings.EqualFold(text, "/exit") {
 				m.quitting = true
 				return m, tea.Quit
+			}
+			if !m.pendingGitCmsg.Active && (!m.hasPendingOptions() || m.pendingGitTag.stage != "") {
+				if handled, cmd := m.handleGitTagInput(text); handled {
+					m.input.SetValue("")
+					return m, cmd
+				}
 			}
 			if explorer := m.openExplorerCommand(text); explorer != nil {
 				m.explorer = explorer
@@ -1392,6 +1413,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.autoApprovePendingBashConfirm()
 		}
 		return m, tea.Batch(m.startNextBashFollowup(), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(m))
+	case gitTagPreparedMsg:
+		m.handleGitTagPrepared(msg)
+		return m, nil
+	case gitTagDoneMsg:
+		m.handleGitTagDone(msg)
+		return m, nil
 	case gitCmsgPrepareMsg:
 		autoCommit := m.autoCommitGitCmsg
 		m.autoCommitGitCmsg = false
@@ -3938,6 +3965,12 @@ func (m *model) refreshContextUsage() {
 }
 
 func (m model) slashSuggestions(limit int) []slashSuggestion {
+	if out := gitTagSuggestions(strings.TrimLeft(m.input.Value(), " ")); len(out) > 0 {
+		if limit > 0 && len(out) > limit {
+			out = out[:limit]
+		}
+		return out
+	}
 	value := strings.TrimSpace(m.input.Value())
 	if !strings.HasPrefix(value, "/") || strings.Contains(strings.TrimPrefix(value, "/"), " ") {
 		return nil
@@ -3961,6 +3994,7 @@ func appendLocalSuggestions(value string, suggestions []slashSuggestion) []slash
 		{Name: "cd", Description: "切换当前工作目录", Kind: "tui"},
 		{Name: "tree", Description: "打开项目目录树", Kind: "tui"},
 		{Name: "diff", Description: "查看当前 Git 变更", Kind: "tui"},
+		{Name: "tag", Description: "版本标签：/tag s 小 · /tag m 中 · /tag l 大", Kind: "tui"},
 		{Name: "commit", Description: "生成并提交当前变更", Kind: "tui"},
 		{Name: "review", Description: "用 Codex 审查当前变更", Kind: "tui"},
 		{Name: "plan", Description: "进入计划模式或为请求生成计划", Kind: "tui"},
@@ -5784,6 +5818,9 @@ func (m *model) setCWD(target string) error {
 		m.cwd = current
 	} else {
 		m.cwd = abs
+	}
+	if m.pendingGitTag.stage != "" {
+		m.clearGitTagChoice()
 	}
 	m.gitSyncFeedback = gitSyncFeedback{}
 	m.syncAgentRoots()

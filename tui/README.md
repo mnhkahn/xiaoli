@@ -82,6 +82,17 @@ opens a full-screen Git changes browser. `/commit` generates a commit message
 from the current staged diff; if nothing is staged, it stages the provided file
 arguments, or falls back to `git add .`.
 
+`/tag` shows command help and a version picker. Use `/tag s` for a small bump
+(`v1.3.8` → `v1.3.9`), `/tag m` for a medium bump (`v1.4.0`), or `/tag l`
+for a large bump (`v2.0.0`). The preview offers local annotated tag creation
+or creation and push of that tag. Versions are based on the highest stable
+`X.Y.Z`, `vX.Y.Z`, or `VX.Y.Z` tag locally and at the push destination
+(origin, or the sole remote). New tags preserve the highest version’s prefix;
+equal versions prefer `v`, then `V`, then no prefix. Repositories with no
+version tags start from `v0.0.0`.
+A clean worktree is required. Failed pushes retain the local tag and offer
+a retry. Pushing a tag can trigger the repository’s release workflow.
+
 The TUI handles mouse wheel scrolling inside the transcript. Drag over visible
 transcript text to select it; releasing the mouse copies the selected text to
 the clipboard, and `Esc` clears the selection. Press `Ctrl+O` (`⌃O`) to open

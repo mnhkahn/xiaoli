@@ -37,7 +37,11 @@ constexpr char kDataPrefix[] = "XIAOLI_TEST_DATA ";
 constexpr char kEndPrefix[] = "XIAOLI_TEST_END ";
 constexpr size_t kLineMax = CONFIG_XIAOLI_SERIAL_HWTEST_LINE_MAX;
 constexpr size_t kSnapshotChunkBytes = CONFIG_XIAOLI_SERIAL_HWTEST_SNAPSHOT_CHUNK_BYTES;
+#if CONFIG_SPIRAM
 constexpr size_t kAudioMaxBytes = 512 * 1024;
+#else
+constexpr size_t kAudioMaxBytes = 32 * 1024;
+#endif
 constexpr int kSnapshotYieldEveryChunks = 1;
 TaskHandle_t g_task_handle = nullptr;
 std::string g_audio_id;
@@ -401,7 +405,11 @@ void ProcessCommandLine(char* line, size_t len) {
 
 void SerialHwtestTask(void*) {
     ESP_LOGI(TAG, "Serial hardware test task started");
+    #if CONFIG_SPIRAM
     auto line = static_cast<char*>(heap_caps_malloc(kLineMax, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+#else
+    auto line = static_cast<char*>(heap_caps_malloc(kLineMax, MALLOC_CAP_8BIT));
+#endif
     if (line == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate serial line buffer");
         g_task_handle = nullptr;

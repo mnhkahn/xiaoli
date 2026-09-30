@@ -1,71 +1,64 @@
-# ESP32-S3 固件烧录说明
+# 小李双设备构建与烧录
 
-## 烧录命令
+共用业务代码，分别生成固件。C3 与 S3 的二进制文件不能互换。
 
-```bash
-source /Users/mnhkahn/code/xiaoli/esp-idf/export.sh && \
-cd /Users/mnhkahn/code/xiaoli/xiaozhi-esp32 && \
-idf.py -p /dev/cu.usbserial-14310 flash
+| 配置 | 设备 | Flash | 构建目录 |
+|---|---|---|---|
+| `s3` | 原 bread-compact-wifi-s3cam | 16MB、OPI PSRAM | `xiaozhi-esp32/build/s3/` |
+| `c3` | Trae Card C3、ES8311、ST7789 | 8MB | `xiaozhi-esp32/build/c3/` |
+
+## 只编译
+
+```sh
+./flash.sh --profile c3 --build-only
+./flash.sh --profile s3 --build-only
 ```
 
-- `source .../export.sh` — 加载 ESP-IDF 环境变量
-- `cd .../xiaozhi-esp32` — 进入项目目录（CMakeLists.txt 所在位置）
-- `idf.py` — ESP-IDF 官方提供的构建/烧录命令行工具
-- `-p /dev/cu.usbserial-14310` — 指定串口设备（插拔 USB 后端口号可能变化，用 `ls /dev/cu.usbserial-*` 确认）
-- `flash` — 编译并烧录（等于 `build` + 烧录）
+默认配置位于 `xiaozhi-esp32/profiles/*.defaults`。
+S3 配置以适配前的本机 sdkconfig 为基准，保留摄像头、屏幕、音频引脚和自定义资源。
+生成的 sdkconfig 与 CMake 缓存分开存放，不改写根目录的 `xiaozhi-esp32/sdkconfig`。
+ESP-IDF 的 managed_components 与依赖锁文件仍为共享资源，因此构建脚本串行执行。
 
-## 烧录区域
+修改 defaults 后，如构建目录已有 sdkconfig，需同步修改该配置或保存旧配置后移走
+对应构建目录的 sdkconfig，再运行构建。defaults 不会覆盖已生成配置中的用户选择。
 
-| 地址 | 文件 | 内容 |
-|------|------|------|
-| 0x0 | bootloader.bin | 引导加载程序 |
-| 0x8000 | partition-table.bin | 分区表 |
-| 0xd000 | ota_data_initial.bin | OTA 启动分区标记 |
-| 0x20000 | xiaozhi.bin | 主程序固件 |
-| 0x7e0000 | assets.bin | 资源文件（语音提示音、多语言等） |
+S3 还需要已有的 `main/boards/bread-compact-wifi-s3cam/assets.bin`；缺失时会报错。
 
-## 启动执行顺序
+## 校验与烧录
 
-```
-ESP32-S3 上电
-    ↓
-1. 芯片内部 ROM（出厂固化）
-    ↓ 读取 Flash 0x0
-2. bootloader.bin（0x0）— 初始化硬件，读取分区表
-    ↓
-3. partition-table.bin（0x8000）— 定义 Flash 各区域划分
-    ↓ 找到 OTA 分区，读取 ota_data
-4. ota_data_initial.bin（0xd000）— 确定启动固件分区 A 或 B
-    ↓
-5. xiaozhi.bin（0x20000）— 运行应用代码
-    ↓ 启动时加载资源
-6. assets.bin（0x7e0000）— 语音提示音、多语言字符串
+```sh
+# 只读取芯片信息并校验编译产物，不写入设备
+./flash.sh --profile c3 --port /dev/cu.usbmodem14101 --dry-run
+
+# 自动识别 C3/S3，选择对应编译产物
+./flash.sh --port /dev/cu.usbmodem14101
+
+# 先构建匹配设备的固件，再烧录
+./flash.sh --build --port /dev/cu.usbmodem14101
 ```
 
-- 步骤 1-4：ESP-IDF 框架标准启动流程
-- 步骤 5-6：我们的应用代码和资源
+自动识别仅区分本项目的两种芯片配置，不会识别任意开发板的音频接线。
+有多个 USB 串口时必须指定 `--port`。脚本校验芯片、Flash 容量、实际镜像头、
+文件大小与烧录范围，读取 ESP-IDF 的 `flasher_args.json` 获取分区地址和资源文件。
+不再使用写死的 S3 地址。旧 `build/` 目录中的产物不会自动用于烧录。
 
-## 硬件信息
+写入前提示确认，随后完整备份设备到 `backups/`，生成 SHA256，再执行烧录。
+明确需要无人值守执行时可加 `--yes`。新程序会替换原程序，原厂应用与小李固件的
+分区布局不同；备份保留原始完整内容，但不保证复用原厂配网信息。
 
-- 芯片：ESP32-S3，16MB Flash
-- 板子：bread-compact-wifi-s3cam
-- 功放：NS4168（I2S D 类功放，SDB 接 3.3V 常开）
-- 摄像头：OV3660
-- Flash 模式：DIO，频率 80MHz
-- 烧录速率：460800 bps
+## 原固件恢复
 
-## 常用串口操作
+仅在确认需要恢复到原厂程序时执行，并使用对应设备的备份：
 
-```bash
-# 查看可用串口
-ls /dev/cu.usbserial-*
-
-# 仅编译不烧录
-idf.py build
-
-# 重启板子
-python3 -m esptool --port /dev/cu.usbserial-14310 run
-
-# 查看串口日志
-python3 -c "import serial; s=serial.Serial('/dev/cu.usbserial-14310',115200,timeout=1); [print(s.read(4096).decode('utf-8',errors='replace'),end='') for _ in iter(lambda:s.read(4096),b'')]"
+```sh
+.espressif/python_env/idf5.5_py3.13_env/bin/python -m esptool \
+  --chip esp32c3 --port /dev/cu.usbmodem14101 \
+  write_flash 0 backups/c3-4c11ae3250c8/original-20260929.bin
 ```
+
+## 验证范围
+
+编译通过与镜像校验不能代替实机验证。需分别检查：启动无重启循环、屏幕、
+按键、配网、服务端连接、唤醒、录音和播放。C3 原厂硬件分析依据见
+`xiaozhi-esp32/main/boards/xiaoli-trae-c3/README.md`。
+S3 保持原板级实现，仍需连接原设备完成运行回归。
