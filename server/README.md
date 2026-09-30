@@ -9,7 +9,7 @@ The container runs a single Go process on port `8080`:
 - `https://<app>.fly.dev/lark/events` accepts Lark message events when `LARK_APP_ID` and `LARK_APP_TOKEN` are configured
 - `https://<app>.fly.dev/mcp/vision/snapshot` and `/mcp/vision/stream/frame` receive camera uploads
 - `https://<app>.fly.dev/admin` serves the Admin console
-- Voice chat receives board Opus audio, runs ASR -> LLM/VLLM -> TTS, and asks the board to play Ogg Opus through `self.audio_speaker.play_ogg_url`
+- Voice chat receives board Opus audio, runs ASR, streams short LLM sentences to TTS, and sends Opus frames over the existing WebSocket connection. The voice path keeps two recent turns and exposes only the board's status, volume, screen, and camera tools. Set `XIAOLI_VOICE_LLM_MODEL` to a configured model ID to choose a voice-only model; WeChat and Feishu keep the full Agent.
 - Admin text playback uses the same Go TTS/playback path
 
 ## First Deploy

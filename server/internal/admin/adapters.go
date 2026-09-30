@@ -158,7 +158,7 @@ type DeviceHub struct {
 }
 
 func NewDeviceHub(cfg Config, registry *DeviceRegistry, stream *streamHub, audio *audioStore, asr SpeechRecognizer, agent *EinoAgent, vision VisionAnalyzer, tts SpeechSynthesizer) *DeviceHub {
-	conversation := &deviceConversationAdapter{}
+	conversation := &deviceConversationAdapter{voice: newVoiceConversation(cfg)}
 	hub := agentesp32.NewHub(agentesp32.HubConfig{
 		PublicBaseURL:     cfg.PublicBaseURL,
 		DeviceAuthKey:     cfg.DeviceAuthKey,
@@ -181,7 +181,11 @@ func NewDeviceHub(cfg Config, registry *DeviceRegistry, stream *streamHub, audio
 		ReencodeOpusFrames:        esp32audio.ReencodeOpusFrames,
 		NormalizeImageContentType: normalizeImageContentType,
 	})
-	return &DeviceHub{Hub: hub, conversation: conversation, vision: vision, tts: tts}
+	result := &DeviceHub{Hub: hub, conversation: conversation, vision: vision, tts: tts}
+	if conversation.voice != nil {
+		conversation.voice.devices = result
+	}
+	return result
 }
 
 func (h *DeviceHub) setConversation(pipeline *ConversationPipeline) {
@@ -241,9 +245,15 @@ func (p streamPublisher) Publish(event agentesp32.StreamEvent) {
 
 type deviceConversationAdapter struct {
 	pipeline *ConversationPipeline
+	voice    *voiceConversation
 }
 
 func (a *deviceConversationAdapter) AnswerDeviceText(ctx context.Context, deviceID string, text string) (string, error) {
+	if a != nil && a.voice != nil {
+		var parts []string
+		err := a.voice.AnswerDeviceTextStream(ctx, deviceID, text, func(part string) error { parts = append(parts, part); return nil })
+		return strings.Join(parts, ""), err
+	}
 	if a == nil || a.pipeline == nil {
 		return "我现在还没有配置语言模型。", nil
 	}
@@ -252,6 +262,17 @@ func (a *deviceConversationAdapter) AnswerDeviceText(ctx context.Context, device
 		return "", err
 	}
 	return strings.TrimSpace(reply.Text), nil
+}
+
+func (a *deviceConversationAdapter) AnswerDeviceTextStream(ctx context.Context, deviceID string, text string, emit func(string) error) error {
+	if a != nil && a.voice != nil {
+		return a.voice.AnswerDeviceTextStream(ctx, deviceID, text, emit)
+	}
+	answer, err := a.AnswerDeviceText(ctx, deviceID, text)
+	if err != nil {
+		return err
+	}
+	return emit(answer)
 }
 
 func newVoiceDetector() (agentesp32.VoiceDetector, error) {

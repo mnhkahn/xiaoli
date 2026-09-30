@@ -52,6 +52,7 @@ type Config struct {
 	GoLLMURL                string
 	GoLLMAPIKey             string
 	GoLLMModel              string
+	GoVoiceLLMModel         string
 	GoLLMModels             []string
 	GoLLMModelConfigs       map[string]LLMModelConfig
 	GoLLMPrompt             string
@@ -234,6 +235,7 @@ func LoadConfig() Config {
 		GoLLMURL:                selectedLLM.BaseURL,
 		GoLLMAPIKey:             selectedLLM.APIKey,
 		GoLLMModel:              goLLMModel,
+		GoVoiceLLMModel:         env("XIAOLI_VOICE_LLM_MODEL", ""),
 		GoLLMModels:             goLLMModels,
 		GoLLMModelConfigs:       goLLMModelConfigs,
 		GoLLMPrompt:             goLLMPrompt,

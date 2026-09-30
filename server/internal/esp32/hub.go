@@ -73,6 +73,11 @@ type Conversation interface {
 	AnswerDeviceText(ctx context.Context, deviceID string, text string) (string, error)
 }
 
+// StreamingConversation emits complete spoken sentences as they become available.
+type StreamingConversation interface {
+	AnswerDeviceTextStream(ctx context.Context, deviceID string, text string, emit func(string) error) error
+}
+
 type Dependencies struct {
 	Stream                    StreamPublisher
 	ASR                       SpeechRecognizer
@@ -442,6 +447,7 @@ func (h *Hub) processVoiceTurn(session *Session, frames [][]byte) {
 		return
 	}
 	defer session.finishVoiceProcessing()
+	turnStarted := time.Now()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
@@ -466,8 +472,60 @@ func (h *Hub) processVoiceTurn(session *Session, frames [][]byte) {
 		_ = h.playAssistantText(ctx, session, "这次没有听清楚。")
 		return
 	}
-	logger.Infof("voice turn ASR ok for %s: text=%q", session.deviceID, text)
+	logger.Infof("voice turn ASR ok for %s: text=%q elapsedMS=%d", session.deviceID, text, time.Since(turnStarted).Milliseconds())
 	_ = session.writeJSON(map[string]any{"type": "stt", "text": text})
+	if conversation, ok := h.deps.Conversation.(StreamingConversation); ok {
+		started := time.Now()
+		spoken := false
+		sentences := make(chan string, 8)
+		result := make(chan error, 1)
+		go func() {
+			result <- conversation.AnswerDeviceTextStream(ctx, session.deviceID, text, func(sentence string) error {
+				select {
+				case sentences <- sentence:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+			close(sentences)
+		}()
+		play := func(sentence string) error {
+			if strings.TrimSpace(sentence) == "" {
+				return nil
+			}
+			first := !spoken
+			if !spoken {
+				spoken = true
+				_ = session.writeJSON(map[string]any{"type": "llm", "emotion": "neutral"})
+				_ = session.writeJSON(map[string]any{"type": "tts", "state": "start", "session_id": session.sessionID})
+				logger.Infof("voice turn first sentence for %s: sinceASRMS=%d sinceTurnMS=%d text=%q", session.deviceID, time.Since(started).Milliseconds(), time.Since(turnStarted).Milliseconds(), sentence)
+			}
+			return h.playAssistantSentence(ctx, session, sentence, func() {
+				if first {
+					logger.Infof("voice turn audio frame for %s: sinceTurnMS=%d", session.deviceID, time.Since(turnStarted).Milliseconds())
+				}
+			})
+		}
+		var playErr error
+		for sentence := range sentences {
+			if playErr == nil {
+				playErr = play(sentence)
+			}
+		}
+		err := <-result
+		if err != nil {
+			logger.Infof("voice turn streaming answer failed for %s: %v", session.deviceID, err)
+		}
+		if playErr != nil {
+			logger.Infof("voice turn playback failed for %s: %v", session.deviceID, playErr)
+		}
+		if !spoken {
+			_ = play("我现在回答不了，请稍后再试。")
+		}
+		_ = session.writeJSON(map[string]any{"type": "tts", "state": "stop", "session_id": session.sessionID})
+		return
+	}
 
 	answer := h.answerUserText(ctx, session, text)
 	logger.Infof("voice turn LLM answer for %s: %q", session.deviceID, answer)
@@ -502,6 +560,19 @@ func (h *Hub) playAssistantText(ctx context.Context, session *Session, text stri
 	defer func() {
 		_ = session.writeJSON(map[string]any{"type": "tts", "state": "stop", "session_id": session.sessionID})
 	}()
+	return h.sendAssistantAudio(ctx, session, text, nil)
+}
+
+func (h *Hub) playAssistantSentence(ctx context.Context, session *Session, text string, firstFrame func()) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	_ = session.writeJSON(map[string]any{"type": "tts", "state": "sentence_start", "text": text, "session_id": session.sessionID})
+	return h.sendAssistantAudio(ctx, session, text, firstFrame)
+}
+
+func (h *Hub) sendAssistantAudio(ctx context.Context, session *Session, text string, firstFrame func()) error {
 	if h.deps.TTS == nil {
 		return fmt.Errorf("TTS is not configured")
 	}
@@ -561,6 +632,12 @@ func (h *Hub) playAssistantText(ctx context.Context, session *Session, text stri
 		if err := session.writeFrame(esp32ws.OpcodeBinary, pkt); err != nil {
 			logger.Infof("tts stream send failed for %s at packet %d/%d: %v", session.deviceID, i+1, len(reencoded), err)
 			return err
+		}
+		if i == 0 {
+			logger.Infof("tts first audio frame for %s: sinceSynthMS=%d", session.deviceID, time.Since(started).Milliseconds())
+			if firstFrame != nil {
+				firstFrame()
+			}
 		}
 	}
 	logger.Infof("tts stream done for %s: sent=%d streamMS=%d totalMS=%d", session.deviceID, len(reencoded), time.Since(streamStarted).Milliseconds(), time.Since(started).Milliseconds())
