@@ -70,6 +70,10 @@ type SpeechSynthesizer interface {
 	Synthesize(ctx context.Context, text string) (contentType string, body []byte, err error)
 }
 
+type voiceSpeechSynthesizer interface {
+	SynthesizeWithVoice(ctx context.Context, text, voice string) (contentType string, body []byte, err error)
+}
+
 type Conversation interface {
 	AnswerDeviceText(ctx context.Context, deviceID string, text string) (string, error)
 }
@@ -83,6 +87,7 @@ type Dependencies struct {
 	Stream                    StreamPublisher
 	ASR                       SpeechRecognizer
 	TTS                       SpeechSynthesizer
+	TTSVoiceForDevice         func(deviceID string) string
 	Conversation              Conversation
 	NewVoiceDetector          func() (VoiceDetector, error)
 	BuildOggOpus              func(frames [][]byte, inputSampleRate int, channels int, frameDurationMS int) ([]byte, error)
@@ -649,7 +654,22 @@ func (h *Hub) prepareAssistantAudio(ctx context.Context, session *Session, text 
 		return nil, fmt.Errorf("TTS is not configured")
 	}
 	synthStarted := time.Now()
-	contentType, body, err := h.deps.TTS.Synthesize(ctx, text)
+	var contentType string
+	var body []byte
+	var err error
+	voice := ""
+	if h.deps.TTSVoiceForDevice != nil {
+		voice = h.deps.TTSVoiceForDevice(session.deviceID)
+	}
+	if voice != "" {
+		if synth, ok := h.deps.TTS.(voiceSpeechSynthesizer); ok {
+			contentType, body, err = synth.SynthesizeWithVoice(ctx, text, voice)
+		} else {
+			return nil, fmt.Errorf("per-device TTS voice is not supported by the synthesizer")
+		}
+	} else {
+		contentType, body, err = h.deps.TTS.Synthesize(ctx, text)
+	}
 	if err != nil {
 		logger.Infof("tts synth failed for %s: text=%q err=%v", session.deviceID, text, err)
 		return nil, err

@@ -126,6 +126,28 @@ func TestTTSSynthesizePostsExpectedRequestAndDecodesBody(t *testing.T) {
 	}
 }
 
+func TestTTSSynthesizeWithVoiceOverridesOnlyRequestedCall(t *testing.T) {
+	var voices []string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		voices = append(voices, payload["voice"].(string))
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"audio/ogg"}}, Body: io.NopCloser(strings.NewReader("OggSsample"))}, nil
+	})}
+	synth := NewHTTPSpeechSynthesizer(TTSConfig{URL: "https://tts.test", APIKey: "test-key", Model: "test-model", Voice: "anna", ResponseFormat: "opus", HTTPClient: client}).(*HTTPSpeechSynthesizer)
+	if _, _, err := synth.SynthesizeWithVoice(context.Background(), "你好", "custom"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := synth.Synthesize(context.Background(), "你好"); err != nil {
+		t.Fatal(err)
+	}
+	if len(voices) != 2 || voices[0] != "custom" || voices[1] != "anna" {
+		t.Fatalf("voices = %q", voices)
+	}
+}
+
 func TestTTSSynthesizeSurfacesUpstreamErrorBody(t *testing.T) {
 	httpClient := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{

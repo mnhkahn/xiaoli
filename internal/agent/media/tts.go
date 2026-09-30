@@ -50,6 +50,13 @@ func NewHTTPSpeechSynthesizer(cfg TTSConfig) SpeechSynthesizer {
 }
 
 func (s *HTTPSpeechSynthesizer) Synthesize(ctx context.Context, text string) (string, []byte, error) {
+	if s == nil {
+		return "", nil, errors.New("TTS is not configured")
+	}
+	return s.SynthesizeWithVoice(ctx, text, s.voice)
+}
+
+func (s *HTTPSpeechSynthesizer) SynthesizeWithVoice(ctx context.Context, text, voice string) (string, []byte, error) {
 	if s == nil || s.apiKey == "" {
 		return "", nil, errors.New("TTS is not configured")
 	}
@@ -58,7 +65,7 @@ func (s *HTTPSpeechSynthesizer) Synthesize(ctx context.Context, text string) (st
 	}
 	payload := map[string]any{
 		"model":           s.model,
-		"voice":           s.voice,
+		"voice":           voice,
 		"input":           text,
 		"response_format": "opus",
 	}
