@@ -2,10 +2,12 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -175,6 +177,82 @@ func TestVoiceToolWhitelist(t *testing.T) {
 	}
 	if !voiceToolOffered(tools, "set_volume") || voiceToolOffered(tools, "external.web_search") {
 		t.Fatalf("unexpected tools: %+v", tools)
+	}
+}
+
+func TestVoiceWebToolsAvailableWithoutDevice(t *testing.T) {
+	v := newVoiceConversation(Config{})
+	tools := v.availableTools(context.Background(), "c3")
+	if len(tools) != 2 || !voiceToolOffered(tools, "websearch") || !voiceToolOffered(tools, "webfetch") {
+		t.Fatalf("voice web tools = %+v", tools)
+	}
+}
+
+type voiceWebToolStub struct {
+	name string
+	args []map[string]any
+}
+
+func (s *voiceWebToolStub) Info(context.Context) (*schema.ToolInfo, error) {
+	return &schema.ToolInfo{Name: s.name, Desc: s.name}, nil
+}
+
+func (s *voiceWebToolStub) InvokableRun(_ context.Context, raw string, _ ...tool.Option) (string, error) {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		return "", err
+	}
+	s.args = append(s.args, args)
+	return `{"content":"资料"}`, nil
+}
+
+type voiceWebModelStub struct {
+	responses []*schema.Message
+	inputs    [][]*schema.Message
+	toolSets  [][]*schema.ToolInfo
+}
+
+func (m *voiceWebModelStub) Generate(context.Context, []*schema.Message, ...model.Option) (*schema.Message, error) {
+	panic("Generate is not used by voiceConversation")
+}
+
+func (m *voiceWebModelStub) Stream(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.inputs = append(m.inputs, append([]*schema.Message(nil), input...))
+	return schema.StreamReaderFromArray([]*schema.Message{m.responses[len(m.inputs)-1]}), nil
+}
+
+func (m *voiceWebModelStub) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	m.toolSets = append(m.toolSets, tools)
+	return m, nil
+}
+
+func TestVoiceSearchThenFetchUsesOnlyTwoWebActions(t *testing.T) {
+	search := &voiceWebToolStub{name: "websearch"}
+	fetch := &voiceWebToolStub{name: "webfetch"}
+	m := &voiceWebModelStub{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{ID: "search-1", Function: schema.FunctionCall{Name: "websearch", Arguments: `{"query":"北京天气"}`}}}),
+		schema.AssistantMessage("", []schema.ToolCall{{ID: "fetch-1", Function: schema.FunctionCall{Name: "webfetch", Arguments: `{"url":"https://example.com/weather"}`}}}),
+		schema.AssistantMessage("北京今天适合出门。", nil),
+	}}
+	v := &voiceConversation{
+		model: m, history: make(map[string][]*schema.Message),
+		webTools: map[string]tool.InvokableTool{"websearch": search, "webfetch": fetch},
+	}
+	var spoken []string
+	if err := v.AnswerDeviceTextStream(context.Background(), "c3", "北京今天适合出门吗", func(s string) error {
+		spoken = append(spoken, s)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.inputs) != 3 || len(m.toolSets) != 2 || len(m.toolSets[1]) != 1 || m.toolSets[1][0].Name != "webfetch" {
+		t.Fatalf("model requests=%d tool sets=%+v", len(m.inputs), m.toolSets)
+	}
+	if len(search.args) != 1 || search.args[0]["count"] != float64(3) || len(fetch.args) != 1 || fetch.args[0]["format"] != "text" || fetch.args[0]["timeout"] != float64(8) {
+		t.Fatalf("search args=%+v fetch args=%+v", search.args, fetch.args)
+	}
+	if strings.Join(spoken, "") != "北京今天适合出门。" {
+		t.Fatalf("spoken=%q", spoken)
 	}
 }
 
