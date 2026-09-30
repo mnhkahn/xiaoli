@@ -607,8 +607,21 @@ void Application::InitializeProtocol() {
     });
     
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
+        audio_service_.RecordNetworkAudioReceived();
+        std::unique_lock<std::mutex> lock(pending_audio_mutex_);
+        if (!local_exit_pending_ && tts_start_pending_) {
+            if (pending_tts_audio_.size() < 8) {
+                pending_tts_audio_.push_back(std::move(packet));
+            } else {
+                audio_service_.RecordNetworkAudioDroppedState();
+            }
+            return;
+        }
         if (!local_exit_pending_ && GetDeviceState() == kDeviceStateSpeaking) {
-            audio_service_.PushPacketToDecodeQueue(std::move(packet));
+            lock.unlock();
+            audio_service_.PushPacketToDecodeQueue(std::move(packet), true);
+        } else {
+            audio_service_.RecordNetworkAudioDroppedState();
         }
     });
     
@@ -642,6 +655,11 @@ void Application::InitializeProtocol() {
             }
             auto state = cJSON_GetObjectItem(root, "state");
             if (strcmp(state->valuestring, "start") == 0) {
+                {
+                    std::lock_guard<std::mutex> lock(pending_audio_mutex_);
+                    tts_start_pending_ = true;
+                    pending_tts_audio_.clear();
+                }
                 Schedule([this]() {
                     if (local_exit_pending_) {
                         return;
@@ -650,6 +668,12 @@ void Application::InitializeProtocol() {
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
+                {
+                    std::lock_guard<std::mutex> lock(pending_audio_mutex_);
+                    for (size_t i = 0; i < pending_tts_audio_.size(); ++i) audio_service_.RecordNetworkAudioDroppedState();
+                    pending_tts_audio_.clear();
+                    tts_start_pending_ = false;
+                }
                 Schedule([this]() {
                     if (local_exit_pending_) {
                         return;
@@ -1120,6 +1144,14 @@ void Application::HandleStateChangedEvent() {
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             }
             audio_service_.ResetDecoder();
+            {
+                std::lock_guard<std::mutex> lock(pending_audio_mutex_);
+                for (auto& packet : pending_tts_audio_) {
+                    audio_service_.PushPacketToDecodeQueue(std::move(packet), true);
+                }
+                pending_tts_audio_.clear();
+                tts_start_pending_ = false;
+            }
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);

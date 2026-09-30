@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <chrono>
 #include <mutex>
+#include <atomic>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -128,6 +129,8 @@ public:
     void SetCallbacks(AudioServiceCallbacks& callbacks);
 
     bool PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> packet, bool wait = false);
+    void RecordNetworkAudioReceived() { network_audio_received_++; }
+    void RecordNetworkAudioDroppedState() { network_audio_dropped_state_++; }
     std::unique_ptr<AudioStreamPacket> PopPacketFromSendQueue();
     void PlaySound(const std::string_view& sound);
     bool ReadAudioData(std::vector<int16_t>& data, int sample_rate, int samples);
@@ -156,6 +159,13 @@ private:
     int decoder_duration_ms_ = OPUS_FRAME_DURATION_MS;
     int decoder_frame_size_ = 0;
     DebugStatistics debug_statistics_;
+    std::atomic<uint32_t> network_audio_received_{0};
+    std::atomic<uint32_t> network_audio_dropped_state_{0};
+    std::atomic<uint32_t> audio_queued_{0};
+    std::atomic<uint32_t> audio_dropped_full_{0};
+    std::atomic<uint32_t> audio_decoded_{0};
+    std::atomic<uint32_t> audio_output_{0};
+    std::atomic<uint32_t> audio_output_peak_{0};
     srmodel_list_t* models_list_ = nullptr;
 
     EventGroupHandle_t event_group_;

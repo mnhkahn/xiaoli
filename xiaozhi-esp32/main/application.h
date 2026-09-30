@@ -138,6 +138,9 @@ private:
     AecMode aec_mode_ = kAecOff;
     std::string last_error_message_;
     AudioService audio_service_;
+    std::mutex pending_audio_mutex_;
+    std::deque<std::unique_ptr<AudioStreamPacket>> pending_tts_audio_;
+    bool tts_start_pending_ = false;
     std::unique_ptr<Ota> ota_;
 
     std::function<void(const std::string&)> mcp_broadcast_callback_;

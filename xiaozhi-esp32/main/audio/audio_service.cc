@@ -300,7 +300,13 @@ void AudioService::AudioOutputTask() {
         audio_queue_cv_.notify_all();
         lock.unlock();
 
-        ESP_LOGI(TAG, "AudioOutputTask: pcm=%d samples output_enabled=%d pcm[0..3]=%d %d %d %d", (int)task->pcm.size(), codec_->output_enabled(), task->pcm.size() > 0 ? (int)task->pcm[0] : 0, task->pcm.size() > 1 ? (int)task->pcm[1] : 0, task->pcm.size() > 2 ? (int)task->pcm[2] : 0, task->pcm.size() > 3 ? (int)task->pcm[3] : 0);
+        uint32_t peak = 0;
+        for (int16_t sample : task->pcm) {
+            uint32_t magnitude = sample < 0 ? static_cast<uint32_t>(-static_cast<int32_t>(sample)) : static_cast<uint32_t>(sample);
+            if (magnitude > peak) peak = magnitude;
+        }
+        auto previous_peak = audio_output_peak_.load();
+        while (previous_peak < peak && !audio_output_peak_.compare_exchange_weak(previous_peak, peak)) {}
 
         if (!codec_->output_enabled()) {
             esp_timer_stop(audio_power_timer_);
@@ -309,6 +315,7 @@ void AudioService::AudioOutputTask() {
         }
 
         codec_->OutputData(task->pcm);
+        audio_output_++;
 
         /* Update the last output time */
         last_output_time_ = std::chrono::steady_clock::now();
@@ -369,7 +376,7 @@ void AudioService::OpusCodecTask() {
                 decoder_lock.unlock();
                 if (ret == ESP_AUDIO_ERR_OK) {
                     task->pcm.resize(out_frame.decoded_size / sizeof(int16_t));
-                    ESP_LOGI(TAG, "Decoded OK: pcm=%d samples rate=%d->%d", (int)(out_frame.decoded_size / sizeof(int16_t)), decoder_sample_rate_, codec_->output_sample_rate());
+                    audio_decoded_++;
                     if (decoder_sample_rate_ != codec_->output_sample_rate() && output_resampler_ != nullptr) {
                         uint32_t target_size = 0;
                         esp_ae_rate_cvt_get_max_out_sample_num(output_resampler_, task->pcm.size(), &target_size);
@@ -510,12 +517,17 @@ bool AudioService::PushPacketToDecodeQueue(std::unique_ptr<AudioStreamPacket> pa
     std::unique_lock<std::mutex> lock(audio_queue_mutex_);
     if (audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
         if (wait) {
-            audio_queue_cv_.wait(lock, [this]() { return audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE; });
-        } else {
+            audio_queue_cv_.wait_for(lock, std::chrono::milliseconds(120), [this]() {
+                return service_stopped_ || audio_decode_queue_.size() < MAX_DECODE_PACKETS_IN_QUEUE;
+            });
+        }
+        if (service_stopped_ || audio_decode_queue_.size() >= MAX_DECODE_PACKETS_IN_QUEUE) {
+            audio_dropped_full_++;
             return false;
         }
     }
     audio_decode_queue_.push_back(std::move(packet));
+    audio_queued_++;
     audio_queue_cv_.notify_all();
     return true;
 }
@@ -687,6 +699,27 @@ void AudioService::ResetDecoder() {
 }
 
 void AudioService::CheckAndUpdateAudioPowerState() {
+    const auto received = network_audio_received_.exchange(0);
+    const auto dropped_state = network_audio_dropped_state_.exchange(0);
+    const auto queued = audio_queued_.exchange(0);
+    const auto dropped_full = audio_dropped_full_.exchange(0);
+    const auto decoded = audio_decoded_.exchange(0);
+    const auto output = audio_output_.exchange(0);
+    const auto peak = audio_output_peak_.exchange(0);
+    if (received || dropped_state || queued || dropped_full || decoded || output) {
+        size_t decode_depth, playback_depth;
+        {
+            std::lock_guard<std::mutex> lock(audio_queue_mutex_);
+            decode_depth = audio_decode_queue_.size();
+            playback_depth = audio_playback_queue_.size();
+        }
+        ESP_LOGI(TAG, "PlaybackStats: rx=%lu queued=%lu state_drop=%lu full_drop=%lu decoded=%lu output=%lu decode_q=%u playback_q=%u peak=%lu volume=%d",
+                 static_cast<unsigned long>(received), static_cast<unsigned long>(queued),
+                 static_cast<unsigned long>(dropped_state), static_cast<unsigned long>(dropped_full),
+                 static_cast<unsigned long>(decoded), static_cast<unsigned long>(output),
+                 static_cast<unsigned>(decode_depth), static_cast<unsigned>(playback_depth),
+                 static_cast<unsigned long>(peak), codec_->output_volume());
+    }
     auto now = std::chrono::steady_clock::now();
     auto input_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_input_time_).count();
     auto output_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_output_time_).count();

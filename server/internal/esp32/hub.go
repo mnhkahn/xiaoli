@@ -481,6 +481,15 @@ func (h *Hub) processVoiceTurn(session *Session, frames [][]byte) {
 		result := make(chan error, 1)
 		go func() {
 			result <- conversation.AnswerDeviceTextStream(ctx, session.deviceID, text, func(sentence string) error {
+				if strings.TrimSpace(sentence) == "" {
+					return nil
+				}
+				if !spoken {
+					spoken = true
+					_ = session.writeJSON(map[string]any{"type": "llm", "emotion": "neutral"})
+					_ = session.writeJSON(map[string]any{"type": "tts", "state": "start", "session_id": session.sessionID})
+					logger.Infof("voice turn first sentence for %s: sinceASRMS=%d sinceTurnMS=%d text=%q", session.deviceID, time.Since(started).Milliseconds(), time.Since(turnStarted).Milliseconds(), sentence)
+				}
 				select {
 				case sentences <- sentence:
 					return nil
@@ -490,27 +499,38 @@ func (h *Hub) processVoiceTurn(session *Session, frames [][]byte) {
 			})
 			close(sentences)
 		}()
-		play := func(sentence string) error {
-			if strings.TrimSpace(sentence) == "" {
-				return nil
-			}
-			first := !spoken
-			if !spoken {
-				spoken = true
-				_ = session.writeJSON(map[string]any{"type": "llm", "emotion": "neutral"})
-				_ = session.writeJSON(map[string]any{"type": "tts", "state": "start", "session_id": session.sessionID})
-				logger.Infof("voice turn first sentence for %s: sinceASRMS=%d sinceTurnMS=%d text=%q", session.deviceID, time.Since(started).Milliseconds(), time.Since(turnStarted).Milliseconds(), sentence)
-			}
-			return h.playAssistantSentence(ctx, session, sentence, func() {
-				if first {
-					logger.Infof("voice turn audio frame for %s: sinceTurnMS=%d", session.deviceID, time.Since(turnStarted).Milliseconds())
-				}
-			})
+		type readySentence struct {
+			audio *preparedAssistantAudio
+			err   error
 		}
+		ready := make(chan readySentence, 2)
+		go func() {
+			defer close(ready)
+			for sentence := range sentences {
+				audio, err := h.prepareAssistantAudio(ctx, session, sentence)
+				select {
+				case ready <- readySentence{audio: audio, err: err}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
 		var playErr error
-		for sentence := range sentences {
+		pace := &assistantAudioPace{}
+		firstAudio := true
+		for item := range ready {
+			if item.err != nil {
+				logger.Infof("voice turn TTS preparation failed for %s: %v", session.deviceID, item.err)
+				continue
+			}
 			if playErr == nil {
-				playErr = play(sentence)
+				_ = session.writeJSON(map[string]any{"type": "tts", "state": "sentence_start", "text": item.audio.text, "session_id": session.sessionID})
+				playErr = h.sendPreparedAudio(ctx, session, item.audio, pace, func() {
+					if firstAudio {
+						firstAudio = false
+						logger.Infof("voice turn audio frame for %s: sinceTurnMS=%d", session.deviceID, time.Since(turnStarted).Milliseconds())
+					}
+				})
 			}
 		}
 		err := <-result
@@ -521,9 +541,10 @@ func (h *Hub) processVoiceTurn(session *Session, frames [][]byte) {
 			logger.Infof("voice turn playback failed for %s: %v", session.deviceID, playErr)
 		}
 		if !spoken {
-			_ = play("我现在回答不了，请稍后再试。")
+			_ = h.playAssistantText(ctx, session, "我现在回答不了，请稍后再试。")
+		} else {
+			_ = session.writeJSON(map[string]any{"type": "tts", "state": "stop", "session_id": session.sessionID})
 		}
-		_ = session.writeJSON(map[string]any{"type": "tts", "state": "stop", "session_id": session.sessionID})
 		return
 	}
 
@@ -563,36 +584,49 @@ func (h *Hub) playAssistantText(ctx context.Context, session *Session, text stri
 	return h.sendAssistantAudio(ctx, session, text, nil)
 }
 
-func (h *Hub) playAssistantSentence(ctx context.Context, session *Session, text string, firstFrame func()) error {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
+func (h *Hub) sendAssistantAudio(ctx context.Context, session *Session, text string, firstFrame func()) error {
+	audio, err := h.prepareAssistantAudio(ctx, session, text)
+	if err != nil {
+		return err
 	}
-	_ = session.writeJSON(map[string]any{"type": "tts", "state": "sentence_start", "text": text, "session_id": session.sessionID})
-	return h.sendAssistantAudio(ctx, session, text, firstFrame)
+	return h.sendPreparedAudio(ctx, session, audio, &assistantAudioPace{}, firstFrame)
 }
 
-func (h *Hub) sendAssistantAudio(ctx context.Context, session *Session, text string, firstFrame func()) error {
+type preparedAssistantAudio struct {
+	text                string
+	packets             [][]byte
+	frameDuration       time.Duration
+	sourcePackets       int
+	sourceFrameDuration time.Duration
+	reencodeMS          int64
+	preparedAt          time.Time
+}
+
+type assistantAudioPace struct {
+	sent int
+	next time.Time
+}
+
+func (h *Hub) prepareAssistantAudio(ctx context.Context, session *Session, text string) (*preparedAssistantAudio, error) {
 	if h.deps.TTS == nil {
-		return fmt.Errorf("TTS is not configured")
+		return nil, fmt.Errorf("TTS is not configured")
 	}
-	started := time.Now()
 	synthStarted := time.Now()
 	contentType, body, err := h.deps.TTS.Synthesize(ctx, text)
 	if err != nil {
 		logger.Infof("tts synth failed for %s: text=%q err=%v", session.deviceID, text, err)
-		return err
+		return nil, err
 	}
 	synthElapsed := time.Since(synthStarted)
 	logger.Infof("tts synth ok for %s: text=%q contentType=%s bytes=%d synthMS=%d", session.deviceID, text, contentType, len(body), synthElapsed.Milliseconds())
 
 	if h.deps.ExtractOpusPackets == nil {
-		return errors.New("opus extractor is not configured")
+		return nil, errors.New("opus extractor is not configured")
 	}
 	packets, frameDuration := h.deps.ExtractOpusPackets(body)
 	if len(packets) == 0 {
 		logger.Infof("tts no opus packets extracted for %s", session.deviceID)
-		return errors.New("no opus packets")
+		return nil, errors.New("no opus packets")
 	}
 	if frameDuration <= 0 || frameDuration > 100*time.Millisecond {
 		frameDuration = 20 * time.Millisecond
@@ -615,32 +649,45 @@ func (h *Hub) sendAssistantAudio(ctx context.Context, session *Session, text str
 		targetFrameDuration = frameDuration
 	}
 
-	sourceAudioDuration := time.Duration(len(packets)) * frameDuration
-	targetAudioDuration := time.Duration(len(reencoded)) * targetFrameDuration
-	logger.Infof("tts stream start for %s: packets=%d reencoded=%d srcFrameDur=%s targetFrameDur=%s srcAudioDur=%s targetAudioDur=%s prebuffer=%d reencodeMS=%d", session.deviceID, len(packets), len(reencoded), frameDuration, targetFrameDuration, sourceAudioDuration, targetAudioDuration, assistantAudioPrebufferPacketNum, reencodeElapsed.Milliseconds())
+	return &preparedAssistantAudio{text: text, packets: reencoded, frameDuration: targetFrameDuration, sourcePackets: len(packets), sourceFrameDuration: frameDuration, reencodeMS: reencodeElapsed.Milliseconds(), preparedAt: time.Now()}, nil
+}
 
+func (h *Hub) sendPreparedAudio(ctx context.Context, session *Session, audio *preparedAssistantAudio, pace *assistantAudioPace, firstFrame func()) error {
+	if audio == nil || pace == nil {
+		return errors.New("prepared audio is unavailable")
+	}
+	sourceAudioDuration := time.Duration(audio.sourcePackets) * audio.sourceFrameDuration
+	targetAudioDuration := time.Duration(len(audio.packets)) * audio.frameDuration
+	logger.Infof("tts stream start for %s: packets=%d reencoded=%d srcFrameDur=%s targetFrameDur=%s srcAudioDur=%s targetAudioDur=%s prebuffer=%d reencodeMS=%d preparedWaitMS=%d", session.deviceID, audio.sourcePackets, len(audio.packets), audio.sourceFrameDuration, audio.frameDuration, sourceAudioDuration, targetAudioDuration, assistantAudioPrebufferPacketNum, audio.reencodeMS, time.Since(audio.preparedAt).Milliseconds())
 	streamStarted := time.Now()
-	var pacedStart time.Time
-	for i, pkt := range reencoded {
-		if i == assistantAudioPrebufferPacketNum {
-			pacedStart = time.Now()
-		} else if deadline := assistantAudioSendDeadline(pacedStart, i, targetFrameDuration); !deadline.IsZero() {
-			if err := waitUntil(ctx, deadline); err != nil {
+	for i, pkt := range audio.packets {
+		if pace.sent >= assistantAudioPrebufferPacketNum {
+			if pace.next.IsZero() {
+				pace.next = time.Now()
+			}
+			if err := waitUntil(ctx, pace.next); err != nil {
 				return err
 			}
 		}
 		if err := session.writeFrame(esp32ws.OpcodeBinary, pkt); err != nil {
-			logger.Infof("tts stream send failed for %s at packet %d/%d: %v", session.deviceID, i+1, len(reencoded), err)
+			logger.Infof("tts stream send failed for %s at packet %d/%d: %v", session.deviceID, i+1, len(audio.packets), err)
 			return err
 		}
+		pace.sent++
+		if pace.sent >= assistantAudioPrebufferPacketNum {
+			pace.next = pace.next.Add(audio.frameDuration)
+			if pace.next.Before(time.Now()) {
+				pace.next = time.Now().Add(audio.frameDuration)
+			}
+		}
 		if i == 0 {
-			logger.Infof("tts first audio frame for %s: sinceSynthMS=%d", session.deviceID, time.Since(started).Milliseconds())
+			logger.Infof("tts first audio frame for %s: preparedWaitMS=%d", session.deviceID, time.Since(audio.preparedAt).Milliseconds())
 			if firstFrame != nil {
 				firstFrame()
 			}
 		}
 	}
-	logger.Infof("tts stream done for %s: sent=%d streamMS=%d totalMS=%d", session.deviceID, len(reencoded), time.Since(streamStarted).Milliseconds(), time.Since(started).Milliseconds())
+	logger.Infof("tts stream done for %s: sent=%d streamMS=%d", session.deviceID, len(audio.packets), time.Since(streamStarted).Milliseconds())
 	return nil
 }
 
