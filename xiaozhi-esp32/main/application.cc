@@ -1107,7 +1107,11 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateListening:
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
             display->SetStatus(Lang::Strings::LISTENING);
+#if CONFIG_BOARD_TYPE_XIAOLI_TRAE_C3
+            display->SetEmotion("listening");
+#else
             display->SetEmotion("neutral");
+#endif
 
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
@@ -1139,6 +1143,9 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateSpeaking:
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
             display->SetStatus(Lang::Strings::SPEAKING);
+#if CONFIG_BOARD_TYPE_XIAOLI_TRAE_C3
+            display->SetEmotion("speaking");
+#endif
 
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);

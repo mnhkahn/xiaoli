@@ -94,6 +94,8 @@ elseif(CONFIG_BOARD_TYPE_XIAOLI_TRAE_C3)
     set(BOARD_TYPE "xiaoli-trae-c3")
     set(BUILTIN_TEXT_FONT font_puhui_basic_14_1)
     set(BUILTIN_ICON_FONT font_awesome_14_1)
+    set(DEFAULT_ASSETS_EXTRA_FILES "${CMAKE_CURRENT_SOURCE_DIR}/boards/xiaoli-trae-c3/assets")
+    file(GLOB TRAE_FACE_ASSETS CONFIGURE_DEPENDS "${DEFAULT_ASSETS_EXTRA_FILES}/*.rgb565")
 elseif(CONFIG_BOARD_TYPE_BREAD_COMPACT_ML307)
     set(BOARD_TYPE "bread-compact-ml307")
     set(BUILTIN_TEXT_FONT font_puhui_basic_14_1)
@@ -1124,6 +1126,10 @@ function(build_default_assets_bin)
         list(APPEND BUILD_ARGS "--extra_files" "${DEFAULT_ASSETS_EXTRA_FILES}")
     endif()
 
+    if(CONFIG_BOARD_TYPE_XIAOLI_TRAE_C3)
+        list(APPEND BUILD_ARGS "--align_assets")
+    endif()
+
     list(APPEND BUILD_ARGS "--esp_sr_model_path" "${ESP_SR_MODEL_PATH}")
     list(APPEND BUILD_ARGS "--xiaozhi_fonts_path" "${XIAOZHI_FONTS_PATH}")
 
@@ -1134,6 +1140,7 @@ function(build_default_assets_bin)
         DEPENDS
             ${SDKCONFIG}
             ${PROJECT_DIR}/scripts/build_default_assets.py
+            ${TRAE_FACE_ASSETS}
         COMMENT "Building default assets.bin based on configuration"
         VERBATIM
     )

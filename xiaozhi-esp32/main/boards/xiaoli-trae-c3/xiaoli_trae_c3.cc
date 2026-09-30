@@ -12,6 +12,7 @@
 #include <driver/spi_common.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 
 static_assert(CONFIG_XIAOLI_C3_CHAT_BUTTON != CONFIG_XIAOLI_C3_VOLUME_DOWN_BUTTON &&
               CONFIG_XIAOLI_C3_CHAT_BUTTON != CONFIG_XIAOLI_C3_VOLUME_UP_BUTTON &&
@@ -30,7 +31,12 @@ public:
 };
 
 class XiaoliTraeC3 : public WifiBoard {
+    static constexpr uint8_t kBatteryAddress = 0x63;
+    static constexpr int64_t kBatteryRefreshUs = 30LL * 1000 * 1000;
     i2c_master_bus_handle_t i2c_bus_ = nullptr;
+    i2c_master_dev_handle_t battery_gauge_ = nullptr;
+    int battery_level_ = -1;
+    int64_t battery_last_read_us_ = 0;
     TraeDisplay* display_ = nullptr;
     adc_oneshot_unit_handle_t button_adc_ = nullptr;
     adc_cali_handle_t button_calibration_ = nullptr;
@@ -47,6 +53,33 @@ class XiaoliTraeC3 : public WifiBoard {
         ESP_ERROR_CHECK(i2c_new_master_bus(&config, &i2c_bus_));
         // Codec API uses the 8-bit address 0x30; probe uses the 7-bit address.
         ESP_ERROR_CHECK(i2c_master_probe(i2c_bus_, ES8311_CODEC_DEFAULT_ADDR >> 1, 1000));
+    }
+
+    void InitializeBatteryGauge() {
+        if (i2c_master_probe(i2c_bus_, kBatteryAddress, 100) != ESP_OK) {
+            ESP_LOGW("XiaoliTraeC3", "CW2017 not found at I2C 0x%02x", kBatteryAddress);
+            return;
+        }
+        i2c_device_config_t config = {};
+        config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+        config.device_address = kBatteryAddress;
+        config.scl_speed_hz = 100000;
+        if (i2c_master_bus_add_device(i2c_bus_, &config, &battery_gauge_) != ESP_OK) {
+            ESP_LOGW("XiaoliTraeC3", "Failed to register CW2017");
+            return;
+        }
+        uint8_t version_register = 0x00;
+        uint8_t version = 0;
+        esp_err_t err = i2c_master_transmit_receive(battery_gauge_, &version_register, 1,
+                                                     &version, 1, 100);
+        if (err != ESP_OK || version == 0x00 || version == 0xff) {
+            ESP_LOGW("XiaoliTraeC3", "CW2017 version read failed: %s (0x%02x)",
+                     esp_err_to_name(err), version);
+            i2c_master_bus_rm_device(battery_gauge_);
+            battery_gauge_ = nullptr;
+            return;
+        }
+        ESP_LOGI("XiaoliTraeC3", "CW2017 detected: version=0x%02x", version);
     }
 
     void InitializeDisplay() {
@@ -161,6 +194,7 @@ public:
     XiaoliTraeC3() {
         ESP_LOGI("XiaoliTraeC3", "ES8311 SDA=10 SCL=7 MCLK=6 BCLK=5 WS=3 DOUT=2 DIN=4");
         InitializeAudioBus();
+        InitializeBatteryGauge();
         InitializeDisplay();
         InitializeButtons();
     }
@@ -174,6 +208,31 @@ public:
         return &codec;
     }
     Display* GetDisplay() override { return display_; }
+    bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
+        charging = false;
+        discharging = false;  // This board's charging-status signal has not been identified.
+        if (!battery_gauge_) return false;
+        int64_t now = esp_timer_get_time();
+        if (battery_last_read_us_ == 0 || now - battery_last_read_us_ >= kBatteryRefreshUs) {
+            battery_last_read_us_ = now;
+            uint8_t soc_register = 0x04;
+            uint8_t soc[2] = {};
+            esp_err_t err = i2c_master_transmit_receive(battery_gauge_, &soc_register, 1,
+                                                         soc, sizeof(soc), 100);
+            if (err == ESP_OK && soc[0] <= 100) {
+                battery_level_ = soc[0];
+                ESP_LOGI("XiaoliTraeC3", "CW2017 battery: %d%% (fraction=%u)",
+                         battery_level_, static_cast<unsigned>(soc[1]));
+            } else {
+                battery_level_ = -1;
+                ESP_LOGW("XiaoliTraeC3", "CW2017 SOC read failed: %s (soc=%u)",
+                         esp_err_to_name(err), static_cast<unsigned>(soc[0]));
+            }
+        }
+        if (battery_level_ < 0) return false;
+        level = battery_level_;
+        return true;
+    }
     Backlight* GetBacklight() override {
         static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, false);
         return &backlight;

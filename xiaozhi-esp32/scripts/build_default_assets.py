@@ -365,7 +365,7 @@ def sort_key(filename):
     return extension, basename
 
 
-def pack_assets_simple(target_path, include_path, out_file, assets_path, max_name_len=32):
+def pack_assets_simple(target_path, include_path, out_file, assets_path, max_name_len=32, align_assets=False):
     """
     Simplified version of pack_assets that handles basic file packing
     """
@@ -389,6 +389,9 @@ def pack_assets_simple(target_path, include_path, out_file, assets_path, max_nam
         file_name = os.path.basename(file_path)
         file_size = os.path.getsize(file_path)
 
+        if align_assets:
+            # GetAssetData skips the two-byte ZZ marker. Align the returned pixel pointer.
+            merged_data.extend(b'\x00' * ((2 - len(merged_data)) % 4))
         file_info_list.append((file_name, len(merged_data), file_size, 0, 0))
         # Add 0x5A5A prefix to merged_data
         merged_data.extend(b'\x5A' * 2)
@@ -747,7 +750,7 @@ def get_emoji_collection_path(default_emoji_collection, xiaozhi_fonts_path, proj
     return None
 
 
-def build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font_path, emoji_collection_path, extra_files_path, output_path, multinet_model_info=None):
+def build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font_path, emoji_collection_path, extra_files_path, output_path, multinet_model_info=None, align_assets=False):
     """
     Build assets using integrated functions (no external dependencies)
     """
@@ -783,7 +786,7 @@ def build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font
         # Use simplified packing function
         include_path = config_data['include_path']
         image_file = config_data['image_file']
-        pack_assets_simple(assets_dir, include_path, image_file, "assets", int(config_data['name_length']))
+        pack_assets_simple(assets_dir, include_path, image_file, "assets", int(config_data['name_length']), align_assets)
         
         # Copy final assets.bin to output location
         if os.path.exists(image_file):
@@ -817,6 +820,7 @@ def main():
     parser.add_argument('--esp_sr_model_path', help='Path to ESP-SR model directory')
     parser.add_argument('--xiaozhi_fonts_path', help='Path to xiaozhi-fonts component directory')
     parser.add_argument('--extra_files', help='Path to extra files directory to be included in assets')
+    parser.add_argument('--align_assets', action='store_true', help='Align asset data to four bytes')
     
     args = parser.parse_args()
     
@@ -922,7 +926,7 @@ def main():
     
     # Build the assets
     success = build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font_path, emoji_collection_path, 
-                                     extra_files_path, args.output, multinet_model_info)
+                                     extra_files_path, args.output, multinet_model_info, args.align_assets)
     
     if not success:
         sys.exit(1)
