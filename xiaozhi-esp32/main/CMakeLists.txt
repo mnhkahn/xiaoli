@@ -1224,7 +1224,26 @@ if ("${size}" AND "${offset}")
         message(STATUS "Generated default assets flash configured: ${GENERATED_ASSETS_LOCAL_FILE} -> assets partition")
     elseif(CONFIG_FLASH_CUSTOM_ASSETS)
         # Flash custom assets
-        get_assets_local_file("${CONFIG_CUSTOM_ASSETS_FILE}" ASSETS_LOCAL_FILE)
+        if(CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_CAM)
+            set(S3_FACE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/boards/xiaoli-trae-c3/assets")
+            file(GLOB S3_FACE_ASSETS CONFIGURE_DEPENDS "${S3_FACE_DIR}/face_*.rgb565")
+            set(ASSETS_LOCAL_FILE "${CMAKE_BINARY_DIR}/xiaoli_s3_assets.bin")
+            add_custom_command(
+                OUTPUT "${ASSETS_LOCAL_FILE}"
+                COMMAND python "${PROJECT_DIR}/scripts/build_xiaoli_s3_assets.py"
+                    --base "${CMAKE_CURRENT_SOURCE_DIR}/${CONFIG_CUSTOM_ASSETS_FILE}"
+                    --faces "${S3_FACE_DIR}"
+                    --output "${ASSETS_LOCAL_FILE}"
+                    --max-size "${size}"
+                DEPENDS "${PROJECT_DIR}/scripts/build_xiaoli_s3_assets.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/${CONFIG_CUSTOM_ASSETS_FILE}"
+                    ${S3_FACE_ASSETS}
+                VERBATIM
+            )
+            add_custom_target(xiaoli_s3_assets ALL DEPENDS "${ASSETS_LOCAL_FILE}")
+        else()
+            get_assets_local_file("${CONFIG_CUSTOM_ASSETS_FILE}" ASSETS_LOCAL_FILE)
+        endif()
         esptool_py_flash_to_partition(flash "assets" "${ASSETS_LOCAL_FILE}")
         message(STATUS "Custom assets flash configured: ${ASSETS_LOCAL_FILE} -> assets partition")
     elseif(CONFIG_FLASH_EXPRESSION_ASSETS)

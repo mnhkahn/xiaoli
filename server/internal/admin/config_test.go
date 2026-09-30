@@ -234,6 +234,23 @@ func TestLoadConfigReadsBuiltinWebFetchSettings(t *testing.T) {
 	}
 }
 
+func TestLoadConfigUsesClonedVoiceForEveryDevice(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{
+		"models": {"tts": {"voice": "FunAudioLLM/CosyVoice2-0.5B:anna"}}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XIAOLI_DEVICE_TTS_VOICE", "speech:cloned-voice")
+	t.Setenv("XIAOLI_DEVICE_TTS_VOICE_ID", "4c:11:ae:32:50:c8")
+
+	cfg := LoadConfig()
+	if cfg.GoTTSVoice != "speech:cloned-voice" {
+		t.Fatalf("GoTTSVoice = %q, want cloned voice as the shared TTS default", cfg.GoTTSVoice)
+	}
+}
+
 func TestLoadConfigReadsLLMPromptFromAgentMarkdown(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)

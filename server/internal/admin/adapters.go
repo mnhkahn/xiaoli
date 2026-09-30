@@ -171,15 +171,9 @@ func NewDeviceHub(cfg Config, registry *DeviceRegistry, stream *streamHub, audio
 			return registry.Authorize(deviceID, authorization)
 		},
 	}, agentesp32.Dependencies{
-		Stream: streamPublisher{stream: stream},
-		ASR:    asr,
-		TTS:    tts,
-		TTSVoiceForDevice: func(deviceID string) string {
-			if cfg.DeviceTTSVoice != "" && cfg.DeviceTTSVoiceID != "" && strings.EqualFold(deviceID, cfg.DeviceTTSVoiceID) {
-				return cfg.DeviceTTSVoice
-			}
-			return ""
-		},
+		Stream:                    streamPublisher{stream: stream},
+		ASR:                       asr,
+		TTS:                       tts,
 		Conversation:              conversation,
 		NewVoiceDetector:          newVoiceDetector,
 		BuildOggOpus:              esp32audio.BuildOggOpus,

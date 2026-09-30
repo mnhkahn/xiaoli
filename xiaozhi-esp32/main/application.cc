@@ -1107,7 +1107,7 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateListening:
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
             display->SetStatus(Lang::Strings::LISTENING);
-#if CONFIG_BOARD_TYPE_XIAOLI_TRAE_C3
+#if CONFIG_BOARD_TYPE_XIAOLI_TRAE_C3 || CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_CAM
             display->SetEmotion("listening");
 #else
             display->SetEmotion("neutral");
@@ -1143,7 +1143,7 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateSpeaking:
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
             display->SetStatus(Lang::Strings::SPEAKING);
-#if CONFIG_BOARD_TYPE_XIAOLI_TRAE_C3
+#if CONFIG_BOARD_TYPE_XIAOLI_TRAE_C3 || CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_CAM
             display->SetEmotion("speaking");
 #endif
 

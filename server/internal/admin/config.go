@@ -65,8 +65,6 @@ type Config struct {
 	GoTTSAPIKey             string
 	GoTTSModel              string
 	GoTTSVoice              string
-	DeviceTTSVoiceID        string
-	DeviceTTSVoice          string
 	GoTTSResponseFormat     string
 	GoTTSTimeout            time.Duration
 	ExternalMCPEndpoints    []agentruntime.MCPEndpoint
@@ -249,9 +247,7 @@ func LoadConfig() Config {
 		GoTTSURL:                strings.TrimSpace(tts.BaseURL),
 		GoTTSAPIKey:             settingsAPIKey(tts.APIKeyEnv),
 		GoTTSModel:              strings.TrimSpace(tts.Model),
-		GoTTSVoice:              strings.TrimSpace(tts.Voice),
-		DeviceTTSVoiceID:        strings.TrimSpace(env("XIAOLI_DEVICE_TTS_VOICE_ID", "")),
-		DeviceTTSVoice:          strings.TrimSpace(env("XIAOLI_DEVICE_TTS_VOICE", "")),
+		GoTTSVoice:              strings.TrimSpace(env("XIAOLI_DEVICE_TTS_VOICE", tts.Voice)),
 		GoTTSResponseFormat:     strings.TrimSpace(tts.ResponseFormat),
 		GoTTSTimeout:            time.Duration(envInt("XIAOLI_GO_TTS_TIMEOUT_SECONDS", 30)) * time.Second,
 		MCPConfigPath:           settingsPath,
