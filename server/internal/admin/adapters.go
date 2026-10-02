@@ -1561,20 +1561,27 @@ func WechatLoginCLI(ctx context.Context) error {
 	})
 }
 
-const studyMonitorPrompt = `请检查这张照片中孩子的学习状态，重点判断：
-1. 坐姿是否端正，是否趴桌、歪斜、低头过近或离座；
-2. 是否正在认真学习，是否明显走神、玩东西或看无关内容；
-3. 如果需要提醒，请只针对坐姿或学习状态给出简短提醒。
+const studyMonitorPrompt = `请检查照片中孩子是否存在需要立即提醒的明确问题，以减少对正常学习的打扰为原则：
+1. 正常低头读书、写字、头部略低或轻微倾斜，不需要提醒。
+2. 只有清楚看到趴桌、明显歪斜、眼睛贴近书本等问题，才提醒坐姿。桌面、书本或身体没拍全，无法判断距离时不要猜测。
+3. 单张照片不能判断内在专注程度。不能凭低头、表情、视线或瞬间动作推断走神、不认真。只有明确看到玩玩具、玩游戏、看无关视频等行为，才提醒学习状态。
+4. 仅有“可能”“疑似”“略微”等推测、看不清、证据不足或没有明确问题时，need_reminder 必须为 false，reminder_text 为空。若只有一项问题明确，忽略其他不确定项，只提醒明确的问题。
+5. posture 和 focus 只描述画面中可见的事实；提醒只针对有明确证据的问题，不能因为坐姿问题附带要求“专心学习”。
+6. 例如：孩子握笔低头看桌面，头部略低，没有明显无关行为，应返回 need_reminder=false。
 
-请尽量返回 JSON：
+只返回 JSON：
 {"need_reminder": true/false, "posture": "...", "focus": "...", "summary": "...", "reminder_text": "..."}
 `
 
-var studyProblemKeywords = []string{
-	"坐姿有问题", "趴", "趴桌", "歪", "歪斜", "低头", "过近", "离座", "走神", "分心", "玩东西", "玩手机", "不认真", "需要提醒",
+// Only concrete, visible problems qualify. Low head position and inferred
+// attention are deliberately excluded.
+var studyPostureProblems = []string{"趴桌", "趴在桌", "明显歪斜", "严重歪斜", "低头过近", "眼睛贴近", "脸贴近", "眼睛离书本过近"}
+var studyFocusProblems = []string{"玩玩具", "玩游戏", "看无关视频", "看无关内容"}
+var studyUncertainOrNegative = []string{
+	"可能", "疑似", "似乎", "也许", "或许", "略", "轻微", "不确定", "无法", "不能判断", "看不清", "证据不足",
+	"没有", "没看到", "未", "不是", "并非", "不明显", "无明显", "不存在", "正常", "无需", "不需要",
+	"不要", "避免", "请", "建议", "如果", "是否",
 }
-
-var studyNegationKeywords = []string{"没有明显问题", "未发现问题", "坐姿端正", "认真学习", "无需提醒", "不需要提醒"}
 
 type studyDecision struct {
 	NeedReminder bool
@@ -2154,7 +2161,7 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, def agentworkflow
 	}
 	decision := studyDecision{}
 	if !analysisFailed {
-		decision = s.parseStudyDecision(result.Result, metadataString(def.Metadata, "reminder_text", "请坐直，认真学习。"))
+		decision = s.parseStudyDecision(result.Result)
 	}
 	reminderResult := ""
 	if !analysisFailed && decision.NeedReminder {
@@ -2194,7 +2201,7 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, def agentworkflow
 	})
 }
 
-func (s *AdminServer) parseStudyDecision(value any, reminderFallback string) studyDecision {
+func (s *AdminServer) parseStudyDecision(value any) studyDecision {
 	parsed := s.extractStudyDecisionPayload(value)
 	if payload, ok := parsed.(map[string]any); ok {
 		var textParts []string
@@ -2216,23 +2223,25 @@ func (s *AdminServer) parseStudyDecision(value any, reminderFallback string) stu
 			needReminder, ok = payload["remind"].(bool)
 		}
 		if !ok {
-			needReminder = studyTextNeedsReminder(analysisText)
+			needReminder = true
 		}
-		reminderText := strings.TrimSpace(stringValue(payload["reminder_text"]))
-		if reminderText == "" || reminderText == "<nil>" {
-			reminderText = strings.TrimSpace(stringValue(payload["reminder"]))
+		// A model's true flag is insufficient without concrete visible evidence.
+		// Prefer observation fields so a summary or suggested reminder cannot
+		// introduce a problem absent from the actual observations.
+		evidence := analysisText
+		var observations []string
+		for _, key := range []string{"posture", "focus"} {
+			if text, ok := payload[key].(string); ok && strings.TrimSpace(text) != "" {
+				observations = append(observations, text)
+			}
 		}
-		if reminderText == "" || reminderText == "<nil>" {
-			reminderText = reminderFallback
+		if len(observations) > 0 {
+			evidence = strings.Join(observations, "\n")
 		}
-		return studyDecision{NeedReminder: needReminder, AnalysisText: analysisText, ReminderText: reminderText}
+		return confirmedStudyDecision(needReminder, analysisText, evidence)
 	}
 	analysisText := strings.TrimSpace(stringValue(parsed))
-	return studyDecision{
-		NeedReminder: studyTextNeedsReminder(analysisText),
-		AnalysisText: analysisText,
-		ReminderText: reminderFallback,
-	}
+	return confirmedStudyDecision(true, analysisText, analysisText)
 }
 
 func (s *AdminServer) extractStudyDecisionPayload(value any) any {
@@ -2284,21 +2293,51 @@ func tryJSONValue(value any) any {
 	return parsed
 }
 
-func studyTextNeedsReminder(text string) bool {
-	if strings.TrimSpace(text) == "" {
-		return false
-	}
-	for _, item := range studyNegationKeywords {
-		if strings.Contains(text, item) {
-			return false
+func studyHasEvidence(text string, problems []string) bool {
+	// Scope uncertainty and negation to each clause, so a normal posture does
+	// not hide a separate, clearly observed unrelated activity.
+	clauses := strings.FieldsFunc(text, func(r rune) bool {
+		return strings.ContainsRune("，,。；;！!？?\n", r)
+	})
+	for _, clause := range clauses {
+		uncertain := false
+		for _, marker := range studyUncertainOrNegative {
+			if strings.Contains(clause, marker) {
+				uncertain = true
+				break
+			}
 		}
-	}
-	for _, item := range studyProblemKeywords {
-		if strings.Contains(text, item) {
-			return true
+		if uncertain {
+			continue
+		}
+		for _, problem := range problems {
+			if strings.Contains(clause, problem) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func confirmedStudyDecision(requested bool, analysis, evidence string) studyDecision {
+	decision := studyDecision{AnalysisText: analysis}
+	if !requested {
+		return decision
+	}
+	posture := studyHasEvidence(evidence, studyPostureProblems)
+	focus := studyHasEvidence(evidence, studyFocusProblems)
+	decision.NeedReminder = posture || focus
+	// Use only the confirmed categories; model text and generic fallbacks may
+	// otherwise add unsupported criticism about attention.
+	switch {
+	case posture && focus:
+		decision.ReminderText = "请调整坐姿，放下与学习无关的东西。"
+	case posture:
+		decision.ReminderText = "请调整一下坐姿。"
+	case focus:
+		decision.ReminderText = "请放下与学习无关的东西，继续学习。"
+	}
+	return decision
 }
 
 type studyLarkPayloadInput struct {

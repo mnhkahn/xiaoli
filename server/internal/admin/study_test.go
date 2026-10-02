@@ -53,12 +53,12 @@ func TestParseStudyDecisionFromJSON(t *testing.T) {
 		"reminder_text": "抬头一点。",
 	}
 
-	decision := srv.parseStudyDecision(value, "请坐直")
+	decision := srv.parseStudyDecision(value)
 
 	if !decision.NeedReminder {
 		t.Fatal("NeedReminder = false, want true")
 	}
-	if decision.ReminderText != "抬头一点。" {
+	if decision.ReminderText != "请调整一下坐姿。" {
 		t.Fatalf("ReminderText = %q", decision.ReminderText)
 	}
 	if decision.AnalysisText == "" {
@@ -72,7 +72,7 @@ func TestParseStudyDecisionFromNestedJSONText(t *testing.T) {
 		"result": `{"need_reminder":false,"summary":"坐姿端正，认真学习"}`,
 	}
 
-	decision := srv.parseStudyDecision(value, "请坐直")
+	decision := srv.parseStudyDecision(value)
 
 	if decision.NeedReminder {
 		t.Fatal("NeedReminder = true, want false")
@@ -206,5 +206,69 @@ func TestBuildLarkPostPayloadKeepsImageWhenAnalysisFails(t *testing.T) {
 	}
 	if got := strings.Join(textItems, "\n"); !strings.Contains(got, "结论：分析失败") || !strings.Contains(got, "视觉分析失败：timeout") {
 		t.Fatalf("analysis failure details missing from %#v", textItems)
+	}
+}
+
+func TestStudyDecisionRequiresVisibleEvidence(t *testing.T) {
+	srv := NewServer(testConfig())
+	cases := []struct {
+		name  string
+		value any
+		want  bool
+	}{
+		{"reported false positive", map[string]any{
+			"need_reminder": true,
+			"summary":       "孩子正在学习，但坐姿和专注度有待改善",
+			"posture":       "坐姿基本端正，但头部略低",
+			"focus":         "正在学习，但注意力可能不集中",
+			"reminder_text": "请抬头挺胸，保持正确坐姿，专心学习。",
+		}, false},
+		{"normal writing", "孩子低头写字，头部轻微倾斜", false},
+		{"inferred attention", map[string]any{"need_reminder": true, "focus": "明显走神，不认真"}, false},
+		{"uncertain posture", map[string]any{"need_reminder": true, "posture": "可能趴桌"}, false},
+		{"uncertain distance", "书本没有拍全，无法判断是否低头过近", false},
+		{"negated problem", "没有趴桌或玩游戏", false},
+		{"bare flag", map[string]any{"need_reminder": true}, false},
+		{"explicit false respected", map[string]any{"need_reminder": false, "posture": "趴桌"}, false},
+		{"clear posture", "孩子趴在桌上写字，正在认真学习", true},
+		{"clear activity despite normal posture", "坐姿端正，正在玩游戏", true},
+		{"uncertain activity", "可能在玩游戏", false},
+		{"instruction is not evidence", "请不要趴桌", false},
+		{"summary cannot override observations", map[string]any{
+			"need_reminder": true, "summary": "趴桌", "posture": "头部略低", "focus": "正在写字",
+		}, false},
+		{"nested uncertain response", map[string]any{
+			"result": `{"need_reminder":true,"posture":"疑似低头过近","focus":"可能在玩游戏"}`,
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := srv.parseStudyDecision(tc.value)
+			if got.NeedReminder != tc.want {
+				t.Fatalf("NeedReminder = %v, want %v: %+v", got.NeedReminder, tc.want, got)
+			}
+			if !tc.want && got.ReminderText != "" {
+				t.Fatalf("unexpected reminder: %q", got.ReminderText)
+			}
+		})
+	}
+}
+
+func TestStudyReminderOnlyIncludesConfirmedProblems(t *testing.T) {
+	srv := NewServer(testConfig())
+	for _, tc := range []struct {
+		posture, focus, want string
+	}{
+		{"明显歪斜", "注意力可能不集中", "请调整一下坐姿。"},
+		{"头部略低", "正在玩游戏", "请放下与学习无关的东西，继续学习。"},
+		{"趴桌", "正在玩游戏", "请调整坐姿，放下与学习无关的东西。"},
+	} {
+		got := srv.parseStudyDecision(map[string]any{
+			"need_reminder": true, "posture": tc.posture, "focus": tc.focus,
+			"reminder_text": "请抬头挺胸，专心学习。",
+		})
+		if !got.NeedReminder || got.ReminderText != tc.want {
+			t.Fatalf("decision = %+v, want reminder %q", got, tc.want)
+		}
 	}
 }
