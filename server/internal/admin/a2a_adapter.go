@@ -25,6 +25,7 @@ type a2aPipeline struct {
 	agent       a2aAgentRunner
 	profiles    map[string]A2AProfileConfig
 	newsFetcher geekNewsFetcher
+	newsScorer  geekNewsScorer
 }
 
 var _ a2a.ConversationPipeline = (*a2aPipeline)(nil)
@@ -262,12 +263,13 @@ type geekNewsReply struct {
 }
 
 type geekNewsItem struct {
-	Link        string `json:"link"`
-	Title       string `json:"title"`
-	SourceTitle string `json:"source_title"`
-	Description string `json:"description"`
-	Image       string `json:"image"`
-	CreateTime  int64  `json:"create_time"`
+	sourceDescription string // Original text for scoring, never included in delivery JSON.
+	Link              string `json:"link"`
+	Title             string `json:"title"`
+	SourceTitle       string `json:"source_title"`
+	Description       string `json:"description"`
+	Image             string `json:"image"`
+	CreateTime        int64  `json:"create_time"`
 }
 
 func newGeekNewsStructuredOutput() *agentruntime.PromptProfileStructuredOutput {

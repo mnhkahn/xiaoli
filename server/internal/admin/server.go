@@ -230,6 +230,7 @@ func (s *AdminServer) setupA2A(agent *EinoAgent) {
 		return
 	}
 	pipeline := newA2APipelineWithNewsFetcher(agent, s.cfg.A2A.Profiles, newCYEAMGeekNewsFetcher())
+	pipeline.newsScorer = newJevNewsScorer(settingsAPIKey("OPENROUTER_API_KEY"))
 	executor := a2aPKG.NewExecutor(pipeline, s.cfg.A2A.MaxInputChars)
 	s.a2aHandler = a2aPKG.NewServer(a2aPKG.ServerConfig{
 		Auth: a2aPKG.A2AConfig{

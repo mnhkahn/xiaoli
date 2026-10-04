@@ -171,8 +171,8 @@ func TestA2APipelineRoutesGeekNewsProfileToPromptProfile(t *testing.T) {
 func TestA2APipelineBuildsGeekNewsDeterministicallyFromCLIItems(t *testing.T) {
 	items := fiveSourceNews()
 	agent := &fakeA2AAgent{structuredArgumentQueue: []string{
-		translatedNewsBatchResponse(3, 300), translatedNewsBatchResponse(2, 300), `{"ids":["n0","n1","n2","n3","n4"]}`,
-		translatedNewsBatchResponse(3, 300), translatedNewsBatchResponse(2, 300), `{"ids":["n0","n1","n2","n3","n4"]}`,
+		translatedNewsBatchResponse(3, 300), translatedNewsBatchResponse(2, 300),
+		translatedNewsBatchResponse(3, 300), translatedNewsBatchResponse(2, 300),
 	}}
 	aiItems := fiveSourceNews()
 	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{CreateTime: 1719532800, News: items, AINews: aiItems}})
@@ -200,11 +200,11 @@ func TestA2APipelineBuildsGeekNewsDeterministicallyFromCLIItems(t *testing.T) {
 			rankCalls++
 		}
 	}
-	if rankCalls != 2 {
-		t.Fatalf("rank calls = %d, want one ranking request per news group", rankCalls)
+	if rankCalls != 0 {
+		t.Fatalf("rank calls = %d, want no chat-model ranking requests", rankCalls)
 	}
-	if batchCalls != 4 || agent.profileCalls != 6 {
-		t.Fatalf("batch calls=%d total calls=%d, want four bounded batch translations and two rankings", batchCalls, agent.profileCalls)
+	if batchCalls != 4 || agent.profileCalls != 4 {
+		t.Fatalf("batch calls=%d total calls=%d, want four bounded batch translations", batchCalls, agent.profileCalls)
 	}
 	if got.News[0].Image != items[0].Image || got.News[0].CreateTime != items[0].CreateTime || got.News[0].SourceTitle != items[0].Title {
 		t.Fatalf("item metadata changed: %#v", got.News[0])
@@ -267,10 +267,19 @@ func TestA2APipelineRanksNewsGroupsIndependently(t *testing.T) {
 		aiNews[i].Link = "https://example.com/ai/" + strconv.Itoa(i)
 	}
 	agent := &fakeA2AAgent{structuredArgumentQueue: []string{
-		translatedNewsBatchResponse(3, 300), translatedNewsBatchResponse(2, 300), `{"ids":["n1","n0","n2","n3","n4"]}`,
-		translatedNewsBatchResponse(3, 300), translatedNewsBatchResponse(2, 300), `{"ids":["n1","n0","n2","n3","n4"]}`,
+		translatedNewsBatchResponse(3, 300), translatedNewsBatchResponse(2, 300),
+		translatedNewsBatchResponse(3, 300), translatedNewsBatchResponse(2, 300),
 	}}
 	pipeline := newA2APipelineWithNewsFetcher(agent, nil, fakeGeekNewsFetcher{batch: geekNewsReply{News: news, AINews: aiNews}})
+	pipeline.newsScorer = newsScorerFunc(func(_ context.Context, item geekNewsItem) (geekNewsScores, error) {
+		if item.sourceDescription != news[0].Description {
+			t.Errorf("scoring must retain source description, got %q", item.sourceDescription)
+		}
+		if item.SourceTitle == news[1].Title {
+			return geekNewsScores{4, 4, 4}, nil
+		}
+		return geekNewsScores{}, nil
+	})
 
 	reply, err := pipeline.Run(context.Background(), a2a.ConversationTurn{Channel: "a2a", ConversationID: "a2a:rank-test", Text: `{"profile":"geek-news","input":{"date":"2026-06-28"}}`})
 	if err != nil {

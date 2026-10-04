@@ -131,11 +131,11 @@ func (p *a2aPipeline) runGeekNews(ctx context.Context, turn a2a.ConversationTurn
 	// the upstream CLI's arbitrary source order.
 	news := p.processGeekNewsItems(processingCtx, turn, profile, "news", batch.News)
 	if processingCtx.Err() == nil && len(news) > 1 {
-		news = p.rankGeekNewsItems(processingCtx, turn, profile, news)
+		news = p.rankGeekNewsItems(processingCtx, turn, "news", news)
 	}
 	aiNews := p.processGeekNewsItems(processingCtx, turn, profile, "ai_news", batch.AINews)
 	if processingCtx.Err() == nil && len(aiNews) > 1 {
-		aiNews = p.rankGeekNewsItems(processingCtx, turn, profile, aiNews)
+		aiNews = p.rankGeekNewsItems(processingCtx, turn, "ai_news", aiNews)
 	}
 	if errors.Is(processingCtx.Err(), context.DeadlineExceeded) {
 		logger.Infof("[A2A][geek-news][processing_deadline] conversation_id=%s date=%s fallback=accepted_items", turn.ConversationID, date)
@@ -180,6 +180,7 @@ func (p *a2aPipeline) processGeekNewsItems(ctx context.Context, turn a2a.Convers
 	for i := range items {
 		processed[i] = items[i]
 		processed[i].SourceTitle = items[i].Title
+		processed[i].sourceDescription = items[i].Description
 	}
 
 	accepted := make([]geekNewsItem, 0, len(items))
@@ -537,78 +538,6 @@ func validateGeekNewsDelivery(reply geekNewsReply) error {
 		}
 	}
 	return nil
-}
-
-func (p *a2aPipeline) rankGeekNewsItems(ctx context.Context, turn a2a.ConversationTurn, profile a2aPromptProfileSpec, items []geekNewsItem) []geekNewsItem {
-	// Ranking is deliberately optional. A failure keeps the CLI's source order,
-	// so a transient model error can never suppress the daily publication.
-	candidates := make([]map[string]string, 0, len(items))
-	for i, item := range items {
-		candidates = append(candidates, map[string]string{
-			"id": fmt.Sprintf("n%d", i), "title": item.Title, "description": truncateGeekNewsText(item.Description, 280),
-		})
-	}
-	input, _ := json.Marshal(candidates)
-	output := newGeekNewsOrderStructuredOutput()
-	_, err := p.agent.RunPromptProfile(ctx, agentruntime.PromptProfileRequest{
-		Name:         "geek-news-rank",
-		SystemPrompt: "按科技新闻的重要性和时效性排序。只提交 ids，必须包含所有提供的 ID 且不重复。",
-		UserText:     string(input), ChannelName: turn.Channel, SessionKey: turn.ConversationID + ":rank",
-		// Structured output consumes one model step and one tool-result step.
-		DisableHistory: true, AllowTools: false, MaxSteps: 2, Model: profile.Model, StructuredOutput: output,
-	})
-	if err != nil {
-		logger.Infof("[A2A][geek-news][rank_fallback] conversation_id=%s err=%v", turn.ConversationID, err)
-		return items
-	}
-	raw, ok := output.Result()
-	if !ok {
-		logger.Infof("[A2A][geek-news][rank_fallback] conversation_id=%s err=no structured output", turn.ConversationID)
-		return items
-	}
-	var order geekNewsOrder
-	if err := json.Unmarshal([]byte(raw), &order); err != nil {
-		return items
-	}
-	return applyGeekNewsOrder(items, order.IDs)
-}
-
-type geekNewsOrder struct {
-	IDs []string `json:"ids"`
-}
-
-func newGeekNewsOrderStructuredOutput() *agentruntime.PromptProfileStructuredOutput {
-	return agentruntime.NewPromptProfileStructuredOutput("structured_output", "提交所有新闻 ID 的最终顺序。", map[string]*schema.ParameterInfo{
-		"ids": {Type: schema.Array, Required: true, ElemInfo: &schema.ParameterInfo{Type: schema.String}},
-	}, func(value string) (string, error) {
-		var order geekNewsOrder
-		if err := json.Unmarshal([]byte(value), &order); err != nil || len(order.IDs) == 0 {
-			if err == nil {
-				err = errors.New("ids are required")
-			}
-			return "", err
-		}
-		return jsonCompact(order)
-	})
-}
-
-func applyGeekNewsOrder(items []geekNewsItem, ids []string) []geekNewsItem {
-	ordered := make([]geekNewsItem, 0, len(items))
-	seen := make(map[int]bool, len(items))
-	for _, id := range ids {
-		var index int
-		if _, err := fmt.Sscanf(id, "n%d", &index); err != nil || index < 0 || index >= len(items) || seen[index] {
-			continue
-		}
-		seen[index] = true
-		ordered = append(ordered, items[index])
-	}
-	for i := range items {
-		if !seen[i] {
-			ordered = append(ordered, items[i])
-		}
-	}
-	return ordered
 }
 
 func truncateGeekNewsText(text string, maxRunes int) string {
