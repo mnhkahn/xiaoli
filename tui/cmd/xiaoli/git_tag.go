@@ -12,7 +12,7 @@ import (
 	"github.com/mnhkahn/xiaoli/internal/agent/slash"
 )
 
-const gitTagUsage = "命令：/tag s 小版本（1.3.8 → 1.3.9） · /tag m 中版本（1.3.8 → 1.4.0） · /tag l 大版本（1.3.8 → 2.0.0）"
+const gitTagUsage = "命令：/tag s 小版本 · /tag m 中版本 · /tag l 大版本"
 
 var stableGitTag = regexp.MustCompile(`^([vV]?)(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
@@ -133,13 +133,22 @@ func prepareGitTag(ctx context.Context, cwd, size string) (p gitTagPlan, err err
 	if err != nil {
 		return
 	}
+	err = readGitTagVersion(ctx, &p)
+	if err == nil && size != "" {
+		p.target, err = nextGitTag(p.previous, size)
+	}
+	return
+}
+
+// Share the version source with input previews, without requiring a clean worktree.
+func readGitTagVersion(ctx context.Context, p *gitTagPlan) error {
 	refs, err := tagGit(ctx, p.cwd, "tag", "--list")
 	if err != nil {
-		return p, err
+		return err
 	}
 	remotes, err := tagGit(ctx, p.cwd, "remote")
 	if err != nil {
-		return p, err
+		return err
 	}
 	names := strings.Fields(remotes)
 	for _, name := range names {
@@ -151,29 +160,26 @@ func prepareGitTag(ctx context.Context, cwd, size string) (p gitTagPlan, err err
 		p.remote = names[0]
 	}
 	if p.remote == "" && len(names) > 1 {
-		return p, fmt.Errorf("存在多个远端且没有 origin，无法确定标签推送目标")
+		return fmt.Errorf("存在多个远端且没有 origin，无法确定标签推送目标")
 	}
 	if p.remote != "" {
 		// Read the push destination, which can differ from the fetch URL.
 		urls, e := tagGit(ctx, p.cwd, "remote", "get-url", "--push", "--all", p.remote)
 		if e != nil {
-			return p, e
+			return e
 		}
 		if len(strings.Split(urls, "\n")) != 1 {
-			return p, fmt.Errorf("远端有多个推送地址，无法确定标签推送目标")
+			return fmt.Errorf("远端有多个推送地址，无法确定标签推送目标")
 		}
 		p.pushURL = urls
 		remoteRefs, e := tagGit(ctx, p.cwd, "ls-remote", "--tags", "--refs", urls)
 		if e != nil {
-			return p, fmt.Errorf("远端版本信息未核实，请检查连接后重试：%w", e)
+			return fmt.Errorf("远端版本信息未核实，请检查连接后重试：%w", e)
 		}
 		refs += "\n" + remoteRefs
 	}
 	p.previous, err = highestGitTag(refs)
-	if err == nil && size != "" {
-		p.target, err = nextGitTag(p.previous, size)
-	}
-	return
+	return err
 }
 
 func executeGitTag(ctx context.Context, p gitTagPlan, push, retry bool) gitTagDoneMsg {
@@ -351,7 +357,7 @@ func (m *model) handleGitTagDone(msg gitTagDoneMsg) {
 	m.syncViewport(true)
 }
 
-func gitTagSuggestions(value string) []slashSuggestion {
+func (m model) gitTagSuggestions(value string) []slashSuggestion {
 	if !strings.HasPrefix(value, "/tag ") {
 		return nil
 	}
@@ -359,8 +365,70 @@ func gitTagSuggestions(value string) []slashSuggestion {
 	for i, size := range []string{"s", "m", "l"} {
 		name := "tag " + size
 		if strings.HasPrefix(name, strings.TrimPrefix(value, "/")) {
-			out = append(out, slashSuggestion{Name: name, Description: []string{"小版本：1.3.8 → 1.3.9", "中版本：1.3.8 → 1.4.0", "大版本：1.3.8 → 2.0.0"}[i], Kind: "tui"})
+			description := "正在读取版本…"
+			preview := m.gitTagPreview
+			if preview.active && preview.cwd == m.cwd && !preview.loading {
+				if preview.err != nil {
+					description = "版本读取失败：" + strings.Join(strings.Fields(preview.err.Error()), " ")
+				} else if target, err := nextGitTag(preview.version, size); err != nil {
+					description = err.Error()
+				} else {
+					description = fmt.Sprintf("%s → %s", preview.version, target)
+				}
+			}
+			out = append(out, slashSuggestion{Name: name, Description: []string{"小", "中", "大"}[i] + "版本：" + description, Kind: "tui"})
 		}
 	}
 	return out
+}
+
+// Each input session gets its own request ID so late results cannot overwrite a
+// newer preview (including after /cd or leaving and re-entering /tag).
+type gitTagPreview struct {
+	cwd             string
+	id              uint64
+	active, loading bool
+	version         gitTagVersion
+	err             error
+	cancel          context.CancelFunc
+}
+
+type gitTagPreviewMsg struct {
+	cwd     string
+	id      uint64
+	version gitTagVersion
+	err     error
+}
+
+func (m *model) syncGitTagPreview() tea.Cmd {
+	value := strings.TrimLeft(m.input.Value(), " ")
+	wanted := !m.busy && !m.quitting && m.pendingGitTag.stage == "" &&
+		(value == "/tag" || strings.HasPrefix(value, "/tag "))
+	p := &m.gitTagPreview
+	if p.active && (!wanted || p.cwd != m.cwd) {
+		if p.cancel != nil {
+			p.cancel()
+		}
+		*p = gitTagPreview{id: p.id + 1}
+	}
+	if !wanted || p.active {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	*p = gitTagPreview{cwd: m.cwd, id: p.id + 1, active: true, loading: true, cancel: cancel}
+	cwd, id := p.cwd, p.id
+	return func() tea.Msg {
+		defer cancel()
+		plan := gitTagPlan{cwd: cwd}
+		err := readGitTagVersion(ctx, &plan)
+		return gitTagPreviewMsg{cwd: cwd, id: id, version: plan.previous, err: err}
+	}
+}
+
+func (m *model) handleGitTagPreview(msg gitTagPreviewMsg) {
+	p := &m.gitTagPreview
+	if !p.active || p.id != msg.id || p.cwd != msg.cwd || m.cwd != msg.cwd {
+		return
+	}
+	p.loading, p.version, p.err, p.cancel = false, msg.version, msg.err, nil
 }

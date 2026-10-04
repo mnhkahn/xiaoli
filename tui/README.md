@@ -83,8 +83,12 @@ from the current staged diff; if nothing is staged, it stages the provided file
 arguments, or falls back to `git add .`.
 
 `/tag` shows command help and a version picker. Use `/tag s` for a small bump
-(`v1.3.8` → `v1.3.9`), `/tag m` for a medium bump (`v1.4.0`), or `/tag l`
-for a large bump (`v2.0.0`). The preview offers local annotated tag creation
+(patch), `/tag m` for a medium bump (minor), or `/tag l` for a large bump
+(major). While typing, suggestions asynchronously preview the current version
+and each resulting version. They refresh when you re-enter `/tag` or change
+working directory; loading and lookup errors are shown in place of versions.
+Input previews also work with uncommitted changes. After Enter, the version is
+checked again. The preview offers local annotated tag creation
 or creation and push of that tag. Versions are based on the highest stable
 `X.Y.Z`, `vX.Y.Z`, or `VX.Y.Z` tag locally and at the push destination
 (origin, or the sole remote). New tags preserve the highest version’s prefix;

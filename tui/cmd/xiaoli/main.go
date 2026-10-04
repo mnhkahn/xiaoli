@@ -338,6 +338,7 @@ type model struct {
 	autoCommitGitCmsg           bool
 	pendingGitCmsg              gitCmsgPending
 	pendingGitTag               gitTagPending
+	gitTagPreview               gitTagPreview
 	gitCmsgProgress             <-chan gitCmsgProgressMsg
 	reviewLoop                  codexReviewLoop
 	explorer                    *tuiExplorer
@@ -745,6 +746,10 @@ func shellQuote(value string) string {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	if nextModel, ok := next.(model); ok {
+		if previewCmd := nextModel.syncGitTagPreview(); previewCmd != nil {
+			cmd = tea.Batch(cmd, previewCmd)
+		}
+		next = nextModel
 		m.herdrSync(nextModel)
 	}
 	return next, cmd
@@ -1413,6 +1418,9 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.autoApprovePendingBashConfirm()
 		}
 		return m, tea.Batch(m.startNextBashFollowup(), waitForChat(m.chatMsgs), waitForEvent(m.events), chatTimeoutCmd(m.chatRunID, defaultChatTimeout), terminalTitleCmd(m))
+	case gitTagPreviewMsg:
+		m.handleGitTagPreview(msg)
+		return m, nil
 	case gitTagPreparedMsg:
 		m.handleGitTagPrepared(msg)
 		return m, nil
@@ -3965,7 +3973,7 @@ func (m *model) refreshContextUsage() {
 }
 
 func (m model) slashSuggestions(limit int) []slashSuggestion {
-	if out := gitTagSuggestions(strings.TrimLeft(m.input.Value(), " ")); len(out) > 0 {
+	if out := m.gitTagSuggestions(strings.TrimLeft(m.input.Value(), " ")); len(out) > 0 {
 		if limit > 0 && len(out) > limit {
 			out = out[:limit]
 		}

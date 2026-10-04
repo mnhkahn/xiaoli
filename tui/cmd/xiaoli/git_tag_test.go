@@ -247,3 +247,103 @@ func TestGitTagUnprefixedRemote(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestGitTagDynamicPreview(t *testing.T) {
+	dir := tagTestRepo(t)
+	remote := t.TempDir()
+	tagTestGit(t, remote, "init", "--bare")
+	tagTestGit(t, dir, "remote", "add", "origin", remote)
+	tagTestGit(t, dir, "tag", "V2.7.9")
+	tagTestGit(t, dir, "push", "origin", "refs/tags/V2.7.9")
+	tagTestGit(t, dir, "tag", "-d", "V2.7.9")
+	if err := os.WriteFile(filepath.Join(dir, "dirty.txt"), []byte("dirty"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := model{cwd: dir, input: textinput.New(), viewport: viewport.New(80, 24)}
+	m.input.Focus()
+	m.input.SetValue("/tag")
+	// Exercise the public Update path, just as typing the space after /tag does.
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = next.(model)
+	if cmd == nil || !m.gitTagPreview.loading || m.busy {
+		t.Fatal("typing did not start a background preview")
+	}
+	if got := m.slashSuggestions(8); len(got) != 3 || !strings.Contains(got[0].Description, "正在读取版本") {
+		t.Fatalf("loading suggestions: %+v", got)
+	}
+	// A text input cursor command can be batched with the version lookup.
+	var deliver func(tea.Msg)
+	deliver = func(msg tea.Msg) {
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, c := range batch {
+				deliver(c())
+			}
+		} else if _, ok := msg.(gitTagPreviewMsg); ok {
+			next, _ := m.Update(msg)
+			m = next.(model)
+		}
+	}
+	deliver(cmd())
+	for size, want := range map[string]string{"s": "V2.7.9 → V2.7.10", "m": "V2.7.9 → V2.8.0", "l": "V2.7.9 → V3.0.0"} {
+		m.input.SetValue("/tag " + size)
+		if c := m.syncGitTagPreview(); c != nil {
+			t.Fatal("changing size restarted lookup")
+		}
+		got := m.slashSuggestions(8)
+		if len(got) != 1 || !strings.Contains(got[0].Description, want) {
+			t.Fatalf("%s: %+v, want %s", size, got, want)
+		}
+	}
+	if got := strings.TrimSpace(tagTestGit(t, dir, "tag", "--list")); got != "" {
+		t.Fatalf("preview created local tags: %s", got)
+	}
+}
+
+func TestGitTagPreviewRefreshAndStaleResults(t *testing.T) {
+	dir := tagTestRepo(t)
+	m := model{cwd: dir, input: textinput.New()}
+	m.input.SetValue("/tag ")
+	cmd := m.syncGitTagPreview()
+	old := cmd().(gitTagPreviewMsg)
+	m.handleGitTagPreview(old)
+	if got := m.slashSuggestions(8); !strings.Contains(got[0].Description, "v0.0.0 → v0.0.1") {
+		t.Fatalf("empty repository preview: %+v", got)
+	}
+	m.input.SetValue("")
+	m.syncGitTagPreview()
+	tagTestGit(t, dir, "tag", "0.9.9")
+	m.input.SetValue("/tag s")
+	cmd = m.syncGitTagPreview()
+	m.handleGitTagPreview(old)
+	if !m.gitTagPreview.loading {
+		t.Fatal("stale result replaced new lookup")
+	}
+	m.handleGitTagPreview(cmd().(gitTagPreviewMsg))
+	if got := m.slashSuggestions(8); !strings.Contains(got[0].Description, "0.9.9 → 0.9.10") {
+		t.Fatalf("refreshed preview: %+v", got)
+	}
+	previous := gitTagPreviewMsg{cwd: dir, id: m.gitTagPreview.id, version: m.gitTagPreview.version}
+	m.cwd = tagTestRepo(t)
+	cmd = m.syncGitTagPreview()
+	m.handleGitTagPreview(previous)
+	if !m.gitTagPreview.loading {
+		t.Fatal("previous directory result accepted")
+	}
+	m.handleGitTagPreview(cmd().(gitTagPreviewMsg))
+	if got := m.slashSuggestions(8); !strings.Contains(got[0].Description, "v0.0.0 → v0.0.1") {
+		t.Fatalf("new directory preview: %+v", got)
+	}
+}
+
+func TestGitTagPreviewLookupFailure(t *testing.T) {
+	dir := tagTestRepo(t)
+	tagTestGit(t, dir, "remote", "add", "origin", filepath.Join(t.TempDir(), "missing.git"))
+	m := model{cwd: dir, input: textinput.New()}
+	m.input.SetValue("/tag s")
+	cmd := m.syncGitTagPreview()
+	m.handleGitTagPreview(cmd().(gitTagPreviewMsg))
+	got := m.slashSuggestions(8)
+	if len(got) != 1 || !strings.Contains(got[0].Description, "版本读取失败") || !strings.Contains(got[0].Description, "远端版本信息未核实") || strings.Contains(got[0].Description, "→") {
+		t.Fatalf("failed preview: %+v", got)
+	}
+}
