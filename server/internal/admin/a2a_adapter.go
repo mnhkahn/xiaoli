@@ -54,6 +54,7 @@ func (p *a2aPipeline) applyProfileOverrides(profile *a2aPromptProfileSpec, name 
 	if !ok {
 		return
 	}
+	profile.RankingMode = strings.ToLower(strings.TrimSpace(cfg.RankingMode))
 	if cfg.Model != "" {
 		profile.Model = cfg.Model
 	}
@@ -248,6 +249,7 @@ type a2aProfileRequest struct {
 }
 
 type a2aPromptProfileSpec struct {
+	RankingMode  string
 	Name         string
 	SystemPrompt string
 	AllowTools   bool

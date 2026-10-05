@@ -131,11 +131,11 @@ func (p *a2aPipeline) runGeekNews(ctx context.Context, turn a2a.ConversationTurn
 	// the upstream CLI's arbitrary source order.
 	news := p.processGeekNewsItems(processingCtx, turn, profile, "news", batch.News)
 	if processingCtx.Err() == nil && len(news) > 1 {
-		news = p.rankGeekNewsItems(processingCtx, turn, "news", news)
+		news = p.sortGeekNewsItems(processingCtx, turn, profile, "news", news)
 	}
 	aiNews := p.processGeekNewsItems(processingCtx, turn, profile, "ai_news", batch.AINews)
 	if processingCtx.Err() == nil && len(aiNews) > 1 {
-		aiNews = p.rankGeekNewsItems(processingCtx, turn, "ai_news", aiNews)
+		aiNews = p.sortGeekNewsItems(processingCtx, turn, profile, "ai_news", aiNews)
 	}
 	if errors.Is(processingCtx.Err(), context.DeadlineExceeded) {
 		logger.Infof("[A2A][geek-news][processing_deadline] conversation_id=%s date=%s fallback=accepted_items", turn.ConversationID, date)

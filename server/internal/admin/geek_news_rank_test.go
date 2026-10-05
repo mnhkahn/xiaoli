@@ -21,7 +21,7 @@ func TestJevNewsScorerLive(t *testing.T) {
 	if os.Getenv("XIAOLI_TEST_JEV") != "1" {
 		t.Skip("set XIAOLI_TEST_JEV=1 to test the live Decisions API")
 	}
-	scorer := newJevNewsScorer(os.Getenv("OPENROUTER_API_KEY"))
+	scorer := newJevNewsScorer("typesafe/jev-1.13", os.Getenv("OPENROUTER_API_KEY"))
 	scores, err := scorer.Score(context.Background(), geekNewsItem{
 		SourceTitle:       "Example: open-source JSON parser adds streaming support",
 		sourceDescription: "Synthetic test news: An open-source JSON parser adds incremental parsing for large files. The release provides Go examples and a migration guide. A reproducible benchmark reports peak memory falling from 800 MB to 40 MB on a 1 GB input. The change is available under the MIT license.",
@@ -49,7 +49,7 @@ func TestJevNewsScorer(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
 		}
-		if request.Model != "typesafe/jev-1.13" || !reflect.DeepEqual(request.State, map[string]string{"title": "original title", "description": "original description"}) {
+		if request.Model != "typesafe/custom-version" || !reflect.DeepEqual(request.State, map[string]string{"title": "original title", "description": "original description"}) {
 			t.Errorf("unexpected input: %+v", request)
 		}
 		if len(request.Questions) != 3 {
@@ -63,7 +63,7 @@ func TestJevNewsScorer(t *testing.T) {
 		fmt.Fprint(w, `{"answers":{"importance":{"type":"score","score":3.5},"usefulness":{"type":"score","score":2},"information":{"type":"score","score":4}}}`)
 	}))
 	defer server.Close()
-	scorer := newJevNewsScorer("test-key")
+	scorer := newJevNewsScorer("typesafe/custom-version", "test-key")
 	scorer.endpoint = server.URL
 	got, err := scorer.Score(context.Background(), geekNewsItem{SourceTitle: "original title", sourceDescription: "original description", Title: "translated", Description: "rewritten", CreateTime: 123})
 	if err != nil || got != (geekNewsScores{3.5, 2, 4}) {
@@ -89,14 +89,14 @@ func TestJevRejectsInvalidResponses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(tc.status); fmt.Fprint(w, tc.body) }))
 			defer server.Close()
-			scorer := newJevNewsScorer("test-key")
+			scorer := newJevNewsScorer("typesafe/custom-version", "test-key")
 			scorer.endpoint = server.URL
 			if _, err := scorer.Score(context.Background(), geekNewsItem{}); err == nil {
 				t.Fatal("expected error")
 			}
 		})
 	}
-	if _, err := newJevNewsScorer("").Score(context.Background(), geekNewsItem{}); err == nil {
+	if _, err := newJevNewsScorer("typesafe/jev-1.13", "").Score(context.Background(), geekNewsItem{}); err == nil {
 		t.Fatal("expected missing key error")
 	}
 }

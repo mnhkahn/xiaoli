@@ -68,6 +68,33 @@ func TestLoadConfigReadsLLMModelOptions(t *testing.T) {
 	}
 }
 
+func TestLoadConfigReadsOpenRouterDecisionModel(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("TEST_DECISION_API_KEY", "decision-key")
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{
+		"model_catalog": {"enabled": false, "providers": {
+			"openrouter": {
+				"base_url": "https://openrouter.ai/api/v1",
+				"api_key_env": "TEST_DECISION_API_KEY",
+				"decision_model": " typesafe/custom-version ",
+				"max_tokens": 8192
+			}
+		}}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := LoadConfig()
+	assert.Equal(t, "typesafe/custom-version", cfg.NewsRankingModel)
+	assert.Equal(t, "decision-key", cfg.NewsRankingAPIKey)
+	assert.NotContains(t, cfg.GoLLMModels, "typesafe/custom-version")
+	settings, _ := loadSettings([]string{"settings.json"})
+	provider := settings.ModelCatalog.catalogConfig().Providers["openrouter"]
+	assert.Equal(t, "https://openrouter.ai/api/v1", provider.BaseURL)
+	assert.Equal(t, "TEST_DECISION_API_KEY", provider.APIKeyEnv)
+	assert.Equal(t, 8192, provider.MaxTokens)
+}
+
 func TestLoadConfigKeepsExplicitOpenRouterDefaultWhenCatalogHasOtherFreeModel(t *testing.T) {
 	catalog := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"version":1,"providers":{"openrouter":["another/free-model:free"]}}`))

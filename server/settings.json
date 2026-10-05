@@ -38,6 +38,7 @@
     "timeout": "5s",
     "providers": {
       "openrouter": {
+        "decision_model": "typesafe/jev-1.13",
         "base_url": "https://openrouter.ai/api/v1",
         "api_key_env": "OPENROUTER_API_KEY",
         "max_tokens": 8192,
@@ -120,6 +121,7 @@
         "allow_tools": true
       },
       "geek-news": {
+        "ranking_mode": "chat",
         "model": "",
         "allow_tools": true
       },

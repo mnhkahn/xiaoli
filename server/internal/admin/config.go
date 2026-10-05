@@ -52,6 +52,8 @@ type Config struct {
 	GoLLMURL                string
 	GoLLMAPIKey             string
 	GoLLMModel              string
+	NewsRankingModel        string
+	NewsRankingAPIKey       string
 	GoVoiceLLMModel         string
 	GoLLMModels             []string
 	GoLLMModelConfigs       map[string]LLMModelConfig
@@ -148,8 +150,9 @@ type A2AConfig struct {
 
 // A2AProfileConfig holds per-profile overrides (model, system prompt, etc.)
 type A2AProfileConfig struct {
-	Model      string `json:"model"`
-	AllowTools *bool  `json:"allow_tools,omitempty"`
+	RankingMode string `json:"ranking_mode,omitempty"` // geek-news: chat (default) or jev
+	Model       string `json:"model"`
+	AllowTools  *bool  `json:"allow_tools,omitempty"`
 }
 
 type A2ATraceConfig struct {
@@ -235,6 +238,8 @@ func LoadConfig() Config {
 		GoLLMURL:                selectedLLM.BaseURL,
 		GoLLMAPIKey:             selectedLLM.APIKey,
 		GoLLMModel:              goLLMModel,
+		NewsRankingModel:        strings.TrimSpace(settings.ModelCatalog.Providers["openrouter"].DecisionModel),
+		NewsRankingAPIKey:       settingsAPIKey(settings.ModelCatalog.Providers["openrouter"].APIKeyEnv),
 		GoVoiceLLMModel:         env("XIAOLI_VOICE_LLM_MODEL", ""),
 		GoLLMModels:             goLLMModels,
 		GoLLMModelConfigs:       goLLMModelConfigs,
@@ -457,17 +462,26 @@ type settingsModelEndpoint struct {
 }
 
 type settingsModelCatalog struct {
-	Enabled         bool                             `json:"enabled"`
-	URL             string                           `json:"url"`
-	RefreshInterval string                           `json:"refresh_interval"`
-	Timeout         string                           `json:"timeout"`
-	Providers       map[string]modelcatalog.Provider `json:"providers"`
+	Enabled         bool                               `json:"enabled"`
+	URL             string                             `json:"url"`
+	RefreshInterval string                             `json:"refresh_interval"`
+	Timeout         string                             `json:"timeout"`
+	Providers       map[string]settingsCatalogProvider `json:"providers"`
+}
+
+type settingsCatalogProvider struct {
+	modelcatalog.Provider
+	DecisionModel string `json:"decision_model,omitempty"`
 }
 
 func (s settingsModelCatalog) catalogConfig() modelcatalog.Config {
 	refresh, _ := time.ParseDuration(s.RefreshInterval)
 	timeout, _ := time.ParseDuration(s.Timeout)
-	return modelcatalog.Config{Enabled: s.Enabled, URL: s.URL, RefreshInterval: refresh, Timeout: timeout, Providers: s.Providers}
+	providers := make(map[string]modelcatalog.Provider, len(s.Providers))
+	for name, provider := range s.Providers {
+		providers[name] = provider.Provider
+	}
+	return modelcatalog.Config{Enabled: s.Enabled, URL: s.URL, RefreshInterval: refresh, Timeout: timeout, Providers: providers}
 }
 
 type settingsMCPServer struct {

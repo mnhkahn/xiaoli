@@ -32,13 +32,14 @@ type geekNewsScorer interface {
 }
 
 type jevNewsScorer struct {
+	model    string
 	apiKey   string
 	endpoint string
 	client   *http.Client
 }
 
-func newJevNewsScorer(apiKey string) *jevNewsScorer {
-	return &jevNewsScorer{apiKey: strings.TrimSpace(apiKey), endpoint: "https://openrouter.ai/api/alpha/decisions", client: &http.Client{Timeout: 15 * time.Second}}
+func newJevNewsScorer(model, apiKey string) *jevNewsScorer {
+	return &jevNewsScorer{model: strings.TrimSpace(model), apiKey: strings.TrimSpace(apiKey), endpoint: "https://openrouter.ai/api/alpha/decisions", client: &http.Client{Timeout: 15 * time.Second}}
 }
 
 type jevScoreQuestion struct {
@@ -63,14 +64,17 @@ func jevNewsQuestions() map[string]jevScoreQuestion {
 }
 
 func (s *jevNewsScorer) Score(ctx context.Context, item geekNewsItem) (geekNewsScores, error) {
+	if s.model == "" {
+		return geekNewsScores{}, fmt.Errorf("OpenRouter decision_model is not configured")
+	}
 	if s.apiKey == "" {
-		return geekNewsScores{}, fmt.Errorf("OPENROUTER_API_KEY is not configured")
+		return geekNewsScores{}, fmt.Errorf("OpenRouter API key is not configured")
 	}
 	body, err := json.Marshal(struct {
 		Model     string                      `json:"model"`
 		State     map[string]string           `json:"state"`
 		Questions map[string]jevScoreQuestion `json:"questions"`
-	}{Model: "typesafe/jev-1.13", State: map[string]string{
+	}{Model: s.model, State: map[string]string{
 		"title":       truncateGeekNewsText(item.SourceTitle, 1000),
 		"description": truncateGeekNewsText(item.sourceDescription, 8000),
 	}, Questions: jevNewsQuestions()})

@@ -134,13 +134,20 @@ Model and MCP settings:
 - `SILICONFLOW_API_KEY`: secret used by the default settings via `api_key_env`.
 - Other provider keys, such as `NVIDIA_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, can be referenced from `settings.json` with `api_key_env`.
 
-The `geek-news` pipeline uses `OPENROUTER_API_KEY` to score news with
-`typesafe/jev-1.13` through OpenRouter's Decisions API, independently of the
-translation model. Original titles and descriptions (up to 1,000 and 8,000
+Set `a2a.profiles.geek-news.ranking_mode` to `chat` (the default and current
+setting) or `jev`. Chat mode uses the profile's `model`, or the default chat
+model when empty, to return an ordered list of IDs; it never calls Jev. Ranking
+uses importance (40%), usefulness (35%), and information content (25%), without
+considering publication time. Model failures retain source order.
+
+In `jev` mode, the `geek-news` pipeline reads `decision_model` (currently `typesafe/jev-1.13`)
+and `api_key_env` from `model_catalog.providers.openrouter` in `settings.json`
+to score news through OpenRouter's Decisions API, independently of the
+translation model. The decision model is not added to the chat model list. Original titles and descriptions (up to 1,000 and 8,000
 characters respectively) are scored on importance (40%), usefulness (35%), and
 information content (25%), with five defined levels per dimension. Publication
 time is not a ranking factor. Each tab is sorted independently; ties retain
-source order. Missing credentials, invalid scores, or request failures preserve
+source order. Missing model configuration or credentials, invalid scores, or request failures preserve
 the entire tab's source order. Scoring uses at most four concurrent requests and
 a 60-second budget per tab. Per-item scores are recorded in the server log.
 - The Docker image copies `settings.json` and `AGENT.md` to `/opt/xiaoli/`, alongside `/opt/xiaoli/skills`.
