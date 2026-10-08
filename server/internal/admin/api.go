@@ -614,7 +614,7 @@ func (d adminSlashDeps) WorkflowList(ctx context.Context) string {
 		spec := def.Trigger.Cron
 		var schedule string
 		if spec.Every > 0 {
-			window := fmt.Sprintf("%02d:00-%02d:00", spec.StartHour, spec.EndHour)
+			window := fmt.Sprintf("%02d:00-%02d:%02d", spec.StartHour, spec.EndHour, spec.EndMinute)
 			schedule = fmt.Sprintf("每 %s（%s %s）", spec.Every, spec.Timezone, window)
 		} else if spec.AtHour != nil && spec.AtMinute != nil {
 			schedule = fmt.Sprintf("每天 %02d:%02d（%s）", *spec.AtHour, *spec.AtMinute, spec.Timezone)

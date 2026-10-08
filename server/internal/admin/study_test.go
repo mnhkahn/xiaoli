@@ -87,7 +87,7 @@ func TestStudyMonitorSlotUsesConfiguredWindow(t *testing.T) {
 	cfg.Workflows = parseWorkflows(map[string]settingsWorkflowDef{
 		"study_monitor": {
 			Name: "学习状态监控", Enabled: true,
-			Trigger: settingsWorkflowTrigger{Every: "10m", Timezone: "Asia/Shanghai", StartHour: 17, EndHour: 21},
+			Trigger: settingsWorkflowTrigger{Every: "10m", Timezone: "Asia/Shanghai", StartHour: 17, EndHour: 21, EndMinute: 30},
 			Agent:   settingsWorkflowAgent{Name: "dispatch_agent", Mode: "react", MaxSteps: 6, Timeout: "150s"},
 		},
 	})
@@ -96,9 +96,14 @@ func TestStudyMonitorSlotUsesConfiguredWindow(t *testing.T) {
 	if def == nil || def.Trigger.Cron == nil {
 		t.Fatal("study_monitor workflow not found or has no cron spec")
 	}
+	for _, item := range srv.schedules() {
+		if item["id"] == "study_monitor" && item["window"] != "17:00-21:30" {
+			t.Fatalf("window = %v, want 17:00-21:30", item["window"])
+		}
+	}
 	cronSpec := def.Trigger.Cron
-	inWindow := time.Date(2026, 5, 24, 17, 3, 20, 0, time.FixedZone("CST", 8*3600))
-	outWindow := time.Date(2026, 5, 24, 21, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	inWindow := time.Date(2026, 5, 24, 21, 25, 20, 0, time.FixedZone("CST", 8*3600))
+	outWindow := time.Date(2026, 5, 24, 21, 30, 0, 0, time.FixedZone("CST", 8*3600))
 
 	if slot := agentworkflow.CronSlot(*cronSpec, inWindow); slot == nil {
 		t.Fatal("slot is nil inside monitor window")

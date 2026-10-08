@@ -570,6 +570,7 @@ func parseWorkflows(raw map[string]settingsWorkflowDef) []agentworkflow.Definiti
 			Timezone:  cronSpec.timezone,
 			StartHour: cronSpec.startHour,
 			EndHour:   cronSpec.endHour,
+			EndMinute: cronSpec.endMinute,
 			AtHour:    cronSpec.atHour,
 			AtMinute:  cronSpec.atMinute,
 		}
@@ -704,6 +705,7 @@ type settingsWorkflowTrigger struct {
 	Timezone  string `json:"timezone"`
 	StartHour int    `json:"start_hour"`
 	EndHour   int    `json:"end_hour"`
+	EndMinute int    `json:"end_minute"`
 	AtHour    *int   `json:"at_hour"`
 	AtMinute  *int   `json:"at_minute"`
 }
@@ -720,6 +722,7 @@ type parsedCronSpec struct {
 	timezone  string
 	startHour int
 	endHour   int
+	endMinute int
 	atHour    *int
 	atMinute  *int
 }
@@ -738,6 +741,7 @@ func (t settingsWorkflowTrigger) toCronSpec() parsedCronSpec {
 		timezone:  t.Timezone,
 		startHour: t.StartHour,
 		endHour:   t.EndHour,
+		endMinute: t.EndMinute,
 		atHour:    t.AtHour,
 		atMinute:  t.AtMinute,
 	}

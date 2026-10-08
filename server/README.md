@@ -184,7 +184,7 @@ Xiaoli 是单用户系统。记忆存储在 Redis，每轮对话自动加载。
 
 Cron 任务配置在 `settings.json` 的 `"cron"` 字段，不再是环境变量。支持两种触发器：
 
-- **interval 型**（`every` + 可选 `start_hour`/`end_hour` 时间窗）
+- **interval 型**（`every` + 可选 `start_hour`/`end_hour` 时间窗，`end_minute` 指定结束分钟，默认 0；结束时刻不包含在时间窗内）
 - **固定时间型**（`at_hour` + `at_minute`，必须成对出现）
 
 示例：
@@ -193,7 +193,7 @@ Cron 任务配置在 `settings.json` 的 `"cron"` 字段，不再是环境变量
 "cron": {
   "study_monitor": {
     "enabled": false,
-    "trigger": { "every": "5m", "timezone": "Asia/Shanghai", "start_hour": 17, "end_hour": 21 },
+    "trigger": { "every": "5m", "timezone": "Asia/Shanghai", "start_hour": 17, "end_hour": 21, "end_minute": 30 },
     "agent": { "name": "dispatch_agent", "mode": "react", "max_steps": 6, "timeout": "150s" },
     "metadata": { "camera_tool": "self.camera.take_photo", "reminder_text": "请坐直，认真学习。", "tool_timeout": "120s" }
   },

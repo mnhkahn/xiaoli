@@ -23,6 +23,7 @@ type CronSpec struct {
 	Every     time.Duration
 	Timezone  string
 	StartHour int
+	EndMinute int
 	EndHour   int
 	AtHour    *int
 	AtMinute  *int

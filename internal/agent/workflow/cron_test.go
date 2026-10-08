@@ -64,3 +64,32 @@ func TestCronSchedulerRunDueDeduplicatesSlots(t *testing.T) {
 	case <-time.After(20 * time.Millisecond):
 	}
 }
+
+func TestCronSlotEndMinuteBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name                                string
+		start, end, endMinute, hour, minute int
+		want                                bool
+	}{
+		{"before start", 17, 21, 30, 16, 59, false},
+		{"at start", 17, 21, 30, 17, 0, true},
+		{"last slot", 17, 21, 30, 21, 25, true},
+		{"before end", 17, 21, 30, 21, 29, true},
+		{"at end", 17, 21, 30, 21, 30, false},
+		{"after end", 17, 21, 30, 21, 35, false},
+		{"legacy whole hour", 17, 21, 0, 21, 0, false},
+		{"overnight before midnight", 22, 6, 30, 23, 0, true},
+		{"overnight before end", 22, 6, 30, 6, 29, true},
+		{"overnight at end", 22, 6, 30, 6, 30, false},
+		{"same hour short window", 17, 17, 30, 18, 0, false},
+		{"legacy all day", 0, 0, 0, 12, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := CronSpec{Every: 5 * time.Minute, Timezone: "Asia/Shanghai", StartHour: tc.start, EndHour: tc.end, EndMinute: tc.endMinute}
+			local := time.Date(2026, 10, 8, tc.hour, tc.minute, 0, 0, time.FixedZone("CST", 8*3600))
+			if got := CronSlot(spec, local.UTC()) != nil; got != tc.want {
+				t.Fatalf("eligible = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

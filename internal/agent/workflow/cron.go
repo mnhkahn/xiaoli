@@ -150,16 +150,16 @@ func CronSlot(spec CronSpec, checkedAt time.Time) *int64 {
 }
 
 func InWindow(spec CronSpec, checkedAt time.Time) bool {
-	start := spec.StartHour
-	end := spec.EndHour
-	hour := checkedAt.Hour()
+	start := spec.StartHour * 60
+	end := spec.EndHour*60 + spec.EndMinute
+	minute := checkedAt.Hour()*60 + checkedAt.Minute()
 	if start == end {
 		return true
 	}
 	if start < end {
-		return start <= hour && hour < end
+		return start <= minute && minute < end
 	}
-	return hour >= start || hour < end
+	return minute >= start || minute < end
 }
 
 func intValue(value *int, fallback int) int {

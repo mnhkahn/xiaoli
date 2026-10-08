@@ -684,7 +684,7 @@ func (s *AdminServer) schedules() []map[string]any {
 			item["timezone"] = spec.Timezone
 			if spec.Every > 0 {
 				item["interval_seconds"] = int(spec.Every.Seconds())
-				item["window"] = fmt.Sprintf("%02d:00-%02d:00", spec.StartHour, spec.EndHour)
+				item["window"] = fmt.Sprintf("%02d:00-%02d:%02d", spec.StartHour, spec.EndHour, spec.EndMinute)
 			}
 			if spec.AtHour != nil && spec.AtMinute != nil {
 				item["time"] = fmt.Sprintf("%02d:%02d", *spec.AtHour, *spec.AtMinute)

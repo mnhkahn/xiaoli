@@ -27,6 +27,7 @@ type ReminderTrigger struct {
 	Every     string              `json:"every,omitempty"`      // interval：如 "5m"
 	StartHour int                 `json:"start_hour,omitempty"` // interval 时间窗
 	EndHour   int                 `json:"end_hour,omitempty"`
+	EndMinute int                 `json:"end_minute,omitempty"`
 	Timezone  string              `json:"timezone,omitempty"`
 }
 
@@ -303,6 +304,7 @@ func (r Reminder) ToDefinition() (Definition, bool) {
 		spec.Every = every
 		spec.StartHour = r.Trigger.StartHour
 		spec.EndHour = r.Trigger.EndHour
+		spec.EndMinute = r.Trigger.EndMinute
 	default:
 		return Definition{}, false
 	}
