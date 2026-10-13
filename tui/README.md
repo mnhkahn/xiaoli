@@ -55,6 +55,51 @@ that session later with:
 xiaoli -s <session-id>
 ```
 
+## Zed / Agent Client Protocol
+
+The same executable can run as an ACP v1 agent for Zed:
+
+```bash
+xiaoli acp
+```
+
+Initialize Xiaoli with `xiaoli -init` and configure its model/API key first.
+ACP uses the same `~/.xiaoli/settings.json`, secrets, skills, and prompts as
+the TUI. To use other settings, run `xiaoli acp -config /absolute/settings.json`.
+For shell execution, enable `tools.bash` in Xiaoli settings; approval requests
+then appear in Zed before the command runs.
+
+In Zed, use **Add Custom Agent** or add this entry to your settings, replacing
+the command with the absolute path reported by `command -v xiaoli`:
+
+```json
+{
+  "agent_servers": {
+    "xiaoli": {
+      "type": "custom",
+      "command": "/absolute/path/to/xiaoli",
+      "args": ["acp"],
+      "env": {}
+    }
+  }
+}
+```
+
+Select Xiaoli when starting a new external agent thread. ACP mode supports
+new sessions, restoring ACP sessions in the same project, streamed replies,
+text/resource context, tool activity, one-time shell approval/rejection, and
+cancellation. Sessions persist in Xiaoli's local store. Stdout contains only
+protocol messages; runtime logs go to `~/.xiaoli/logs/tui.log`. Zed's
+`dev: open acp logs` command shows the protocol exchange.
+
+The first version runs one prompt at a time per process because the existing
+tools share a process working directory. Concurrent prompts return a busy
+error. TUI-specific commit panels and background `task` execution are disabled.
+Images/audio, model/mode selection through ACP, and Zed-forwarded MCP servers
+are not supported yet. Use Xiaoli's native MCP settings; if Zed sends nonempty
+`mcpServers`, session creation/loading returns an explicit unsupported error.
+File tools access the project on disk rather than Zed's unsaved buffers.
+
 ## Local Files
 
 The local TUI reads shared skills from `~/.agents/skills` and Xiaoli-specific

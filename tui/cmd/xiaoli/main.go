@@ -402,6 +402,8 @@ func main() {
 	// 子命令分发：优先处理不需要经过 flag 包的形式，例如 `xiaoli upgrade ...`。
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "acp":
+			os.Exit(runACPCLI(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 		case "upgrade":
 			os.Exit(runUpgradeCLI(os.Args[2:]))
 		}
