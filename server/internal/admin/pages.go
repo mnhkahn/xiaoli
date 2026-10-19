@@ -102,15 +102,9 @@ func dashboardHTML(user map[string]any) string {
         </div>
       </div>
       <div id="videoTab" class="tab-panel" hidden>
+        <label for="snapshotQuestion">拍照检查问题</label>
+        <textarea id="snapshotQuestion" style="min-height:72px;font-family:inherit">请结合相机照片和平板当前屏幕，描述孩子正在做什么、是否在学习；未提供截图时请明确说明。</textarea>
         <div class="video-controls">
-          <select id="snapshotResolution" aria-label="拍照清晰度">
-            <option value="qvga">快速 320x240</option>
-            <option value="vga" selected>标准 640x480</option>
-            <option value="svga">清晰 800x600</option>
-            <option value="xga">细节 1024x768</option>
-            <option value="uxga">最高 1600x1200</option>
-            <option value="legacy_vga">旧版 640x480</option>
-          </select>
           <button id="snapshot">拍照</button>
           <select id="streamResolution" aria-label="视频清晰度">
             <option value="qqvga" selected>极速 160x120</option>
@@ -122,6 +116,7 @@ func dashboardHTML(user map[string]any) string {
           <button id="streamStop">停止视频流</button>
           <span id="streamStatus" class="muted">等待开始</span>
         </div>
+        <div id="snapshotResult" class="preview" aria-live="polite"></div>
         <div id="streamViewer" class="stream-viewer">
           <img id="streamImage" alt="视频画面">
           <div id="streamPlaceholder" class="stream-placeholder">点击开始视频流后，画面会显示在这里</div>
@@ -183,19 +178,37 @@ func dashboardHTML(user map[string]any) string {
     function showSpeak(value) { $("speakOutput").textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2); }
     function setStreamStatus(text) { $("streamStatus").textContent = text; }
 
-    function renderPreview(preview) {
-      $("preview").innerHTML = "";
+    function renderPreview(preview, container = $("preview")) {
+      container.replaceChildren();
       if (!preview) return;
+      if (preview.question) {
+        const p = document.createElement("p");
+        p.textContent = "检查问题：" + preview.question;
+        container.appendChild(p);
+      }
+      const details = new Map((preview.image_details || []).map(item => [item.url, item.label]));
       for (const src of preview.images || []) {
+        const figure = document.createElement("figure");
+        figure.style.margin = "0";
+        const caption = document.createElement("figcaption");
+        caption.textContent = details.get(src) || "拍摄图片";
         const img = document.createElement("img");
         img.className = "preview-image";
+        img.alt = caption.textContent;
         img.src = src;
-        $("preview").appendChild(img);
+        figure.append(caption, img);
+        container.appendChild(figure);
       }
       if (preview.text) {
         const p = document.createElement("p");
-        p.textContent = preview.text;
-        $("preview").appendChild(p);
+        p.style.whiteSpace = "pre-wrap";
+        p.textContent = "分析结果：" + preview.text;
+        container.appendChild(p);
+      }
+      if (preview.screenshot_error) {
+        const p = document.createElement("p");
+        p.textContent = "屏幕截图未提交：" + preview.screenshot_error;
+        container.appendChild(p);
       }
     }
 
@@ -400,18 +413,26 @@ func dashboardHTML(user map[string]any) string {
     async function captureSnapshot() {
       const id = selectedDevice();
       if (!id) throw new Error("没有选择在线设备");
-      setStreamStatus("正在拍照...");
+      setStreamStatus("正在拍照并分析...");
+      $("snapshotResult").textContent = "正在拍照并分析...";
       const data = await api("/admin/api/snapshot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ device_id: id, resolution: $("snapshotResolution").value }),
+        body: JSON.stringify({ device_id: id, question: $("snapshotQuestion").value }),
       });
-      renderPreview(data.preview);
-      renderStreamImage((data.preview.images || [])[0]);
+      const preview = { ...data.preview, question: data.question };
+      renderPreview(preview);
+      renderPreview(preview, $("snapshotResult"));
       show(data);
-      setStreamStatus("拍照完成");
+      setStreamStatus(data.ok ? "拍照检查完成" : "拍照检查失败");
+      if (!data.ok) {
+        const p = document.createElement("p");
+        p.textContent = data.error || "拍照检查失败";
+        $("snapshotResult").appendChild(p);
+      }
     }
-    $("snapshot").onclick = () => withBusy($("snapshot"), "拍照中...", captureSnapshot).catch(err => {
+    $("snapshot").onclick = () => withBusy($("snapshot"), "检查中...", captureSnapshot).catch(err => {
+      $("snapshotResult").textContent = String(err);
       setStreamStatus(String(err));
       show(String(err));
     });

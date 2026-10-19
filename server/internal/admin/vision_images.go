@@ -8,6 +8,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"strings"
+	"time"
 
 	agentmedia "github.com/mnhkahn/xiaoli/internal/agent/media"
 )
@@ -75,4 +76,50 @@ func (s *AdminServer) visionExplainImages(contentType string, body []byte) ([]ag
 		images = append(images, *screenshot)
 	}
 	return images, nil
+}
+
+// Keep upload metadata on the server; tablets can continue returning text-only MCP results.
+func (s *AdminServer) storeVisionCapture(deviceID, question, screenshotError string, images []agentmedia.VisionImage) {
+	captureID := randomToken(16)
+	// Camera last preserves existing latest-camera consumers.
+	for i := len(images) - 1; i >= 0; i-- {
+		image := images[i]
+		id := s.storeVisionImage(deviceID, image.ContentType, image.Body)
+		s.imagesMu.Lock()
+		record := s.images[id]
+		record.CaptureID = captureID
+		record.Label = image.Label
+		record.Question = question
+		record.ScreenshotError = screenshotError
+		s.images[id] = record
+		s.imagesMu.Unlock()
+	}
+}
+
+func (s *AdminServer) visionCapturePreview(deviceID string, since time.Time) ([]map[string]string, string, string) {
+	s.imagesMu.Lock()
+	defer s.imagesMu.Unlock()
+	details := make([]map[string]string, 0, 2)
+	captureID, question, screenshotError := "", "", ""
+	ids := s.imagesByDev[deviceID]
+	for i := len(ids) - 1; i >= 0; i-- {
+		record, ok := s.images[ids[i]]
+		if !ok {
+			continue
+		}
+		if record.CreatedAt.Before(since) {
+			break
+		}
+		if record.CaptureID == "" {
+			continue
+		}
+		if captureID == "" {
+			captureID, question, screenshotError = record.CaptureID, record.Question, record.ScreenshotError
+		}
+		if record.CaptureID != captureID {
+			continue
+		}
+		details = append(details, map[string]string{"url": "/admin/api/images/" + record.ID, "label": record.Label})
+	}
+	return details, question, screenshotError
 }

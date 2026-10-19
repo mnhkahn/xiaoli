@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 type pairedVisionAnalyzer struct {
@@ -80,6 +81,21 @@ func TestVisionExplainSendsCameraAndScreenTogether(t *testing.T) {
 	}
 	if response["response"] != "屏幕在聊天，相机里正在学习。" {
 		t.Fatal(response)
+	}
+	receipts, _, _ := srv.visionCapturePreview("device-1", srv.cfg.now().Add(-time.Minute))
+	if len(receipts) != 2 {
+		t.Fatalf("previews=%v", receipts)
+	}
+	for i, item := range receipts {
+		rr := httptest.NewRecorder()
+		srv.handleImage(rr, httptest.NewRequest(http.MethodGet, item["url"], nil), nil)
+		if rr.Code != 200 || rr.Body.String() != string(analyzer.images[i].Body) || item["label"] != analyzer.images[i].Label {
+			t.Fatalf("preview=%v body=%s", item, rr.Body)
+		}
+	}
+	latest := srv.recentDeviceImageRecord("device-1", srv.cfg.now().Add(-time.Minute))
+	if latest == nil || string(latest.Body) != "image-bytes" {
+		t.Fatalf("latest=%v", latest)
 	}
 }
 

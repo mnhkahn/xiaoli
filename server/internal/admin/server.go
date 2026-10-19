@@ -88,11 +88,15 @@ type AdminServer struct {
 }
 
 type imageRecord struct {
-	ID          string
-	DeviceID    string
-	ContentType string
-	Body        []byte
-	CreatedAt   time.Time
+	CaptureID       string
+	Label           string
+	Question        string
+	ScreenshotError string
+	ID              string
+	DeviceID        string
+	ContentType     string
+	Body            []byte
+	CreatedAt       time.Time
 }
 
 type androidPairRequest struct {
@@ -919,8 +923,8 @@ func (s *AdminServer) handleSnapshot(w http.ResponseWriter, r *http.Request, use
 		return
 	}
 	var request struct {
-		DeviceID   string `json:"device_id"`
-		Resolution string `json:"resolution"`
+		DeviceID string `json:"device_id"`
+		Question string `json:"question"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -930,21 +934,24 @@ func (s *AdminServer) handleSnapshot(w http.ResponseWriter, r *http.Request, use
 		http.Error(w, "device_id is required", http.StatusBadRequest)
 		return
 	}
-	resolution := normalizeSnapshotResolution(request.Resolution)
+	question := strings.TrimSpace(request.Question)
+	if question == "" {
+		question = "请结合相机照片和平板当前屏幕，描述孩子正在做什么、是否在学习；未提供截图时请明确说明。"
+	}
 	started := s.cfg.now()
 	result, err := s.deviceController().Call(r.Context(), BridgeCallRequest{
 		DeviceID: request.DeviceID,
-		Tool:     "self.camera.snapshot",
+		Tool:     "self.camera.take_photo",
 		Arguments: map[string]any{
-			"resolution": resolution,
+			"question": question,
 		},
-		Timeout: 60,
+		Timeout: 120,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	preview := s.buildResultPreviewForCall(request.DeviceID, "self.camera.snapshot", result.Result, started.Add(-2*time.Second))
+	preview := s.buildResultPreviewForCall(request.DeviceID, "self.camera.take_photo", result.Result, started)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         result.OK,
 		"result":     result.Result,
@@ -952,6 +959,8 @@ func (s *AdminServer) handleSnapshot(w http.ResponseWriter, r *http.Request, use
 		"error":      result.Error,
 		"elapsed_ms": result.ElapsedMS,
 		"preview":    preview,
+		"question":   question,
+		"tool":       "self.camera.take_photo",
 	})
 }
 
@@ -1569,14 +1578,20 @@ func (s *AdminServer) publishFrame(deviceID string, contentType string, encodedB
 }
 
 func (s *AdminServer) buildResultPreviewForCall(deviceID string, toolName string, value any, since time.Time) map[string]any {
+	if toolName == "self.camera.take_photo" {
+		details, question, screenshotError := s.visionCapturePreview(deviceID, since)
+		urls := make([]string, 0, len(details))
+		for _, image := range details {
+			urls = append(urls, image["url"])
+		}
+		preview := buildResultPreview(value, urls)
+		return map[string]any{"images": preview.Images, "image_details": details, "text": strings.Join(preview.Texts, "\n\n"), "question": question, "screenshot_error": screenshotError}
+	}
 	var extra []string
 	if strings.Contains(toolName, "camera") || strings.Contains(toolName, "photo") || strings.Contains(toolName, "拍照") {
 		extra = s.recentDeviceImageURLs(deviceID, since)
 	}
 	preview := buildResultPreview(value, extra)
-	if len(preview.Images) > 1 {
-		preview.Images = preview.Images[:1]
-	}
 	return map[string]any{"images": preview.Images, "text": strings.Join(preview.Texts, "\n\n")}
 }
 
@@ -1646,6 +1661,9 @@ func imageSrc(normalizedKey string, raw string) string {
 	raw = strings.TrimSpace(raw)
 	imageLikeKey := strings.Contains(normalizedKey, "image") || strings.Contains(normalizedKey, "photo") || strings.Contains(normalizedKey, "picture") || strings.Contains(normalizedKey, "thumbnail") || normalizedKey == "url" || normalizedKey == "base64"
 	if strings.HasPrefix(raw, "data:image/") {
+		return raw
+	}
+	if imageLikeKey && strings.HasPrefix(raw, "/admin/api/images/") {
 		return raw
 	}
 	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
