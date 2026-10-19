@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	agentworkflow "github.com/mnhkahn/xiaoli/internal/agent/workflow"
 	"strings"
 	"testing"
@@ -154,7 +155,7 @@ func TestBuildLarkPostPayloadIncludesImageAndReminder(t *testing.T) {
 		AnalysisText:   "低头过近",
 		NeedReminder:   true,
 		ReminderText:   "请坐直",
-		ImageKey:       "img-key",
+		Images:         []studyLarkImage{{Label: "相机照片", ImageKey: "img-key"}},
 		CheckedAt:      time.Date(2026, 5, 24, 18, 30, 0, 0, time.FixedZone("CST", 8*3600)),
 		ReminderResult: "queued",
 		ElapsedMS:      123,
@@ -186,7 +187,7 @@ func TestBuildLarkPostPayloadKeepsImageWhenAnalysisFails(t *testing.T) {
 		DeviceID:       "device-1",
 		AnalysisFailed: true,
 		AnalysisError:  "timeout",
-		ImageKey:       "img-key",
+		Images:         []studyLarkImage{{Label: "相机照片", ImageKey: "img-key"}},
 		CheckedAt:      time.Date(2026, 5, 24, 18, 30, 0, 0, time.FixedZone("CST", 8*3600)),
 	})
 
@@ -275,5 +276,52 @@ func TestStudyReminderOnlyIncludesConfirmedProblems(t *testing.T) {
 		if !got.NeedReminder || got.ReminderText != tc.want {
 			t.Fatalf("decision = %+v, want reminder %q", got, tc.want)
 		}
+	}
+}
+
+func TestLarkStudyPostIncludesBothLabeledImagesAndQuestion(t *testing.T) {
+	srv := NewServer(testConfig())
+	payload := srv.buildLarkPostPayload(studyLarkPayloadInput{AnalysisText: "未显示孩子坐姿，无法判断", Question: "检查两张图", Images: []studyLarkImage{{Label: "相机照片", ImageKey: "camera-key"}, {Label: "平板当前屏幕截图", ImageKey: "screen-key"}}})
+	lines := payload["content"].(map[string]any)["post"].(map[string]any)["zh_cn"].(map[string]any)["content"].([][]map[string]string)
+	var texts, keys []string
+	for _, line := range lines {
+		for _, item := range line {
+			if item["tag"] == "text" {
+				texts = append(texts, item["text"])
+			}
+			if item["tag"] == "img" {
+				keys = append(keys, item["image_key"])
+			}
+		}
+	}
+	if strings.Join(keys, ",") != "camera-key,screen-key" {
+		t.Fatalf("images=%v", keys)
+	}
+	text := strings.Join(texts, "\n")
+	for _, want := range []string{"相机照片", "平板当前屏幕截图", "检查问题：检查两张图", "结论：信息不足"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in %s", want, text)
+		}
+	}
+	if strings.Contains(text, "状态正常") {
+		t.Fatalf("unjustified normal status: %s", text)
+	}
+}
+
+func TestLarkStudyPostKeepsCameraWhenScreenshotUploadFails(t *testing.T) {
+	srv := NewServer(testConfig())
+	payload := srv.buildLarkPostPayload(studyLarkPayloadInput{AnalysisText: "坐姿自然", Images: []studyLarkImage{{Label: "相机照片", ImageKey: "camera-key"}, {Label: "平板当前屏幕截图", Error: "截图服务未开启"}}})
+	encoded, _ := json.Marshal(payload)
+	text := string(encoded)
+	if !strings.Contains(text, "camera-key") || !strings.Contains(text, "截图服务未开启") || !strings.Contains(text, "平板当前屏幕截图") {
+		t.Fatal(text)
+	}
+}
+
+func TestStudyDecisionPreservesBothImageObservations(t *testing.T) {
+	srv := NewServer(testConfig())
+	decision := srv.parseStudyDecision(map[string]any{"need_reminder": false, "camera": "相机里有人", "screen": "平板正在显示家长设置", "summary": "缺少学习场景"})
+	if !strings.Contains(decision.AnalysisText, "相机里有人") || !strings.Contains(decision.AnalysisText, "家长设置") {
+		t.Fatal(decision)
 	}
 }

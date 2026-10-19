@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/mnhkahn/gogogo/logger"
 	agentchannel "github.com/mnhkahn/xiaoli/internal/agent/channel"
 	agentlark "github.com/mnhkahn/xiaoli/internal/agent/channel/lark"
 	agentwechat "github.com/mnhkahn/xiaoli/internal/agent/channel/wechat"
@@ -1118,6 +1119,12 @@ func (s *AdminServer) handleVisionExplain(w http.ResponseWriter, r *http.Request
 		question += "\n平板未能提供屏幕截图；不能据此判断当前屏幕内容。"
 	}
 	s.storeVisionCapture(deviceID, originalQuestion, fields["screenshot_error"], images)
+	for _, image := range images {
+		logger.Infof("[vision] received image device=%s label=%s bytes=%d", deviceID, image.Label, len(image.Body))
+	}
+	if reason := fields["screenshot_error"]; reason != "" {
+		logger.Infof("[vision] screenshot unavailable device=%s reason=%s", deviceID, reason)
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.GoVLLMTimeout+5*time.Second)
 	defer cancel()
 	var answer string

@@ -1561,7 +1561,10 @@ func WechatLoginCLI(ctx context.Context) error {
 	})
 }
 
-const studyMonitorPrompt = `请检查照片中孩子是否存在需要立即提醒的明确问题，以减少对正常学习的打扰为原则：
+const studyMonitorPrompt = `请分别分析带标签的两类图片，然后检查是否存在需要立即提醒的明确问题，以减少对正常学习的打扰为原则：
+- “相机照片”展示现实中的人和环境：必须单独观察该图，仅依据该图判断坐姿，不得用屏幕截图替代或忽略相机照片。
+- “平板当前屏幕截图”展示正在使用的应用：单独描述可见页面，结合相机照片判断是否存在明确的无关学习行为。不能把屏幕中没有人解释成相机照片中没有人，也不能仅凭应用名称判断是否在学习。
+- camera 和 screen 必须分别描述对应图片；缺少截图时明确写“未提供屏幕截图”，看不清或无法判断时明确说明，不能据此宣称状态正常。
 1. 正常低头读书、写字、头部略低或轻微倾斜，不需要提醒。
 2. 只有清楚看到趴桌、明显歪斜、眼睛贴近书本等问题，才提醒坐姿。桌面、书本或身体没拍全，无法判断距离时不要猜测。
 3. 单张照片不能判断内在专注程度。不能凭低头、表情、视线或瞬间动作推断走神、不认真。只有明确看到玩玩具、玩游戏、看无关视频等行为，才提醒学习状态。
@@ -1570,7 +1573,7 @@ const studyMonitorPrompt = `请检查照片中孩子是否存在需要立即提�
 6. 例如：孩子握笔低头看桌面，头部略低，没有明显无关行为，应返回 need_reminder=false。
 
 只返回 JSON：
-{"need_reminder": true/false, "posture": "...", "focus": "...", "summary": "...", "reminder_text": "..."}
+{"need_reminder": true/false, "camera": "相机照片的观察", "screen": "屏幕截图的观察或未提供屏幕截图", "posture": "仅依据相机照片", "focus": "结合两张图且仅描述可见事实", "summary": "...", "reminder_text": "..."}
 `
 
 // Only concrete, visible problems qualify. Low head position and inferred
@@ -2163,6 +2166,14 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, def agentworkflow
 	if !analysisFailed {
 		decision = s.parseStudyDecision(result.Result)
 	}
+	records := s.visionCaptureRecords(deviceID, started)
+	// Other camera tools may still use the legacy single-image upload protocol.
+	if len(records) == 0 && cameraTool != "self.camera.take_photo" {
+		if record := s.recentDeviceImageRecord(deviceID, started); record != nil {
+			record.Label = "相机照片"
+			records = append(records, *record)
+		}
+	}
 	reminderResult := ""
 	if !analysisFailed && decision.NeedReminder {
 		if response, err := controller.Speak(ctx, deviceID, decision.ReminderText); err == nil {
@@ -2172,20 +2183,16 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, def agentworkflow
 			reminderResult = err.Error()
 		}
 	}
-	imageKey := ""
-	record := s.recentDeviceImageRecord(deviceID, started.Add(-2*time.Second))
-	if record != nil {
-		logger.Infof("[lark] found device image for %s: bytes=%d content-type=%s", deviceID, len(record.Body), record.ContentType)
-		if key, err := s.uploadLarkImage(ctx, record.Body, record.ContentType); err == nil {
-			imageKey = key
-		} else {
-			logger.Infof("[lark] image upload failed for device=%s: %v", deviceID, err)
-		}
-	} else {
-		logger.Infof("[lark] no device image found for %s", deviceID)
-	}
-	if analysisFailed && record == nil {
+	if analysisFailed && len(records) == 0 {
 		return fmt.Errorf("study monitor camera tool failed: %s", analysisError)
+	}
+	images := s.uploadStudyImages(ctx, records)
+	if cameraTool == "self.camera.take_photo" && len(records) < 2 {
+		reason := "设备未提供屏幕截图"
+		if len(records) > 0 && records[0].ScreenshotError != "" {
+			reason = records[0].ScreenshotError
+		}
+		images = append(images, studyLarkImage{Label: "平板当前屏幕截图", Error: reason})
 	}
 	return s.sendLarkStudyMessage(ctx, studyLarkPayloadInput{
 		DeviceID:       deviceID,
@@ -2194,7 +2201,8 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, def agentworkflow
 		AnalysisError:  analysisError,
 		NeedReminder:   decision.NeedReminder,
 		ReminderText:   decision.ReminderText,
-		ImageKey:       imageKey,
+		Images:         images,
+		Question:       studyMonitorPrompt,
 		CheckedAt:      checkedAt,
 		ReminderResult: reminderResult,
 		ElapsedMS:      result.ElapsedMS,
@@ -2205,8 +2213,14 @@ func (s *AdminServer) parseStudyDecision(value any) studyDecision {
 	parsed := s.extractStudyDecisionPayload(value)
 	if payload, ok := parsed.(map[string]any); ok {
 		var textParts []string
-		for _, key := range []string{"summary", "posture", "focus", "response", "analysis", "message", "text"} {
+		for _, key := range []string{"camera", "screen", "summary", "posture", "focus", "response", "analysis", "message", "text"} {
 			if text := strings.TrimSpace(stringValue(payload[key])); text != "" && text != "<nil>" {
+				if key == "camera" {
+					text = "相机观察：" + text
+				}
+				if key == "screen" {
+					text = "屏幕观察：" + text
+				}
 				textParts = append(textParts, text)
 			}
 		}
@@ -2340,6 +2354,30 @@ func confirmedStudyDecision(requested bool, analysis, evidence string) studyDeci
 	return decision
 }
 
+type studyLarkImage struct {
+	Label    string
+	ImageKey string
+	Error    string
+}
+
+// Upload each member independently: one upload failure must not hide the other image.
+func (s *AdminServer) uploadStudyImages(ctx context.Context, records []imageRecord) []studyLarkImage {
+	images := make([]studyLarkImage, 0, len(records))
+	for _, record := range records {
+		image := studyLarkImage{Label: record.Label}
+		key, err := s.uploadLarkImage(ctx, record.Body, record.ContentType)
+		image.ImageKey = key
+		if err != nil {
+			image.Error = err.Error()
+		} else if key == "" {
+			image.Error = "飞书图片上传凭据未配置或未返回图片标识"
+		}
+		logger.Infof("[lark] study image label=%s bytes=%d uploaded=%t", record.Label, len(record.Body), key != "")
+		images = append(images, image)
+	}
+	return images
+}
+
 type studyLarkPayloadInput struct {
 	DeviceID       string
 	AnalysisText   string
@@ -2347,18 +2385,30 @@ type studyLarkPayloadInput struct {
 	AnalysisError  string
 	NeedReminder   bool
 	ReminderText   string
-	ImageKey       string
+	Images         []studyLarkImage
+	Question       string
 	CheckedAt      time.Time
 	ReminderResult string
 	ElapsedMS      int
 }
 
+func studyHasInsufficientEvidence(text string) bool {
+	for _, marker := range []string{"无法判断", "不能判断", "无法完整判断", "无法确定", "看不清", "未显示孩子", "未看到孩子", "未见孩子", "未提供", "证据不足"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *AdminServer) buildLarkPostPayload(input studyLarkPayloadInput) map[string]any {
-	status := "状态正常"
+	status := "未发现明确问题"
 	if input.AnalysisFailed {
 		status = "分析失败"
 	} else if input.NeedReminder {
 		status = "需要提醒"
+	} else if strings.TrimSpace(input.AnalysisText) == "" || studyHasInsufficientEvidence(input.AnalysisText) {
+		status = "信息不足，无法完整判断"
 	}
 	analysisText := firstText(input.AnalysisText, "无")
 	if input.AnalysisFailed {
@@ -2369,6 +2419,9 @@ func (s *AdminServer) buildLarkPostPayload(input studyLarkPayloadInput) map[stri
 		{{"tag": "text", "text": "结论：" + status}},
 		{{"tag": "text", "text": "解读：" + analysisText}},
 	}
+	if input.Question != "" {
+		lines = append(lines, []map[string]string{{"tag": "text", "text": "检查问题：" + input.Question}})
+	}
 	if input.NeedReminder {
 		lines = append(lines, []map[string]string{{"tag": "text", "text": "已提醒：" + input.ReminderText}})
 	}
@@ -2378,10 +2431,16 @@ func (s *AdminServer) buildLarkPostPayload(input studyLarkPayloadInput) map[stri
 	if input.ElapsedMS > 0 {
 		lines = append(lines, []map[string]string{{"tag": "text", "text": fmt.Sprintf("耗时：%dms", input.ElapsedMS)}})
 	}
-	if input.ImageKey != "" {
-		lines = append(lines, []map[string]string{{"tag": "img", "image_key": input.ImageKey}})
-	} else {
-		lines = append(lines, []map[string]string{{"tag": "text", "text": "图片：未上传成功"}})
+	for _, image := range input.Images {
+		lines = append(lines, []map[string]string{{"tag": "text", "text": image.Label}})
+		if image.ImageKey != "" {
+			lines = append(lines, []map[string]string{{"tag": "img", "image_key": image.ImageKey}})
+		} else {
+			lines = append(lines, []map[string]string{{"tag": "text", "text": "未显示：" + firstText(image.Error, "图片上传失败")}})
+		}
+	}
+	if len(input.Images) == 0 {
+		lines = append(lines, []map[string]string{{"tag": "text", "text": "图片：设备未提供本次图片"}})
 	}
 	return map[string]any{
 		"msg_type": "post",
@@ -2418,6 +2477,18 @@ func (s *AdminServer) sendLarkStudyMessage(ctx context.Context, input studyLarkP
 	if resp.StatusCode >= 400 {
 		text, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
 		return fmt.Errorf("lark webhook failed: %d %s", resp.StatusCode, string(text))
+	}
+	var receipt struct {
+		Code          int    `json:"code"`
+		Msg           string `json:"msg"`
+		StatusCode    int    `json:"StatusCode"`
+		StatusMessage string `json:"StatusMessage"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&receipt); err != nil {
+		return fmt.Errorf("lark webhook invalid response: %w", err)
+	}
+	if receipt.Code != 0 || receipt.StatusCode != 0 {
+		return fmt.Errorf("lark webhook rejected message: code=%d status=%d %s %s", receipt.Code, receipt.StatusCode, receipt.Msg, receipt.StatusMessage)
 	}
 	return nil
 }

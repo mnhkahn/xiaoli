@@ -97,10 +97,22 @@ func (s *AdminServer) storeVisionCapture(deviceID, question, screenshotError str
 }
 
 func (s *AdminServer) visionCapturePreview(deviceID string, since time.Time) ([]map[string]string, string, string) {
+	records := s.visionCaptureRecords(deviceID, since)
+	details := make([]map[string]string, 0, len(records))
+	question, screenshotError := "", ""
+	for _, record := range records {
+		question, screenshotError = record.Question, record.ScreenshotError
+		details = append(details, map[string]string{"url": "/admin/api/images/" + record.ID, "label": record.Label})
+	}
+	return details, question, screenshotError
+}
+
+// Read one capture as a batch so previews and notifications never mix different requests.
+func (s *AdminServer) visionCaptureRecords(deviceID string, since time.Time) []imageRecord {
 	s.imagesMu.Lock()
 	defer s.imagesMu.Unlock()
-	details := make([]map[string]string, 0, 2)
-	captureID, question, screenshotError := "", "", ""
+	records := make([]imageRecord, 0, 2)
+	captureID := ""
 	ids := s.imagesByDev[deviceID]
 	for i := len(ids) - 1; i >= 0; i-- {
 		record, ok := s.images[ids[i]]
@@ -114,12 +126,11 @@ func (s *AdminServer) visionCapturePreview(deviceID string, since time.Time) ([]
 			continue
 		}
 		if captureID == "" {
-			captureID, question, screenshotError = record.CaptureID, record.Question, record.ScreenshotError
+			captureID = record.CaptureID
 		}
-		if record.CaptureID != captureID {
-			continue
+		if record.CaptureID == captureID {
+			records = append(records, record)
 		}
-		details = append(details, map[string]string{"url": "/admin/api/images/" + record.ID, "label": record.Label})
 	}
-	return details, question, screenshotError
+	return records
 }
