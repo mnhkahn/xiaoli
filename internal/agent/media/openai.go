@@ -117,21 +117,32 @@ func NewOpenAIVisionClient(cfg VisionConfig) VisionAnalyzer {
 }
 
 func (c *OpenAIVisionClient) Analyze(ctx context.Context, question string, contentType string, image []byte) (string, error) {
+	return c.AnalyzeImages(ctx, question, []VisionImage{{ContentType: contentType, Body: image}})
+}
+
+func (c *OpenAIVisionClient) AnalyzeImages(ctx context.Context, question string, images []VisionImage) (string, error) {
 	if c == nil || c.apiKey == "" {
 		return "", errors.New("vision model is not configured")
 	}
 	if question == "" {
 		question = "请描述这张图片里的内容。"
 	}
-	dataURL := "data:" + NormalizeImageContentType(contentType, "image/jpeg") + ";base64," + base64.StdEncoding.EncodeToString(image)
+	if len(images) == 0 {
+		return "", errors.New("missing vision images")
+	}
+	content := []map[string]any{{"type": "text", "text": question}}
+	for _, image := range images {
+		if image.Label != "" {
+			content = append(content, map[string]any{"type": "text", "text": image.Label})
+		}
+		dataURL := "data:" + NormalizeImageContentType(image.ContentType, "image/jpeg") + ";base64," + base64.StdEncoding.EncodeToString(image.Body)
+		content = append(content, map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURL}})
+	}
 	payload := map[string]any{
 		"model": c.model,
 		"messages": []map[string]any{
 			{"role": "system", "content": "你是一个视觉助手。回答要简短、直接，适合通过语音播放。"},
-			{"role": "user", "content": []map[string]any{
-				{"type": "text", "text": question},
-				{"type": "image_url", "image_url": map[string]any{"url": dataURL}},
-			}},
+			{"role": "user", "content": content},
 		},
 		"temperature": 0.2,
 		"max_tokens":  300,
