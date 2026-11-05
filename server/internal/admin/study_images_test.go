@@ -91,10 +91,13 @@ func TestStudyMonitorSendsBothImagesWithExistingTabletProtocol(t *testing.T) {
 			if strings.Join(uploads, ",") != "camera-bytes,screen-bytes" {
 				t.Fatalf("uploads=%v", uploads)
 			}
-			for _, want := range []string{"相机照片", "平板当前屏幕截图", "key-camera-bytes", "信息不足", "检查问题："} {
+			for _, want := range []string{"相机照片", "平板当前屏幕截图", "key-camera-bytes", "信息不足"} {
 				if !strings.Contains(webhook, want) {
 					t.Fatalf("missing %q in %s", want, webhook)
 				}
+			}
+			if strings.Contains(webhook, "检查问题") {
+				t.Fatalf("internal prompt leaked into webhook message: %s", webhook)
 			}
 			if failScreen {
 				if strings.Contains(webhook, "key-screen-bytes") || !strings.Contains(webhook, "screen rejected") {

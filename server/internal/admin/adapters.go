@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -2202,7 +2203,6 @@ func (s *AdminServer) runStudyMonitorOnce(ctx context.Context, def agentworkflow
 		NeedReminder:   decision.NeedReminder,
 		ReminderText:   decision.ReminderText,
 		Images:         images,
-		Question:       studyMonitorPrompt,
 		CheckedAt:      checkedAt,
 		ReminderResult: reminderResult,
 		ElapsedMS:      result.ElapsedMS,
@@ -2221,7 +2221,9 @@ func (s *AdminServer) parseStudyDecision(value any) studyDecision {
 				if key == "screen" {
 					text = "屏幕观察：" + text
 				}
-				textParts = append(textParts, text)
+				if !slices.Contains(textParts, text) {
+					textParts = append(textParts, text)
+				}
 			}
 		}
 		analysisText := strings.Join(textParts, "\n")
@@ -2386,7 +2388,6 @@ type studyLarkPayloadInput struct {
 	NeedReminder   bool
 	ReminderText   string
 	Images         []studyLarkImage
-	Question       string
 	CheckedAt      time.Time
 	ReminderResult string
 	ElapsedMS      int
@@ -2418,9 +2419,6 @@ func (s *AdminServer) buildLarkPostPayload(input studyLarkPayloadInput) map[stri
 		{{"tag": "text", "text": "设备：" + input.DeviceID}},
 		{{"tag": "text", "text": "结论：" + status}},
 		{{"tag": "text", "text": "解读：" + analysisText}},
-	}
-	if input.Question != "" {
-		lines = append(lines, []map[string]string{{"tag": "text", "text": "检查问题：" + input.Question}})
 	}
 	if input.NeedReminder {
 		lines = append(lines, []map[string]string{{"tag": "text", "text": "已提醒：" + input.ReminderText}})

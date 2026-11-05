@@ -279,9 +279,9 @@ func TestStudyReminderOnlyIncludesConfirmedProblems(t *testing.T) {
 	}
 }
 
-func TestLarkStudyPostIncludesBothLabeledImagesAndQuestion(t *testing.T) {
+func TestLarkStudyPostIncludesBothLabeledImages(t *testing.T) {
 	srv := NewServer(testConfig())
-	payload := srv.buildLarkPostPayload(studyLarkPayloadInput{AnalysisText: "未显示孩子坐姿，无法判断", Question: "检查两张图", Images: []studyLarkImage{{Label: "相机照片", ImageKey: "camera-key"}, {Label: "平板当前屏幕截图", ImageKey: "screen-key"}}})
+	payload := srv.buildLarkPostPayload(studyLarkPayloadInput{AnalysisText: "未显示孩子坐姿，无法判断", Images: []studyLarkImage{{Label: "相机照片", ImageKey: "camera-key"}, {Label: "平板当前屏幕截图", ImageKey: "screen-key"}}})
 	lines := payload["content"].(map[string]any)["post"].(map[string]any)["zh_cn"].(map[string]any)["content"].([][]map[string]string)
 	var texts, keys []string
 	for _, line := range lines {
@@ -298,10 +298,13 @@ func TestLarkStudyPostIncludesBothLabeledImagesAndQuestion(t *testing.T) {
 		t.Fatalf("images=%v", keys)
 	}
 	text := strings.Join(texts, "\n")
-	for _, want := range []string{"相机照片", "平板当前屏幕截图", "检查问题：检查两张图", "结论：信息不足"} {
+	for _, want := range []string{"相机照片", "平板当前屏幕截图", "结论：信息不足"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in %s", want, text)
 		}
+	}
+	if strings.Contains(text, "检查问题") {
+		t.Fatalf("internal prompt leaked into message: %s", text)
 	}
 	if strings.Contains(text, "状态正常") {
 		t.Fatalf("unjustified normal status: %s", text)
@@ -323,5 +326,19 @@ func TestStudyDecisionPreservesBothImageObservations(t *testing.T) {
 	decision := srv.parseStudyDecision(map[string]any{"need_reminder": false, "camera": "相机里有人", "screen": "平板正在显示家长设置", "summary": "缺少学习场景"})
 	if !strings.Contains(decision.AnalysisText, "相机里有人") || !strings.Contains(decision.AnalysisText, "家长设置") {
 		t.Fatal(decision)
+	}
+}
+
+func TestStudyDecisionDeduplicatesIdenticalObservations(t *testing.T) {
+	srv := NewServer(testConfig())
+	decision := srv.parseStudyDecision(map[string]any{
+		"need_reminder": false,
+		"camera":        "仅可见人物头顶及部分书架，无法判断坐姿及学习状态",
+		"screen":        "未提供屏幕截图",
+		"posture":       "无法判断",
+		"focus":         "无法判断",
+	})
+	if got := strings.Count(decision.AnalysisText, "无法判断"); got != 2 {
+		t.Fatalf("AnalysisText = %q, want exactly 2 occurrences of 无法判断", decision.AnalysisText)
 	}
 }
