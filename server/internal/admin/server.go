@@ -35,6 +35,7 @@ import (
 	agentworkflow "github.com/mnhkahn/xiaoli/internal/agent/workflow"
 	agentevent "github.com/mnhkahn/xiaoli/internal/event"
 	a2aPKG "github.com/mnhkahn/xiaoli/server/internal/a2a"
+	"github.com/mnhkahn/xiaoli/server/internal/notification"
 )
 
 const (
@@ -80,6 +81,7 @@ type AdminServer struct {
 	reminderOnce      sync.Once
 	reminderSt        *agentworkflow.ReminderStore
 	pendingReminderSt *agentworkflow.PendingReminderStore
+	notificationSt    *notification.Store
 	oidcMu            sync.Mutex
 	oidc              *oidcConfig
 	oidcFetcher       func() (oidcConfig, error)
@@ -145,7 +147,8 @@ func NewServer(cfg Config) *AdminServer {
 	recentImages := agentmedia.NewRecentImageStore(cfg.now)
 	tts := newHTTPSpeechSynthesizer(cfg, nil)
 	deviceRegistry := newDeviceRegistry(filepath.Join(cfg.DataDir, "paired_devices.json"), cfg.now)
-	deviceHub := NewDeviceHub(cfg, deviceRegistry, stream, audioStore, asr, agent, vision, tts)
+	notificationStore := notification.NewStore(filepath.Join(cfg.DataDir, "notifications.json"))
+	deviceHub := NewDeviceHub(cfg, deviceRegistry, stream, audioStore, asr, agent, vision, tts, notificationStore)
 	if agent != nil {
 		agent.SetDeviceTools(deviceHub)
 		agent.SetVisionTools(vision, recentImages)
@@ -213,6 +216,7 @@ func NewServer(cfg Config) *AdminServer {
 		larkEvents:        map[string]time.Time{},
 		reminderSt:        reminderStore,
 		pendingReminderSt: pendingReminderStore,
+		notificationSt:    notificationStore,
 	}
 	s.oidcFetcher = s.fetchOIDCConfig
 	s.setupA2A(agent)
@@ -314,6 +318,10 @@ func (s *AdminServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.withUser(w, r, s.handleCall)
 	case r.URL.Path == "/admin/api/schedules":
 		s.withUser(w, r, s.handleSchedules)
+	case r.URL.Path == "/admin/api/notifications":
+		s.withUser(w, r, s.handleNotifications)
+	case strings.HasPrefix(r.URL.Path, "/admin/api/notifications/") && strings.HasSuffix(r.URL.Path, "/revoke"):
+		s.withUser(w, r, s.handleNotificationRevoke)
 	case r.URL.Path == "/admin/api/memory/channels":
 		s.withUser(w, r, s.handleMemoryChannels)
 	case r.URL.Path == "/admin/api/memory/recent-sessions":

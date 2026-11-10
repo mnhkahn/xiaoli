@@ -84,6 +84,7 @@ func dashboardHTML(user map[string]any) string {
         <button class="tab-button active" data-tab-target="toolsTab" type="button">MCP 工具</button>
         <button class="tab-button" data-tab-target="videoTab" type="button">视频播放</button>
         <button class="tab-button" data-tab-target="audioTab" type="button">语音文本发送</button>
+        <button class="tab-button" data-tab-target="notificationTab" type="button">通知管理</button>
         <button class="tab-button" data-tab-target="scheduleTab" type="button">定时任务</button>
       </div>
       <div id="toolsTab" class="tab-panel">
@@ -130,6 +131,27 @@ func dashboardHTML(user map[string]any) string {
           <button id="speakStop">停止语音</button>
         </div>
         <pre id="speakOutput">等待发送...</pre>
+      </div>
+      <div id="notificationTab" class="tab-panel" hidden>
+        <div class="tool-grid">
+          <div class="stack">
+            <h2>发布通知</h2>
+            <label class="muted" for="notificationTitle">标题</label>
+            <input id="notificationTitle" maxlength="100" placeholder="输入通知标题">
+            <label class="muted" for="notificationContent">内容</label>
+            <textarea id="notificationContent" maxlength="2000" style="min-height:120px;font-family:inherit" placeholder="输入通知内容"></textarea>
+            <label class="muted" for="notificationTarget">接收设备</label>
+            <select id="notificationTarget"><option value="__all__">全部设备</option></select>
+            <label class="muted" for="notificationExpires">过期时间（可选）</label>
+            <input id="notificationExpires" type="datetime-local">
+            <button id="publishNotification" class="primary">立即发布</button>
+            <div id="notificationStatus" class="muted" aria-live="polite"></div>
+          </div>
+          <div class="stack">
+            <div class="row"><h2>通知列表</h2><button id="refreshNotifications">刷新</button></div>
+            <div id="notifications" class="schedule-list"></div>
+          </div>
+        </div>
       </div>
       <div id="scheduleTab" class="tab-panel" hidden>
         <div class="row">
@@ -327,6 +349,68 @@ func dashboardHTML(user map[string]any) string {
       }).join("") || "<p class=\"muted\">暂无定时任务</p>";
     }
 
+    function notificationNode(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      node.textContent = text;
+      return node;
+    }
+
+    function notificationTime(value) {
+      return value ? new Date(value).toLocaleString() : "-";
+    }
+
+    function renderNotifications(items) {
+      const container = $("notifications");
+      container.replaceChildren();
+      if (!items.length) {
+        container.appendChild(notificationNode("p", "muted", "暂无通知"));
+        return;
+      }
+      for (const item of items) {
+        const card = notificationNode("div", "schedule-item", "");
+        const head = notificationNode("div", "schedule-title", "");
+        head.appendChild(notificationNode("strong", "", item.title || ""));
+        head.appendChild(notificationNode("span", "pill" + (item.revoked_at ? "" : " ok"), item.revoked_at ? "已撤销" : "已发布"));
+        card.appendChild(head);
+        const content = notificationNode("div", "", item.content || "");
+        content.style.whiteSpace = "pre-wrap";
+        card.appendChild(content);
+        card.appendChild(notificationNode("div", "muted", "发布：" + notificationTime(item.published_at) + " / 过期：" + notificationTime(item.expires_at)));
+        for (const delivery of item.deliveries || []) {
+          const status = delivery.delivered_at ? "已送达 " + notificationTime(delivery.delivered_at) : "待投递";
+          card.appendChild(notificationNode("div", "muted", delivery.device_id + "：" + status));
+        }
+        if (!item.revoked_at) {
+          const revoke = notificationNode("button", "", "撤销");
+          revoke.type = "button";
+          revoke.onclick = () => withBusy(revoke, "撤销中...", async () => {
+            await api("/admin/api/notifications/" + encodeURIComponent(item.id) + "/revoke", { method: "POST" });
+            await loadNotifications();
+          }).catch(err => $("notificationStatus").textContent = String(err));
+          card.appendChild(revoke);
+        }
+        container.appendChild(card);
+      }
+    }
+
+    async function loadNotifications() {
+      const data = await api("/admin/api/notifications");
+      const target = $("notificationTarget");
+      const current = target.value || "__all__";
+      target.replaceChildren();
+      const all = notificationNode("option", "", "全部设备");
+      all.value = "__all__";
+      target.appendChild(all);
+      for (const device of data.devices || []) {
+        const option = notificationNode("option", "", (device.name || device.device_id) + (device.online ? "（在线）" : "（离线）"));
+        option.value = device.device_id;
+        target.appendChild(option);
+      }
+      target.value = Array.from(target.options).some(option => option.value === current) ? current : "__all__";
+      renderNotifications(data.notifications || []);
+    }
+
     async function callTool(name, args = {}) {
       const data = await api("/admin/api/call", {
         method: "POST",
@@ -360,6 +444,7 @@ func dashboardHTML(user map[string]any) string {
         const panel = document.getElementById(button.dataset.tabTarget);
         if (panel) panel.hidden = false;
         if (button.dataset.tabTarget === "scheduleTab") loadSchedules().catch(err => $("schedules").textContent = String(err));
+        if (button.dataset.tabTarget === "notificationTab") loadNotifications().catch(err => $("notificationStatus").textContent = String(err));
       });
     });
     $("call").onclick = () => withBusy($("call"), "调用中...", async () => {
@@ -385,6 +470,27 @@ func dashboardHTML(user map[string]any) string {
         showSpeak(data);
       }).catch(err => showSpeak(String(err)));
     };
+    $("publishNotification").onclick = () => withBusy($("publishNotification"), "发布中...", async () => {
+      const allDevices = $("notificationTarget").value === "__all__";
+      const expires = $("notificationExpires").value;
+      await api("/admin/api/notifications", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: $("notificationTitle").value,
+          content: $("notificationContent").value,
+          all_devices: allDevices,
+          device_ids: allDevices ? [] : [$("notificationTarget").value],
+          expires_at: expires ? new Date(expires).toISOString() : "",
+        }),
+      });
+      $("notificationTitle").value = "";
+      $("notificationContent").value = "";
+      $("notificationExpires").value = "";
+      $("notificationStatus").textContent = "通知已发布";
+      await loadNotifications();
+    }).catch(err => $("notificationStatus").textContent = String(err));
+    $("refreshNotifications").onclick = () => withBusy($("refreshNotifications"), "刷新中...", loadNotifications).catch(err => $("notificationStatus").textContent = String(err));
     async function startRelayedStream(id) {
       if (!id) throw new Error("没有选择在线设备");
       if (streamSocket) streamSocket.close();

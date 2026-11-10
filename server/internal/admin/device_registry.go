@@ -146,6 +146,18 @@ func (r *DeviceRegistry) IsKnown(deviceID string) bool {
 	return ok
 }
 
+func (r *DeviceRegistry) DevicesForOwner(owner string) []pairedDevice {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	devices := make([]pairedDevice, 0)
+	for _, device := range r.devices {
+		if device.Owner == owner && device.Enabled {
+			devices = append(devices, device)
+		}
+	}
+	return devices
+}
+
 func (r *DeviceRegistry) saveLocked() error {
 	if r.path == "" {
 		return nil

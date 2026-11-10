@@ -19,6 +19,7 @@ import (
 	"github.com/mnhkahn/gogogo/logger"
 
 	esp32ws "github.com/mnhkahn/xiaoli/server/internal/esp32/ws"
+	"github.com/mnhkahn/xiaoli/server/internal/notification"
 )
 
 const (
@@ -83,12 +84,18 @@ type StreamingConversation interface {
 	AnswerDeviceTextStream(ctx context.Context, deviceID string, text string, emit func(string) error) error
 }
 
+type NotificationStore interface {
+	Pending(deviceID string, now time.Time) ([]notification.Notification, error)
+	MarkDelivered(notificationID, deviceID string, deliveredAt time.Time) (bool, error)
+}
+
 type Dependencies struct {
 	Stream                    StreamPublisher
 	ASR                       SpeechRecognizer
 	TTS                       SpeechSynthesizer
 	TTSVoiceForDevice         func(deviceID string) string
 	Conversation              Conversation
+	Notifications             NotificationStore
 	NewVoiceDetector          func() (VoiceDetector, error)
 	BuildOggOpus              func(frames [][]byte, inputSampleRate int, channels int, frameDurationMS int) ([]byte, error)
 	ExtractOpusPackets        func(body []byte) ([][]byte, time.Duration)
@@ -113,13 +120,15 @@ type Session struct {
 	lastActivity time.Time
 	conn         net.Conn
 
-	writeMu  sync.Mutex
-	mu       sync.Mutex
-	closed   bool
-	mcpReady bool
-	tools    []map[string]any
-	nextID   int
-	pending  map[int]chan MCPCallResult
+	writeMu          sync.Mutex
+	mu               sync.Mutex
+	closed           bool
+	mcpReady         bool
+	notifications    bool
+	notificationOnce sync.Once
+	tools            []map[string]any
+	nextID           int
+	pending          map[int]chan MCPCallResult
 
 	voice *VoiceRecorder
 }
@@ -300,6 +309,40 @@ func (h *Hub) StopSpeak(ctx context.Context, deviceID string) (map[string]any, e
 	return map[string]any{"ok": true, "status": "stop_signal_sent", "device_id": deviceID}, nil
 }
 
+func (h *Hub) PublishNotification(item notification.Notification) {
+	if item.RevokedAt != nil || item.ExpiresAt != nil && !time.Now().Before(*item.ExpiresAt) {
+		return
+	}
+	for _, deviceID := range item.TargetDeviceIDs {
+		session := h.session(deviceID)
+		if session == nil || !session.notificationsEnabled() {
+			continue
+		}
+		go func() {
+			if err := session.writeJSON(BuildNotificationMessage(session.sessionID, item)); err != nil {
+				logger.Infof("notification push failed for %s notification=%s: %v", session.deviceID, item.ID, err)
+			}
+		}()
+	}
+}
+
+func (h *Hub) sendPendingNotifications(session *Session) {
+	if h.deps.Notifications == nil || !session.notificationsEnabled() {
+		return
+	}
+	items, err := h.deps.Notifications.Pending(session.deviceID, time.Now())
+	if err != nil {
+		logger.Infof("notification pending load failed for %s: %v", session.deviceID, err)
+		return
+	}
+	for _, item := range items {
+		if err := session.writeJSON(BuildNotificationMessage(session.sessionID, item)); err != nil {
+			logger.Infof("notification resend failed for %s notification=%s: %v", session.deviceID, item.ID, err)
+			return
+		}
+	}
+}
+
 func (h *Hub) register(deviceID string, conn net.Conn, clientIP string) *Session {
 	now := time.Now()
 	session := &Session{
@@ -358,10 +401,54 @@ func (h *Hub) handleText(session *Session, body []byte) {
 	case "abort":
 		session.stopVoiceRecording()
 	case "hello":
+		session.mu.Lock()
+		session.notifications = h.deps.Notifications != nil && notificationsEnabled(message)
+		session.mu.Unlock()
 		_ = session.writeJSON(BuildHelloResponse(session.sessionID))
+		if session.notificationsEnabled() {
+			session.notificationOnce.Do(func() {
+				go h.sendPendingNotifications(session)
+			})
+		}
 		go h.bootstrapMCP(session)
+	case "notification_ack":
+		h.handleNotificationACK(session, message)
 	case "mcp":
 		h.handleMCPMessage(session, message["payload"])
+	}
+}
+
+func notificationsEnabled(message map[string]json.RawMessage) bool {
+	var features struct {
+		Notifications bool `json:"notifications"`
+	}
+	if err := json.Unmarshal(message["features"], &features); err != nil {
+		return false
+	}
+	return features.Notifications
+}
+
+func (s *Session) notificationsEnabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.notifications
+}
+
+func (h *Hub) handleNotificationACK(session *Session, message map[string]json.RawMessage) {
+	if h.deps.Notifications == nil || !session.notificationsEnabled() {
+		return
+	}
+	var notificationID string
+	if json.Unmarshal(message["notification_id"], &notificationID) != nil || notificationID == "" {
+		return
+	}
+	found, err := h.deps.Notifications.MarkDelivered(notificationID, session.deviceID, time.Now())
+	if err != nil {
+		logger.Infof("notification ack failed for %s notification=%s: %v", session.deviceID, notificationID, err)
+		return
+	}
+	if found {
+		logger.Infof("notification delivered to %s: %s", session.deviceID, notificationID)
 	}
 }
 

@@ -158,7 +158,7 @@ type DeviceHub struct {
 	tts          SpeechSynthesizer
 }
 
-func NewDeviceHub(cfg Config, registry *DeviceRegistry, stream *streamHub, audio *audioStore, asr SpeechRecognizer, agent *EinoAgent, vision VisionAnalyzer, tts SpeechSynthesizer) *DeviceHub {
+func NewDeviceHub(cfg Config, registry *DeviceRegistry, stream *streamHub, audio *audioStore, asr SpeechRecognizer, agent *EinoAgent, vision VisionAnalyzer, tts SpeechSynthesizer, notifications agentesp32.NotificationStore) *DeviceHub {
 	conversation := &deviceConversationAdapter{voice: newVoiceConversation(cfg)}
 	hub := agentesp32.NewHub(agentesp32.HubConfig{
 		PublicBaseURL:     cfg.PublicBaseURL,
@@ -176,6 +176,7 @@ func NewDeviceHub(cfg Config, registry *DeviceRegistry, stream *streamHub, audio
 		ASR:                       asr,
 		TTS:                       tts,
 		Conversation:              conversation,
+		Notifications:             notifications,
 		NewVoiceDetector:          newVoiceDetector,
 		BuildOggOpus:              esp32audio.BuildOggOpus,
 		ExtractOpusPackets:        esp32audio.ExtractOpusPackets,
